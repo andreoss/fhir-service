@@ -1,0 +1,9 @@
+[workspace]
+resolver = "2"
+members = [
+    "core",
+    "store",
+    "adapter-memory",
+    "api",
+    "host",
+]

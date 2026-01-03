@@ -1,0 +1,17 @@
+services:
+  relational:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: fhir
+      POSTGRES_PASSWORD: fhir
+      POSTGRES_DB: fhir
+    ports:
+      - "5432:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fhir -d fhir"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 10s

@@ -1,0 +1,19 @@
+= FHIR Service
+
+A FHIR server. Resources are stored with every version of
+themselves and answered over HTTP.
+
+== Build
+
+[source,shell]
+----
+cargo build --workspace
+cargo test --workspace
+cargo run --bin fhir-host
+----
+
+== Layout
+
+`core` the model and its rules, `store` the storage port, `adapter-memory`
+an in-process implementation of it, `api` the HTTP surface, `host` the
+binary.
