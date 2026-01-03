@@ -117,6 +117,7 @@ fn full_interaction_chain_over_http() {
     assert_eq!(created.status, 201, "create failed: {}", created.body);
     assert_eq!(header(&created, "etag"), "W/\"1\"");
     assert!(header(&created, "location").contains("/Patient/pt-1/_history/1"));
+    assert!(header(&created, "content-location").contains("/Patient/pt-1/_history/1"));
     assert!(header(&created, "last-modified").ends_with(" GMT"), "last-modified was {}", header(&created, "last-modified"));
     let value: serde_json::Value = serde_json::from_str(&created.body).unwrap();
     assert_eq!(value["meta"]["versionId"], "1");

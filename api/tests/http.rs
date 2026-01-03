@@ -108,6 +108,11 @@ async fn create_returns_location_etag_and_last_modified() {
         "location was {}",
         header(&reply, "location")
     );
+    assert!(
+        header(&reply, "content-location").ends_with("/Patient/pt-1/_history/1"),
+        "content-location was {}",
+        header(&reply, "content-location")
+    );
     let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
     assert_eq!(value["resourceType"], "Patient");
     assert_eq!(value["id"], "pt-1");
