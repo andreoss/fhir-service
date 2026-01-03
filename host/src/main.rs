@@ -1,8 +1,10 @@
-use fhir_adapter_memory::MemoryStore;
 use fhir_api::{Dependency, Service};
 use fhir_core::Error;
 use fhir_store::ResourceStore;
 use std::sync::Arc;
+
+#[cfg(feature = "backend-memory")]
+use fhir_adapter_memory::MemoryStore;
 
 #[tokio::main]
 async fn main() {
@@ -17,14 +19,7 @@ async fn main() {
 
 async fn run() -> Result<(), Error> {
     let config = fhir_host::Config::from_env()?;
-    let store: Arc<dyn ResourceStore> = match config.backend {
-        fhir_host::Backend::Memory => Arc::new(MemoryStore::default()),
-        other => {
-            return Err(Error::Config(format!(
-                "backend {other} is not implemented yet; set FHIR_BACKEND=memory"
-            )))
-        }
-    };
+    let store = build_store(&config)?;
     let dependencies = vec![Dependency {
         name: "store",
         check: Arc::new(|| Ok(())),
@@ -32,4 +27,31 @@ async fn run() -> Result<(), Error> {
     let service = Service::new(store, config.version, dependencies);
     eprintln!("serving {config}");
     service.serve(config.bind).await
+}
+
+fn build_store(config: &fhir_host::Config) -> Result<Arc<dyn ResourceStore>, Error> {
+    match config.backend {
+        #[cfg(feature = "backend-memory")]
+        fhir_host::Backend::Memory => Ok(Arc::new(MemoryStore::default())),
+        #[cfg(not(feature = "backend-memory"))]
+        fhir_host::Backend::Memory => Err(Error::Config(
+            "memory backend is not enabled in this build; rebuild with --features backend-memory".to_owned(),
+        )),
+        #[cfg(feature = "backend-relational")]
+        fhir_host::Backend::Relational => Err(Error::Config(
+            "relational backend is not implemented yet".to_owned(),
+        )),
+        #[cfg(not(feature = "backend-relational"))]
+        fhir_host::Backend::Relational => Err(Error::Config(
+            "relational backend is not enabled in this build; rebuild with --features backend-relational or set FHIR_BACKEND=memory".to_owned(),
+        )),
+        #[cfg(feature = "backend-document")]
+        fhir_host::Backend::Document => Err(Error::Config(
+            "document backend is not implemented yet".to_owned(),
+        )),
+        #[cfg(not(feature = "backend-document"))]
+        fhir_host::Backend::Document => Err(Error::Config(
+            "document backend is not enabled in this build; rebuild with --features backend-document or set FHIR_BACKEND=memory".to_owned(),
+        )),
+    }
 }

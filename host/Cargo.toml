@@ -4,11 +4,17 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-fhir-adapter-memory = { path = "../adapter-memory" }
+fhir-adapter-memory = { path = "../adapter-memory", optional = true }
 fhir-api = { path = "../api" }
 fhir-core = { path = "../core" }
 fhir-store = { path = "../store" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"] }
+
+[features]
+default = ["backend-memory"]
+backend-memory = ["dep:fhir-adapter-memory"]
+backend-relational = []
+backend-document = []
 
 [dev-dependencies]
 serde_json = "1"
