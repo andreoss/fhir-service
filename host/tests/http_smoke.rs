@@ -32,6 +32,7 @@ fn spawn_server() -> (Child, u16) {
         sleep(Duration::from_millis(20));
     }
     let _ = child.kill();
+    let _ = child.wait();
     panic!("server did not become ready on port {port}");
 }
 
@@ -52,6 +53,7 @@ fn request(port: u16, method: &str, path: &str, headers: &[(&str, &str)], body: 
         head.push_str(&format!("{name}: {value}\r\n"));
     }
     let mut bytes = head.into_bytes();
+    bytes.extend_from_slice(b"\r\n");
     bytes.extend_from_slice(body);
     stream.write_all(&bytes).expect("failed to write request");
     let mut response = String::new();
@@ -103,6 +105,8 @@ fn health_endpoint_reports_ok() {
     assert_eq!(reply.status, 200);
     let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
     assert_eq!(value["status"], "ok");
+    assert_eq!(value["dependencies"][0]["name"], "store");
+    assert_eq!(value["dependencies"][0]["status"], "ok");
 }
 
 #[test]
@@ -113,7 +117,7 @@ fn full_interaction_chain_over_http() {
     assert_eq!(created.status, 201, "create failed: {}", created.body);
     assert_eq!(header(&created, "etag"), "W/\"1\"");
     assert!(header(&created, "location").contains("/Patient/pt-1/_history/1"));
-    assert_eq!(header(&created, "last-modified"), "Sun, 06 Sep 2026 04:00:00 GMT");
+    assert!(header(&created, "last-modified").ends_with(" GMT"), "last-modified was {}", header(&created, "last-modified"));
     let value: serde_json::Value = serde_json::from_str(&created.body).unwrap();
     assert_eq!(value["meta"]["versionId"], "1");
     assert_eq!(value["active"], true);

@@ -24,6 +24,12 @@ fn version(value: &str) -> VersionId {
 }
 
 #[tokio::test]
+async fn health_reports_alive() {
+    let store = store();
+    assert_eq!(store.health(), Ok(()));
+}
+
+#[tokio::test]
 async fn create_read_round_trip_over_every_version() {
     for version in FhirVersion::ALL {
         let store = store();

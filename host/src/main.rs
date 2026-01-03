@@ -20,9 +20,13 @@ async fn main() {
 async fn run() -> Result<(), Error> {
     let config = fhir_host::Config::from_env()?;
     let store = build_store(&config)?;
+    let store_dependency = {
+        let store = Arc::clone(&store);
+        Arc::new(move || store.health().map_err(|error| error.to_string()))
+    };
     let dependencies = vec![Dependency {
         name: "store",
-        check: Arc::new(|| Ok(())),
+        check: store_dependency,
     }];
     let service = Service::new(store, config.version, dependencies);
     eprintln!("serving {config}");

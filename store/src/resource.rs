@@ -14,4 +14,6 @@ pub trait ResourceStore: Send + Sync {
         envelope: ResourceEnvelope,
         expected_version: Option<&VersionId>,
     ) -> Result<ResourceEnvelope, Error>;
+
+    fn health(&self) -> Result<(), Error>;
 }
