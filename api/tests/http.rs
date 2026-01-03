@@ -357,3 +357,27 @@ async fn internal_store_failure_is_a_500_outcome_without_leaks() {
     assert_eq!(value["issue"][0]["code"], "processing");
     assert_eq!(value["issue"][0]["diagnostics"], "boom");
 }
+#[tokio::test]
+async fn binding_port_zero_reports_the_assigned_port() {
+    let bound = service()
+        .bind("127.0.0.1:0".parse().unwrap())
+        .await
+        .expect("bind must succeed");
+    let addr = bound.local_addr().expect("local address must be known");
+    assert_ne!(addr.port(), 0, "an ephemeral bind must report a real port");
+}
+
+#[tokio::test]
+async fn binding_a_taken_port_fails_instead_of_serving() {
+    let taken = service()
+        .bind("127.0.0.1:0".parse().unwrap())
+        .await
+        .expect("first bind must succeed");
+    let addr = taken.local_addr().expect("local address must be known");
+    let outcome = service().bind(addr).await;
+    let error = match outcome {
+        Ok(_) => panic!("a taken port must not bind twice"),
+        Err(error) => error,
+    };
+    assert!(matches!(error, Error::Internal(_)), "error was {error:?}");
+}

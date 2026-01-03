@@ -1,7 +1,6 @@
-use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::TcpStream;
 use std::process::{Child, Command, Stdio};
-use std::thread::sleep;
 use std::time::Duration;
 
 struct Reply {
@@ -10,31 +9,35 @@ struct Reply {
     body: String,
 }
 
-fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
-}
-
 fn spawn_server() -> (Child, u16) {
-    let port = free_port();
     let mut child = Command::new(env!("CARGO_BIN_EXE_fhir-host"))
         .env("FHIR_BACKEND", "memory")
-        .env("FHIR_BIND", format!("127.0.0.1:{port}"))
+        .env("FHIR_BIND", "127.0.0.1:0")
         .env("FHIR_VERSION", "R4")
         .env_remove("FHIR_DATABASE_URL")
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
         .expect("failed to spawn binary");
-    for _ in 0..200 {
-        if TcpStream::connect(("127.0.0.1", port)).is_ok() {
-            return (child, port);
+    let stdout = child.stdout.take().expect("missing stdout");
+    let mut line = String::new();
+    BufReader::new(stdout)
+        .read_line(&mut line)
+        .expect("failed to read the announced address");
+    let port = line
+        .trim()
+        .rsplit_once(':')
+        .and_then(|(_, port)| port.parse().ok());
+    match port {
+        Some(port) => (child, port),
+        None => {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("server did not announce an address, said {line:?}");
         }
-        sleep(Duration::from_millis(20));
     }
-    let _ = child.kill();
-    let _ = child.wait();
-    panic!("server did not become ready on port {port}");
 }
+
 
 fn stop(mut child: Child) {
     child.kill().expect("failed to kill server");

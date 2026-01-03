@@ -30,7 +30,9 @@ async fn run() -> Result<(), Error> {
     }];
     let service = Service::new(store, config.version, dependencies);
     eprintln!("serving {config}");
-    service.serve(config.bind).await
+    let bound = service.bind(config.bind).await?;
+    println!("listening on {}", bound.local_addr()?);
+    bound.serve().await
 }
 
 fn build_store(config: &fhir_host::Config) -> Result<Arc<dyn ResourceStore>, Error> {
