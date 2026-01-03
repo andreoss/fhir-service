@@ -131,6 +131,7 @@ fn full_interaction_chain_over_http() {
     let updated = request(port, "PUT", "/Patient/pt-1", &[("if-match", "W/\"1\"")], &patient("pt-1", false));
     assert_eq!(updated.status, 200, "update failed: {}", updated.body);
     assert_eq!(header(&updated, "etag"), "W/\"2\"");
+    assert!(header(&updated, "content-location").contains("/Patient/pt-1/_history/2"));
 
     let v1 = request(port, "GET", "/Patient/pt-1/_history/1", &[], &[]);
     assert_eq!(v1.status, 200);

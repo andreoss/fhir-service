@@ -227,6 +227,7 @@ async fn update_with_current_if_match_creates_new_version() {
     assert_eq!(header(&reply, "etag"), "W/\"2\"");
     assert_eq!(header(&reply, "last-modified"), LAST_MODIFIED);
     assert!(header(&reply, "location").ends_with("/Patient/pt-6/_history/2"));
+    assert!(header(&reply, "content-location").ends_with("/Patient/pt-6/_history/2"));
 }
 
 #[tokio::test]
@@ -256,6 +257,7 @@ async fn noop_update_creates_no_version() {
     let reply = request(&app, "PUT", "/Patient/pt-9", &[("if-match", "W/\"1\"")], &patient("pt-9", true)).await;
     assert_eq!(reply.status, StatusCode::OK);
     assert_eq!(header(&reply, "etag"), "W/\"1\"", "a no-op update must not advance the version");
+    assert!(header(&reply, "content-location").ends_with("/Patient/pt-9/_history/1"));
     let read = request(&app, "GET", "/Patient/pt-9", &[], &[]).await;
     assert_eq!(header(&read, "etag"), "W/\"1\"");
 }
