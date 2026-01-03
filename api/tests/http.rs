@@ -1,8 +1,10 @@
+use async_trait::async_trait;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use fhir_adapter_memory::MemoryStore;
 use fhir_api::{Dependency, Service};
-use fhir_core::{FhirInstant, FhirVersion};
+use fhir_core::{Error, FhirInstant, FhirVersion, ResourceEnvelope, ResourceId, VersionId};
+use fhir_store::ResourceStore;
 use http_body_util::BodyExt;
 use std::sync::Arc;
 use tower::ServiceExt;
@@ -319,4 +321,39 @@ async fn unsupported_method_returns_outcome_405() {
     let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
     assert_eq!(value["resourceType"], "OperationOutcome");
     assert_eq!(value["issue"][0]["code"], "not-allowed");
+}
+
+struct FailingStore;
+
+#[async_trait]
+impl ResourceStore for FailingStore {
+    async fn create(&self, _: ResourceEnvelope) -> Result<ResourceEnvelope, Error> {
+        Err(Error::Internal("boom".to_owned()))
+    }
+    async fn read(&self, _: &ResourceId) -> Result<ResourceEnvelope, Error> {
+        Err(Error::Internal("boom".to_owned()))
+    }
+    async fn vread(&self, _: &ResourceId, _: &VersionId) -> Result<ResourceEnvelope, Error> {
+        Err(Error::Internal("boom".to_owned()))
+    }
+    async fn update(&self, _: ResourceEnvelope, _: Option<&VersionId>) -> Result<ResourceEnvelope, Error> {
+        Err(Error::Internal("boom".to_owned()))
+    }
+    fn health(&self) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn internal_store_failure_is_a_500_outcome_without_leaks() {
+    let app = Service::new(Arc::new(FailingStore), FhirVersion::R4, vec![]);
+    let reply = request(&app, "GET", "/Patient/boom", &[], &[]).await;
+    assert_eq!(reply.status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(header(&reply, "content-type"), "application/fhir+json");
+    let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
+    let object = value.as_object().expect("outcome must be an object");
+    assert_eq!(object.len(), 2, "outcome must expose only resourceType and issue");
+    assert_eq!(value["resourceType"], "OperationOutcome");
+    assert_eq!(value["issue"][0]["code"], "processing");
+    assert_eq!(value["issue"][0]["diagnostics"], "boom");
 }

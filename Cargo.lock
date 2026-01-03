@@ -114,6 +114,7 @@ dependencies = [
 name = "fhir-api"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "axum",
  "fhir-adapter-memory",
  "fhir-core",
