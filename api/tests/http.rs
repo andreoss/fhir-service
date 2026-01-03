@@ -165,6 +165,11 @@ async fn read_returns_current_version_with_headers() {
     assert_eq!(reply.status, StatusCode::OK);
     assert_eq!(header(&reply, "etag"), "W/\"1\"");
     assert_eq!(header(&reply, "last-modified"), LAST_MODIFIED);
+    assert!(
+        header(&reply, "content-location").ends_with("/Patient/pt-4/_history/1"),
+        "content-location was {}",
+        header(&reply, "content-location")
+    );
     let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
     assert_eq!(value["id"], "pt-4");
     assert_eq!(value["active"], true);
@@ -191,6 +196,11 @@ async fn vread_returns_historical_version_and_rejects_unknown() {
     let old = request(&app, "GET", "/Patient/pt-5/_history/1", &[], &[]).await;
     assert_eq!(old.status, StatusCode::OK);
     assert_eq!(header(&old, "etag"), "W/\"1\"");
+    assert!(
+        header(&old, "content-location").ends_with("/Patient/pt-5/_history/1"),
+        "content-location was {}",
+        header(&old, "content-location")
+    );
     assert!(old.body.contains("\"active\":true"));
 
     let current = request(&app, "GET", "/Patient/pt-5/_history/2", &[], &[]).await;

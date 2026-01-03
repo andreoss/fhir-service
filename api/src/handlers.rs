@@ -37,6 +37,7 @@ impl IntoResponse for AppError {
 pub async fn read(
     State(state): State<AppState>,
     Path((type_name, id_text)): Path<(String, String)>,
+    headers: HeaderMap,
 ) -> Result<Response, AppError> {
     let resource_type = type_name.parse::<ResourceType>()?;
     let id = id_text.parse::<ResourceId>()?;
@@ -44,12 +45,13 @@ pub async fn read(
     if envelope.resource_type() != resource_type {
         return Err(Error::NotFound.into());
     }
-    Ok(respond_resource(&envelope))
+    Ok(respond_resource(&envelope, host_from(&headers)))
 }
 
 pub async fn vread(
     State(state): State<AppState>,
     Path((type_name, id_text, version_text)): Path<(String, String, String)>,
+    headers: HeaderMap,
 ) -> Result<Response, AppError> {
     let resource_type = type_name.parse::<ResourceType>()?;
     let id = id_text.parse::<ResourceId>()?;
@@ -58,7 +60,7 @@ pub async fn vread(
     if envelope.resource_type() != resource_type {
         return Err(Error::NotFound.into());
     }
-    Ok(respond_resource(&envelope))
+    Ok(respond_resource(&envelope, host_from(&headers)))
 }
 
 pub async fn create(
@@ -133,7 +135,7 @@ pub async fn method_not_allowed() -> Result<Response, AppError> {
     Err(Error::MethodNotAllowed.into())
 }
 
-fn respond_resource(envelope: &ResourceEnvelope) -> Response {
+fn respond_resource(envelope: &ResourceEnvelope, host: &str) -> Response {
     let mut response = Response::new(Body::from(envelope.raw().to_vec()));
     let headers = response.headers_mut();
     headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(FHIR_JSON));
@@ -142,11 +144,15 @@ fn respond_resource(envelope: &ResourceEnvelope) -> Response {
         header::LAST_MODIFIED,
         HeaderValue::from_str(&last_modified(envelope.last_updated())).expect("last-modified is a header value"),
     );
+    headers.insert(
+        header::CONTENT_LOCATION,
+        HeaderValue::from_str(&location(host, envelope)).expect("content-location is a header value"),
+    );
     response
 }
 
 fn respond_created(envelope: &ResourceEnvelope, host: &str) -> Response {
-    let mut response = respond_resource(envelope);
+    let mut response = respond_resource(envelope, host);
     *response.status_mut() = StatusCode::CREATED;
     response
         .headers_mut()
@@ -155,7 +161,7 @@ fn respond_created(envelope: &ResourceEnvelope, host: &str) -> Response {
 }
 
 fn respond_updated(envelope: &ResourceEnvelope, host: &str) -> Response {
-    let mut response = respond_resource(envelope);
+    let mut response = respond_resource(envelope, host);
     response
         .headers_mut()
         .insert(header::LOCATION, HeaderValue::from_str(&location(host, envelope)).expect("location is a header value"));
