@@ -178,3 +178,67 @@ async fn history_reaches_final_state_after_update_chain() {
     assert_eq!(store.vread(&id("pt-9"), &version("2")).await.unwrap().version_id().as_str(), "2");
     assert_eq!(store.vread(&id("pt-9"), &version("1")).await.unwrap().version_id().as_str(), "1");
 }
+#[tokio::test]
+async fn search_without_parameters_returns_every_current_resource() {
+    let store = store();
+    store.create(envelope(FhirVersion::R4, "pt-1", true)).await.unwrap();
+    store.create(envelope(FhirVersion::R4, "pt-2", false)).await.unwrap();
+    let found = store.search(None, &Vec::new()).await.unwrap();
+    assert_eq!(found.len(), 2);
+}
+
+#[tokio::test]
+async fn search_matches_a_top_level_field() {
+    let store = store();
+    store.create(envelope(FhirVersion::R4, "pt-1", true)).await.unwrap();
+    store.create(envelope(FhirVersion::R4, "pt-2", false)).await.unwrap();
+    let params = vec![("active".to_owned(), "true".to_owned())];
+    let found = store.search(None, &params).await.unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].id().as_str(), "pt-1");
+}
+
+#[tokio::test]
+async fn search_matches_the_resource_id() {
+    let store = store();
+    store.create(envelope(FhirVersion::R4, "pt-1", true)).await.unwrap();
+    store.create(envelope(FhirVersion::R4, "pt-2", true)).await.unwrap();
+    let params = vec![("_id".to_owned(), "pt-2".to_owned())];
+    let found = store.search(None, &params).await.unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].id().as_str(), "pt-2");
+}
+
+#[tokio::test]
+async fn search_restricted_to_a_type_ignores_other_types() {
+    let store = store();
+    store.create(envelope(FhirVersion::R4, "pt-1", true)).await.unwrap();
+    let observation = ResourceEnvelope::parse(
+        FhirVersion::R4,
+        br#"{"resourceType":"Observation","id":"ob-1","meta":{"versionId":"0","lastUpdated":"2026-09-06T04:00:00Z"},"status":"final"}"#,
+    )
+    .unwrap();
+    store.create(observation).await.unwrap();
+    let patients = store.search(Some("Patient".parse().unwrap()), &Vec::new()).await.unwrap();
+    assert_eq!(patients.len(), 1);
+    assert_eq!(patients[0].resource_type().as_str(), "Patient");
+}
+
+#[tokio::test]
+async fn search_reports_no_match_for_an_unknown_field() {
+    let store = store();
+    store.create(envelope(FhirVersion::R4, "pt-1", true)).await.unwrap();
+    let params = vec![("gender".to_owned(), "female".to_owned())];
+    assert!(store.search(None, &params).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn search_sees_the_current_version_only() {
+    let store = store();
+    store.create(envelope(FhirVersion::R4, "pt-1", true)).await.unwrap();
+    store.update(envelope(FhirVersion::R4, "pt-1", false), None).await.unwrap();
+    let params = vec![("active".to_owned(), "true".to_owned())];
+    assert!(store.search(None, &params).await.unwrap().is_empty());
+    let params = vec![("active".to_owned(), "false".to_owned())];
+    assert_eq!(store.search(None, &params).await.unwrap().len(), 1);
+}

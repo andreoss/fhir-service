@@ -1,5 +1,9 @@
 use async_trait::async_trait;
-use fhir_core::{Error, ResourceEnvelope, ResourceId, VersionId};
+use fhir_core::{Error, ResourceEnvelope, ResourceId, ResourceType, VersionId};
+
+pub type SearchParam = (String, String);
+
+pub type SearchParams = Vec<SearchParam>;
 
 #[async_trait]
 pub trait ResourceStore: Send + Sync {
@@ -14,6 +18,12 @@ pub trait ResourceStore: Send + Sync {
         envelope: ResourceEnvelope,
         expected_version: Option<&VersionId>,
     ) -> Result<ResourceEnvelope, Error>;
+
+    async fn search(
+        &self,
+        resource_type: Option<ResourceType>,
+        params: &SearchParams,
+    ) -> Result<Vec<ResourceEnvelope>, Error>;
 
     fn health(&self) -> Result<(), Error>;
 }

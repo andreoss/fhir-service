@@ -6,7 +6,9 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 
-use crate::handlers::{create, health, method_not_allowed, not_found, read, update, vread};
+use crate::handlers::{
+    conditional_update, create, health, method_not_allowed, not_found, read, update, vread,
+};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -46,7 +48,7 @@ impl Service {
             .route("/health", get(health))
             .route("/{type}/{id}", get(read).put(update))
             .route("/{type}/{id}/_history/{vid}", get(vread))
-            .route("/{type}", post(create))
+            .route("/{type}", post(create).put(conditional_update))
             .fallback(not_found)
             .method_not_allowed_fallback(method_not_allowed)
             .with_state(self.state.clone())

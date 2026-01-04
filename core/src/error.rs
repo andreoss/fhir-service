@@ -18,6 +18,7 @@ pub enum Error {
     Internal(String),
     Deleted,
     MethodNotAllowed,
+    MultipleMatches,
 }
 
 impl Error {
@@ -66,6 +67,10 @@ impl Error {
             Error::MethodNotAllowed => {
                 OperationOutcome::error(IssueCode::NotAllowed, "method not allowed")
             }
+            Error::MultipleMatches => OperationOutcome::error(
+                IssueCode::MultipleMatches,
+                "the conditional request matched more than one resource",
+            ),
         }
     }
 }
@@ -88,6 +93,7 @@ impl fmt::Display for Error {
             Error::Internal(message) => write!(f, "internal error: {message}"),
             Error::Deleted => write!(f, "resource deleted"),
             Error::MethodNotAllowed => write!(f, "method not allowed"),
+            Error::MultipleMatches => write!(f, "multiple matches for the conditional request"),
         }
     }
 }
@@ -156,6 +162,13 @@ mod tests {
     fn method_not_allowed_maps_to_405() {
         assert_eq!(Error::MethodNotAllowed.http_status(), 405);
         assert_eq!(Error::MethodNotAllowed.to_operation_outcome().code, IssueCode::NotAllowed);
+    }
+
+    #[test]
+    fn multiple_matches_maps_to_412() {
+        let error = Error::MultipleMatches;
+        assert_eq!(error.http_status(), 412);
+        assert_eq!(error.to_operation_outcome().code, IssueCode::MultipleMatches);
     }
 
     #[test]

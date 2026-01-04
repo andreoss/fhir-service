@@ -3,8 +3,8 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use fhir_adapter_memory::MemoryStore;
 use fhir_api::{Dependency, Service};
-use fhir_core::{Error, FhirInstant, FhirVersion, ResourceEnvelope, ResourceId, VersionId};
-use fhir_store::ResourceStore;
+use fhir_core::{Error, FhirInstant, FhirVersion, ResourceEnvelope, ResourceId, ResourceType, VersionId};
+use fhir_store::{ResourceStore, SearchParams};
 use http_body_util::BodyExt;
 use std::sync::Arc;
 use tower::ServiceExt;
@@ -339,6 +339,9 @@ impl ResourceStore for FailingStore {
     async fn update(&self, _: ResourceEnvelope, _: Option<&VersionId>) -> Result<ResourceEnvelope, Error> {
         Err(Error::Internal("boom".to_owned()))
     }
+    async fn search(&self, _: Option<ResourceType>, _: &SearchParams) -> Result<Vec<ResourceEnvelope>, Error> {
+        Err(Error::Internal("boom".to_owned()))
+    }
     fn health(&self) -> Result<(), Error> {
         Ok(())
     }
@@ -380,4 +383,162 @@ async fn binding_a_taken_port_fails_instead_of_serving() {
         Err(error) => error,
     };
     assert!(matches!(error, Error::Internal(_)), "error was {error:?}");
+}
+
+#[tokio::test]
+async fn conditional_create_without_a_match_creates_the_resource() {
+    let app = service();
+    let reply = request(
+        &app,
+        "POST",
+        "/Patient",
+        &[("if-none-exist", "active=true")],
+        &patient("pt-c1", true),
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::CREATED);
+    assert_eq!(header(&reply, "etag"), "W/\"1\"");
+}
+
+#[tokio::test]
+async fn conditional_create_with_one_match_returns_the_existing_resource() {
+    let app = service();
+    request(&app, "POST", "/Patient", &[], &patient("pt-c2", true)).await;
+    let reply = request(
+        &app,
+        "POST",
+        "/Patient",
+        &[("if-none-exist", "_id=pt-c2")],
+        &patient("pt-c3", true),
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::OK);
+    let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
+    assert_eq!(value["id"], "pt-c2");
+    assert_eq!(value["meta"]["versionId"], "1");
+    let missing = request(&app, "GET", "/Patient/pt-c3", &[], &[]).await;
+    assert_eq!(missing.status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn conditional_create_with_many_matches_is_412() {
+    let app = service();
+    request(&app, "POST", "/Patient", &[], &patient("pt-c4", true)).await;
+    request(&app, "POST", "/Patient", &[], &patient("pt-c5", true)).await;
+    let reply = request(
+        &app,
+        "POST",
+        "/Patient",
+        &[("if-none-exist", "active=true")],
+        &patient("pt-c6", true),
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::PRECONDITION_FAILED);
+    let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
+    assert_eq!(value["issue"][0]["code"], "multiple-matches");
+}
+
+#[tokio::test]
+async fn conditional_create_without_parameters_is_rejected() {
+    let app = service();
+    let reply = request(&app, "POST", "/Patient", &[("if-none-exist", "")], &patient("pt-c7", true)).await;
+    assert_eq!(reply.status, StatusCode::BAD_REQUEST);
+    let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
+    assert_eq!(value["issue"][0]["code"], "invalid");
+}
+
+#[tokio::test]
+async fn conditional_update_without_a_match_creates_the_resource() {
+    let app = service();
+    let reply = request(&app, "PUT", "/Patient?_id=pt-u1", &[], &patient("pt-u1", true)).await;
+    assert_eq!(reply.status, StatusCode::CREATED);
+    assert!(header(&reply, "location").ends_with("/Patient/pt-u1/_history/1"));
+    let read = request(&app, "GET", "/Patient/pt-u1", &[], &[]).await;
+    assert_eq!(read.status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn conditional_update_without_a_match_assigns_a_server_id() {
+    let app = service();
+    let body = br#"{"resourceType":"Patient","active":false}"#.to_vec();
+    let reply = request(&app, "PUT", "/Patient?active=false", &[], &body).await;
+    assert_eq!(reply.status, StatusCode::CREATED);
+    let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
+    assert!(!value["id"].as_str().unwrap_or_default().is_empty());
+}
+
+#[tokio::test]
+async fn conditional_update_with_one_match_writes_the_next_version() {
+    let app = service();
+    request(&app, "POST", "/Patient", &[], &patient("pt-u2", true)).await;
+    let body = br#"{"resourceType":"Patient","active":false}"#.to_vec();
+    let reply = request(&app, "PUT", "/Patient?_id=pt-u2", &[], &body).await;
+    assert_eq!(reply.status, StatusCode::OK);
+    assert_eq!(header(&reply, "etag"), "W/\"2\"");
+    let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
+    assert_eq!(value["id"], "pt-u2");
+    assert_eq!(value["active"], false);
+}
+
+#[tokio::test]
+async fn conditional_update_honours_a_stale_if_match() {
+    let app = service();
+    request(&app, "POST", "/Patient", &[], &patient("pt-u3", true)).await;
+    let reply = request(
+        &app,
+        "PUT",
+        "/Patient?_id=pt-u3",
+        &[("if-match", "W/\"7\"")],
+        &patient("pt-u3", false),
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::CONFLICT);
+    let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
+    assert_eq!(value["issue"][0]["code"], "conflict");
+}
+
+#[tokio::test]
+async fn conditional_update_with_a_mismatched_body_id_is_rejected() {
+    let app = service();
+    request(&app, "POST", "/Patient", &[], &patient("pt-u4", true)).await;
+    let reply = request(&app, "PUT", "/Patient?_id=pt-u4", &[], &patient("pt-other", false)).await;
+    assert_eq!(reply.status, StatusCode::BAD_REQUEST);
+    let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
+    assert_eq!(value["issue"][0]["code"], "invalid");
+}
+
+#[tokio::test]
+async fn conditional_update_with_many_matches_is_412() {
+    let app = service();
+    request(&app, "POST", "/Patient", &[], &patient("pt-u5", true)).await;
+    request(&app, "POST", "/Patient", &[], &patient("pt-u6", true)).await;
+    let reply = request(&app, "PUT", "/Patient?active=true", &[], &patient("pt-u5", false)).await;
+    assert_eq!(reply.status, StatusCode::PRECONDITION_FAILED);
+    let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
+    assert_eq!(value["issue"][0]["code"], "multiple-matches");
+}
+
+#[tokio::test]
+async fn conditional_update_without_parameters_is_rejected() {
+    let app = service();
+    let reply = request(&app, "PUT", "/Patient", &[], &patient("pt-u7", true)).await;
+    assert_eq!(reply.status, StatusCode::BAD_REQUEST);
+    let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
+    assert_eq!(value["issue"][0]["code"], "invalid");
+}
+
+#[tokio::test]
+async fn result_control_parameters_do_not_count_as_a_condition() {
+    let app = service();
+    let reply = request(&app, "PUT", "/Patient?_format=json", &[], &patient("pt-u8", true)).await;
+    assert_eq!(reply.status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn conditional_parameters_are_percent_decoded() {
+    let app = service();
+    let body = br#"{"resourceType":"Patient","id":"pt-u9","identifier":[{"system":"urn:x","value":"a b"}]}"#.to_vec();
+    request(&app, "POST", "/Patient", &[], &body).await;
+    let reply = request(&app, "PUT", "/Patient?identifier=a%20b", &[], &body).await;
+    assert_eq!(reply.status, StatusCode::OK);
 }

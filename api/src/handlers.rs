@@ -1,15 +1,18 @@
 use axum::body::{Body, Bytes};
-use axum::extract::{Path, State};
+use axum::extract::{Path, RawQuery, State};
 use axum::http::header::{self, HeaderMap, HeaderValue};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use fhir_core::{Error, FhirInstant, ResourceEnvelope, ResourceId, ResourceType, VersionId, WeakEtag};
+use fhir_store::SearchParams;
 use serde_json::Value;
 use uuid::Uuid;
 
 use crate::app::AppState;
+use crate::query::conditional_params;
 
 const FHIR_JSON: &str = "application/fhir+json";
+const IF_NONE_EXIST: &str = "if-none-exist";
 const PLACEHOLDER_VERSION: &str = "0";
 const PLACEHOLDER_INSTANT: &str = "1970-01-01T00:00:00Z";
 
@@ -70,15 +73,46 @@ pub async fn create(
     body: Bytes,
 ) -> Result<Response, AppError> {
     let resource_type = type_name.parse::<ResourceType>()?;
+    if let Some(condition) = headers.get(IF_NONE_EXIST) {
+        let raw = condition
+            .to_str()
+            .map_err(|_| Error::InvalidEnvelope("if-none-exist is not ascii".to_owned()))?;
+        let params = require_condition(conditional_params(Some(raw)), "if-none-exist")?;
+        if let Some(existing) = single_match(&state, resource_type, &params).await? {
+            return Ok(respond_updated(&existing, host_from(&headers)));
+        }
+    }
     let value: Value = serde_json::from_slice(&body).map_err(|error| Error::InvalidJson(error.to_string()))?;
-    let id = match value.get("id") {
-        Some(Value::String(text)) => text.parse::<ResourceId>()?,
-        Some(_) => return Err(Error::InvalidEnvelope("id must be a string".to_owned()).into()),
-        None => ResourceId::parse(&Uuid::new_v4().to_string())?,
-    };
+    let id = body_id(&value)?;
     let envelope = write_envelope(state.version, resource_type, value, &id)?;
     let stored = state.store.create(envelope).await?;
     Ok(respond_created(&stored, host_from(&headers)))
+}
+
+pub async fn conditional_update(
+    State(state): State<AppState>,
+    Path(type_name): Path<String>,
+    RawQuery(query): RawQuery,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, AppError> {
+    let resource_type = type_name.parse::<ResourceType>()?;
+    let params = require_condition(conditional_params(query.as_deref()), "conditional update")?;
+    let value: Value = serde_json::from_slice(&body).map_err(|error| Error::InvalidJson(error.to_string()))?;
+    let expected = expected_version(&headers)?;
+    match single_match(&state, resource_type, &params).await? {
+        Some(existing) => {
+            let envelope = write_envelope(state.version, resource_type, value, existing.id())?;
+            let stored = state.store.update(envelope, expected.as_ref()).await?;
+            Ok(respond_updated(&stored, host_from(&headers)))
+        }
+        None => {
+            let id = body_id(&value)?;
+            let envelope = write_envelope(state.version, resource_type, value, &id)?;
+            let stored = state.store.create(envelope).await?;
+            Ok(respond_created(&stored, host_from(&headers)))
+        }
+    }
 }
 
 pub async fn update(
@@ -89,13 +123,7 @@ pub async fn update(
 ) -> Result<Response, AppError> {
     let resource_type = type_name.parse::<ResourceType>()?;
     let id = id_text.parse::<ResourceId>()?;
-    let expected = match headers.get(header::IF_MATCH) {
-        Some(value) => {
-            let text = value.to_str().map_err(|_| Error::InvalidEtag("if-match is not ascii".to_owned()))?;
-            Some(WeakEtag::try_from(text)?.as_str().parse::<VersionId>()?)
-        }
-        None => None,
-    };
+    let expected = expected_version(&headers)?;
     let value: Value = serde_json::from_slice(&body).map_err(|error| Error::InvalidJson(error.to_string()))?;
     let envelope = write_envelope(state.version, resource_type, value, &id)?;
     let stored = state.store.update(envelope, expected.as_ref()).await?;
@@ -133,6 +161,44 @@ pub async fn not_found() -> Result<Response, AppError> {
 
 pub async fn method_not_allowed() -> Result<Response, AppError> {
     Err(Error::MethodNotAllowed.into())
+}
+
+fn require_condition(params: SearchParams, what: &str) -> Result<SearchParams, Error> {
+    if params.is_empty() {
+        return Err(Error::InvalidEnvelope(format!("{what} requires search parameters")));
+    }
+    Ok(params)
+}
+
+async fn single_match(
+    state: &AppState,
+    resource_type: ResourceType,
+    params: &SearchParams,
+) -> Result<Option<ResourceEnvelope>, Error> {
+    let mut matches = state.store.search(Some(resource_type), params).await?;
+    match matches.len() {
+        0 => Ok(None),
+        1 => Ok(Some(matches.remove(0))),
+        _ => Err(Error::MultipleMatches),
+    }
+}
+
+fn body_id(value: &Value) -> Result<ResourceId, Error> {
+    match value.get("id") {
+        Some(Value::String(text)) => text.parse::<ResourceId>(),
+        Some(_) => Err(Error::InvalidEnvelope("id must be a string".to_owned())),
+        None => ResourceId::parse(&Uuid::new_v4().to_string()),
+    }
+}
+
+fn expected_version(headers: &HeaderMap) -> Result<Option<VersionId>, Error> {
+    match headers.get(header::IF_MATCH) {
+        Some(value) => {
+            let text = value.to_str().map_err(|_| Error::InvalidEtag("if-match is not ascii".to_owned()))?;
+            Ok(Some(WeakEtag::try_from(text)?.as_str().parse::<VersionId>()?))
+        }
+        None => Ok(None),
+    }
 }
 
 fn respond_resource(envelope: &ResourceEnvelope, host: &str) -> Response {

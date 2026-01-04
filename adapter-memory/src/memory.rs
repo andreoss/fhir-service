@@ -1,10 +1,49 @@
 use async_trait::async_trait;
-use fhir_core::{Error, FhirInstant, ResourceEnvelope, ResourceId, VersionId};
-use fhir_store::ResourceStore;
+use fhir_core::{Error, FhirInstant, ResourceEnvelope, ResourceId, ResourceType, VersionId};
+use fhir_store::{ResourceStore, SearchParams};
+use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 type StoreMap = HashMap<ResourceId, Vec<ResourceEnvelope>>;
+
+fn matches_params(envelope: &ResourceEnvelope, params: &SearchParams) -> Result<bool, Error> {
+    let text = std::str::from_utf8(envelope.raw()).map_err(|e| Error::InvalidJson(e.to_string()))?;
+    let value: Value = serde_json::from_str(text).map_err(|e| Error::InvalidJson(e.to_string()))?;
+    for (name, expected) in params {
+        let matched = match name.as_str() {
+            "_id" => envelope.id().as_str() == expected.as_str(),
+            other => match value.get(other) {
+                Some(field) => field_matches(field, expected),
+                None => false,
+            },
+        };
+        if !matched {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn field_matches(field: &Value, expected: &str) -> bool {
+    match field {
+        Value::Array(items) => items.iter().any(|item| field_matches(item, expected)),
+        Value::String(text) => text.eq_ignore_ascii_case(expected),
+        Value::Bool(value) => expected.eq_ignore_ascii_case(&value.to_string()),
+        Value::Number(number) => match (number.as_f64(), expected.parse::<f64>()) {
+            (Some(actual), Ok(wanted)) => (actual - wanted).abs() < f64::EPSILON,
+            _ => false,
+        },
+        Value::Object(map) => {
+            let code = expected.rsplit('|').next().unwrap_or_default();
+            !code.is_empty()
+                && ["value", "code", "text", "reference", "system"].iter().any(|key| {
+                    matches!(map.get(*key), Some(Value::String(text)) if text.eq_ignore_ascii_case(code))
+                })
+        }
+        Value::Null => false,
+    }
+}
 
 pub type Clock = Arc<dyn Fn() -> FhirInstant + Send + Sync>;
 
@@ -92,6 +131,29 @@ impl ResourceStore for MemoryStore {
                 .ok_or(Error::NotFound),
             None => Err(Error::NotFound),
         }
+    }
+
+    async fn search(
+        &self,
+        resource_type: Option<ResourceType>,
+        params: &SearchParams,
+    ) -> Result<Vec<ResourceEnvelope>, Error> {
+        let guard = self
+            .inner
+            .read()
+            .map_err(|_| Error::Internal("store lock poisoned".to_owned()))?;
+        let mut matches = Vec::new();
+        for versions in guard.values() {
+            let Some(current) = versions.last() else { continue };
+            if resource_type.is_some_and(|wanted| current.resource_type() != wanted) {
+                continue;
+            }
+            if matches_params(current, params)? {
+                matches.push(current.clone());
+            }
+        }
+        matches.sort_by(|a, b| a.id().as_str().cmp(b.id().as_str()));
+        Ok(matches)
     }
 
     fn health(&self) -> Result<(), Error> {

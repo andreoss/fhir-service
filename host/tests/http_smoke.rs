@@ -243,3 +243,45 @@ fn unsupported_method_returns_outcome_405() {
     assert_eq!(issue_code(&reply.body), "not-allowed");
     assert!(reply.body.contains("OperationOutcome"));
 }
+
+#[test]
+fn conditional_create_returns_the_existing_match() {
+    let (child, port) = spawn_server();
+    request(port, "POST", "/Patient", &[], &patient("pt-c1", true));
+    let reply = request(
+        port,
+        "POST",
+        "/Patient",
+        &[("If-None-Exist", "_id=pt-c1")],
+        &patient("pt-c2", true),
+    );
+    let absent = request(port, "GET", "/Patient/pt-c2", &[], &[]);
+    stop(child);
+    assert_eq!(reply.status, 200, "conditional create failed: {}", reply.body);
+    let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
+    assert_eq!(value["id"], "pt-c1");
+    assert_eq!(absent.status, 404);
+}
+
+#[test]
+fn conditional_update_creates_then_updates_the_match() {
+    let (child, port) = spawn_server();
+    let created = request(port, "PUT", "/Patient?_id=pt-c3", &[], &patient("pt-c3", true));
+    let updated = request(port, "PUT", "/Patient?_id=pt-c3", &[], &patient("pt-c3", false));
+    stop(child);
+    assert_eq!(created.status, 201, "conditional create failed: {}", created.body);
+    assert_eq!(header(&created, "etag"), "W/\"1\"");
+    assert_eq!(updated.status, 200, "conditional update failed: {}", updated.body);
+    assert_eq!(header(&updated, "etag"), "W/\"2\"");
+}
+
+#[test]
+fn conditional_update_with_many_matches_is_precondition_failed() {
+    let (child, port) = spawn_server();
+    request(port, "POST", "/Patient", &[], &patient("pt-c4", true));
+    request(port, "POST", "/Patient", &[], &patient("pt-c5", true));
+    let reply = request(port, "PUT", "/Patient?active=true", &[], &patient("pt-c4", false));
+    stop(child);
+    assert_eq!(reply.status, 412, "body was {}", reply.body);
+    assert_eq!(issue_code(&reply.body), "multiple-matches");
+}

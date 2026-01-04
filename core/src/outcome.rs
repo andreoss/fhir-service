@@ -31,6 +31,7 @@ pub enum IssueCode {
     NotSupported,
     NotAllowed,
     Duplicate,
+    MultipleMatches,
     Processing,
 }
 
@@ -45,6 +46,7 @@ impl IssueCode {
             IssueCode::NotSupported => "not-supported",
             IssueCode::NotAllowed => "not-allowed",
             IssueCode::Duplicate => "duplicate",
+            IssueCode::MultipleMatches => "multiple-matches",
             IssueCode::Processing => "processing",
         }
     }
@@ -56,6 +58,7 @@ impl IssueCode {
             IssueCode::Conflict | IssueCode::Duplicate => 409,
             IssueCode::Forbidden => 403,
             IssueCode::NotAllowed => 405,
+            IssueCode::MultipleMatches => 412,
             IssueCode::Processing => 500,
         }
     }
@@ -135,6 +138,7 @@ mod tests {
         assert_eq!(IssueCode::Conflict.http_status(), 409);
         assert_eq!(IssueCode::Forbidden.http_status(), 403);
         assert_eq!(IssueCode::Processing.http_status(), 500);
+        assert_eq!(IssueCode::MultipleMatches.http_status(), 412);
     }
 
     #[test]

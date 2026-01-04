@@ -1,4 +1,4 @@
 
 pub mod resource;
 
-pub use resource::ResourceStore;
+pub use resource::{ResourceStore, SearchParam, SearchParams};
