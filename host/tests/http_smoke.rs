@@ -331,3 +331,47 @@ fn conditional_delete_removes_the_single_match() {
     assert_eq!(read.status, 410);
     assert_eq!(again.status, 404);
 }
+
+#[test]
+fn json_patch_updates_the_resource_over_http() {
+    let (child, port) = spawn_server();
+    request(port, "POST", "/Patient", &[], &patient("pt-p1", true));
+    let patched = request(
+        port,
+        "PATCH",
+        "/Patient/pt-p1",
+        &[("Content-Type", "application/json-patch+json")],
+        br#"[{"op":"replace","path":"/active","value":false}]"#,
+    );
+    let rejected = request(
+        port,
+        "PATCH",
+        "/Patient/pt-p1",
+        &[("Content-Type", "application/json-patch+json")],
+        br#"[{"op":"remove","path":"/gender"}]"#,
+    );
+    let read = request(port, "GET", "/Patient/pt-p1", &[], &[]);
+    stop(child);
+    assert_eq!(patched.status, 200, "patch failed: {}", patched.body);
+    assert_eq!(header(&patched, "etag"), "W/\"2\"");
+    assert_eq!(rejected.status, 400);
+    assert_eq!(issue_code(&rejected.body), "invalid");
+    let value: serde_json::Value = serde_json::from_str(&read.body).unwrap();
+    assert_eq!(value["meta"]["versionId"], "2", "a rejected patch must write nothing");
+    assert_eq!(value["active"], false);
+}
+
+#[test]
+fn path_patch_updates_the_resource_over_http() {
+    let (child, port) = spawn_server();
+    request(port, "POST", "/Patient", &[], &patient("pt-p2", true));
+    let body = br#"{"resourceType":"Parameters","parameter":[{"name":"operation","part":[
+        {"name":"type","valueCode":"replace"},
+        {"name":"path","valueString":"Patient.active"},
+        {"name":"value","valueBoolean":false}]}]}"#;
+    let patched = request(port, "PATCH", "/Patient?_id=pt-p2", &[("Content-Type", "application/fhir+json")], body);
+    stop(child);
+    assert_eq!(patched.status, 200, "conditional patch failed: {}", patched.body);
+    let value: serde_json::Value = serde_json::from_str(&patched.body).unwrap();
+    assert_eq!(value["active"], false);
+}

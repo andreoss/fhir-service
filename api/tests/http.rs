@@ -694,3 +694,157 @@ async fn conditional_hard_delete_removes_the_history() {
     let old = request(&app, "GET", "/Patient/pt-db/_history/1", &[], &[]).await;
     assert_eq!(old.status, StatusCode::NOT_FOUND);
 }
+
+const JSON_PATCH: &str = "application/json-patch+json";
+
+#[tokio::test]
+async fn json_patch_writes_the_next_version() {
+    let app = service();
+    request(&app, "POST", "/Patient", &[], &patient("pt-p1", true)).await;
+    let reply = request(
+        &app,
+        "PATCH",
+        "/Patient/pt-p1",
+        &[("content-type", JSON_PATCH)],
+        br#"[{"op":"replace","path":"/active","value":false}]"#,
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::OK);
+    assert_eq!(header(&reply, "etag"), "W/\"2\"");
+    let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
+    assert_eq!(value["active"], false);
+    assert_eq!(value["id"], "pt-p1");
+}
+
+#[tokio::test]
+async fn path_patch_writes_the_next_version() {
+    let app = service();
+    request(&app, "POST", "/Patient", &[], &patient("pt-p2", true)).await;
+    let body = br#"{"resourceType":"Parameters","parameter":[{"name":"operation","part":[
+        {"name":"type","valueCode":"replace"},
+        {"name":"path","valueString":"Patient.active"},
+        {"name":"value","valueBoolean":false}]}]}"#;
+    let reply = request(&app, "PATCH", "/Patient/pt-p2", &[], body).await;
+    assert_eq!(reply.status, StatusCode::OK, "body was {}", reply.body);
+    let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
+    assert_eq!(value["active"], false);
+}
+
+#[tokio::test]
+async fn a_rejected_patch_writes_nothing() {
+    let app = service();
+    request(&app, "POST", "/Patient", &[], &patient("pt-p3", true)).await;
+    let reply = request(
+        &app,
+        "PATCH",
+        "/Patient/pt-p3",
+        &[("content-type", JSON_PATCH)],
+        br#"[{"op":"replace","path":"/active","value":false},{"op":"remove","path":"/gender"}]"#,
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::BAD_REQUEST);
+    let outcome: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
+    assert_eq!(outcome["issue"][0]["code"], "invalid");
+    let read = request(&app, "GET", "/Patient/pt-p3", &[], &[]).await;
+    let value: serde_json::Value = serde_json::from_str(&read.body).unwrap();
+    assert_eq!(value["meta"]["versionId"], "1");
+    assert_eq!(value["active"], true);
+}
+
+#[tokio::test]
+async fn a_patch_may_not_change_the_id_or_type() {
+    let app = service();
+    request(&app, "POST", "/Patient", &[], &patient("pt-p4", true)).await;
+    for patch in [
+        br#"[{"op":"replace","path":"/id","value":"other"}]"#.to_vec(),
+        br#"[{"op":"replace","path":"/resourceType","value":"Observation"}]"#.to_vec(),
+    ] {
+        let reply = request(&app, "PATCH", "/Patient/pt-p4", &[("content-type", JSON_PATCH)], &patch).await;
+        assert_eq!(reply.status, StatusCode::BAD_REQUEST, "body was {}", reply.body);
+    }
+}
+
+#[tokio::test]
+async fn patch_honours_a_stale_if_match() {
+    let app = service();
+    request(&app, "POST", "/Patient", &[], &patient("pt-p5", true)).await;
+    let reply = request(
+        &app,
+        "PATCH",
+        "/Patient/pt-p5",
+        &[("content-type", JSON_PATCH), ("if-match", "W/\"9\"")],
+        br#"[{"op":"replace","path":"/active","value":false}]"#,
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn patching_an_unknown_or_deleted_resource_fails() {
+    let app = service();
+    let unknown = request(
+        &app,
+        "PATCH",
+        "/Patient/pt-none",
+        &[("content-type", JSON_PATCH)],
+        br#"[{"op":"replace","path":"/active","value":false}]"#,
+    )
+    .await;
+    assert_eq!(unknown.status, StatusCode::NOT_FOUND);
+    request(&app, "POST", "/Patient", &[], &patient("pt-p6", true)).await;
+    request(&app, "DELETE", "/Patient/pt-p6", &[], &[]).await;
+    let deleted = request(
+        &app,
+        "PATCH",
+        "/Patient/pt-p6",
+        &[("content-type", JSON_PATCH)],
+        br#"[{"op":"replace","path":"/active","value":false}]"#,
+    )
+    .await;
+    assert_eq!(deleted.status, StatusCode::GONE);
+}
+
+#[tokio::test]
+async fn a_malformed_patch_document_is_rejected() {
+    let app = service();
+    request(&app, "POST", "/Patient", &[], &patient("pt-p7", true)).await;
+    let reply = request(
+        &app,
+        "PATCH",
+        "/Patient/pt-p7",
+        &[("content-type", JSON_PATCH)],
+        br#"{"resourceType":"Patient"}"#,
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn conditional_patch_selects_the_single_match() {
+    let app = service();
+    request(&app, "POST", "/Patient", &[], &patient("pt-p8", true)).await;
+    let reply = request(
+        &app,
+        "PATCH",
+        "/Patient?_id=pt-p8",
+        &[("content-type", JSON_PATCH)],
+        br#"[{"op":"replace","path":"/active","value":false}]"#,
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::OK);
+    assert_eq!(header(&reply, "etag"), "W/\"2\"");
+}
+
+#[tokio::test]
+async fn conditional_patch_reports_no_match_and_many_matches() {
+    let app = service();
+    request(&app, "POST", "/Patient", &[], &patient("pt-p9", true)).await;
+    request(&app, "POST", "/Patient", &[], &patient("pt-pa", true)).await;
+    let patch = br#"[{"op":"replace","path":"/active","value":false}]"#;
+    let none = request(&app, "PATCH", "/Patient?_id=pt-none", &[("content-type", JSON_PATCH)], patch).await;
+    assert_eq!(none.status, StatusCode::NOT_FOUND);
+    let many = request(&app, "PATCH", "/Patient?active=true", &[("content-type", JSON_PATCH)], patch).await;
+    assert_eq!(many.status, StatusCode::PRECONDITION_FAILED);
+    let empty = request(&app, "PATCH", "/Patient", &[("content-type", JSON_PATCH)], patch).await;
+    assert_eq!(empty.status, StatusCode::BAD_REQUEST);
+}

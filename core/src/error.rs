@@ -19,6 +19,7 @@ pub enum Error {
     Deleted,
     MethodNotAllowed,
     MultipleMatches,
+    InvalidPatch(String),
 }
 
 impl Error {
@@ -71,6 +72,9 @@ impl Error {
                 IssueCode::MultipleMatches,
                 "the conditional request matched more than one resource",
             ),
+            Error::InvalidPatch(message) => {
+                OperationOutcome::error(IssueCode::Invalid, format!("invalid patch: {message}"))
+            }
         }
     }
 }
@@ -94,6 +98,7 @@ impl fmt::Display for Error {
             Error::Deleted => write!(f, "resource deleted"),
             Error::MethodNotAllowed => write!(f, "method not allowed"),
             Error::MultipleMatches => write!(f, "multiple matches for the conditional request"),
+            Error::InvalidPatch(message) => write!(f, "invalid patch: {message}"),
         }
     }
 }
@@ -178,6 +183,7 @@ mod tests {
             Error::InvalidInstant("whenever".to_owned()),
             Error::InvalidJson("unterminated string".to_owned()),
             Error::InvalidEnvelope("missing resourceType".to_owned()),
+            Error::InvalidPatch("no member \"gender\"".to_owned()),
         ] {
             assert_eq!(error.http_status(), 400);
             assert_eq!(error.to_operation_outcome().code, IssueCode::Invalid);

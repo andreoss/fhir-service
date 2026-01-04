@@ -7,8 +7,8 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 
 use crate::handlers::{
-    conditional_delete, conditional_update, create, delete_instance, health, method_not_allowed,
-    not_found, purge_history, read, update, vread,
+    conditional_delete, conditional_patch, conditional_update, create, delete_instance, health,
+    method_not_allowed, not_found, patch_instance, purge_history, read, update, vread,
 };
 
 #[derive(Clone)]
@@ -47,9 +47,9 @@ impl Service {
     pub fn router(&self) -> Router<()> {
         Router::new()
             .route("/health", get(health))
-            .route("/{type}/{id}", get(read).put(update).delete(delete_instance))
+            .route("/{type}/{id}", get(read).put(update).delete(delete_instance).patch(patch_instance))
             .route("/{type}/{id}/_history/{vid}", get(vread))
-            .route("/{type}", post(create).put(conditional_update).delete(conditional_delete))
+            .route("/{type}", post(create).put(conditional_update).delete(conditional_delete).patch(conditional_patch))
             .route("/{type}/{id}/$purge-history", post(purge_history))
             .fallback(not_found)
             .method_not_allowed_fallback(method_not_allowed)

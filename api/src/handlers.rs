@@ -3,7 +3,9 @@ use axum::extract::{Path, RawQuery, State};
 use axum::http::header::{self, HeaderMap, HeaderValue};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use fhir_core::{Error, FhirInstant, ResourceEnvelope, ResourceId, ResourceType, VersionId, WeakEtag};
+use fhir_core::{
+    Error, FhirInstant, Patch, ResourceEnvelope, ResourceId, ResourceType, VersionId, WeakEtag,
+};
 use fhir_store::SearchParams;
 use serde_json::Value;
 use uuid::Uuid;
@@ -164,6 +166,39 @@ pub async fn conditional_delete(
     }
 }
 
+pub async fn patch_instance(
+    State(state): State<AppState>,
+    Path((type_name, id_text)): Path<(String, String)>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, AppError> {
+    let resource_type = type_name.parse::<ResourceType>()?;
+    let id = id_text.parse::<ResourceId>()?;
+    let current = state.store.read(&id).await?;
+    if current.resource_type() != resource_type {
+        return Err(Error::NotFound.into());
+    }
+    if current.is_deleted() {
+        return Err(Error::Deleted.into());
+    }
+    patch_stored(&state, resource_type, &current, &headers, &body).await
+}
+
+pub async fn conditional_patch(
+    State(state): State<AppState>,
+    Path(type_name): Path<String>,
+    RawQuery(query): RawQuery,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, AppError> {
+    let resource_type = type_name.parse::<ResourceType>()?;
+    let params = require_condition(conditional_params(query.as_deref()), "conditional patch")?;
+    match single_match(&state, resource_type, &params).await? {
+        Some(existing) => patch_stored(&state, resource_type, &existing, &headers, &body).await,
+        None => Err(Error::NotFound.into()),
+    }
+}
+
 pub async fn purge_history(
     State(state): State<AppState>,
     Path((type_name, id_text)): Path<(String, String)>,
@@ -218,6 +253,21 @@ pub async fn not_found() -> Result<Response, AppError> {
 
 pub async fn method_not_allowed() -> Result<Response, AppError> {
     Err(Error::MethodNotAllowed.into())
+}
+
+async fn patch_stored(
+    state: &AppState,
+    resource_type: ResourceType,
+    current: &ResourceEnvelope,
+    headers: &HeaderMap,
+    body: &[u8],
+) -> Result<Response, AppError> {
+    let patched = Patch::parse(body)?.apply(current.raw())?;
+    let value: Value = serde_json::from_slice(&patched).map_err(|error| Error::InvalidJson(error.to_string()))?;
+    let envelope = write_envelope(state.version, resource_type, value, current.id())?;
+    let expected = expected_version(headers)?;
+    let stored = state.store.update(envelope, expected.as_ref()).await?;
+    Ok(respond_updated(&stored, host_from(headers)))
 }
 
 async fn remove(state: &AppState, id: &ResourceId, hard: bool) -> Result<Response, AppError> {
