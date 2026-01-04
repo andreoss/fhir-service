@@ -13,7 +13,7 @@ pub use envelope::ResourceEnvelope;
 pub use error::Error;
 pub use etag::WeakEtag;
 pub use fhir_version::FhirVersion;
-pub use instant::FhirInstant;
+pub use instant::{FhirInstant, InstantKey, InstantPeriod};
 pub use outcome::{IssueCode, IssueSeverity, OperationOutcome};
 pub use patch::{JsonOperation, Patch, PathOperation};
 pub use resource_id::ResourceId;
