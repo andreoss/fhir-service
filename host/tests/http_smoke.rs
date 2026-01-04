@@ -375,3 +375,50 @@ fn path_patch_updates_the_resource_over_http() {
     let value: serde_json::Value = serde_json::from_str(&patched.body).unwrap();
     assert_eq!(value["active"], false);
 }
+
+#[test]
+fn history_over_http_pages_and_orders_versions() {
+    let (child, port) = spawn_server();
+    request(port, "POST", "/Patient", &[], &patient("pt-h1", true));
+    request(port, "PUT", "/Patient/pt-h1", &[], &patient("pt-h1", false));
+    request(port, "DELETE", "/Patient/pt-h1", &[], &[]);
+    let instance = request(port, "GET", "/Patient/pt-h1/_history", &[], &[]);
+    let typed = request(port, "GET", "/Patient/_history?_count=2", &[], &[]);
+    let system = request(port, "GET", "/_history?_summary=count", &[], &[]);
+    let oldest = request(port, "GET", "/Patient/pt-h1/_history?_sort=_lastUpdated", &[], &[]);
+    let unknown = request(port, "GET", "/Patient/pt-none/_history", &[], &[]);
+    let rejected = request(port, "GET", "/_history?_sort=name", &[], &[]);
+    stop(child);
+
+    assert_eq!(instance.status, 200, "instance history failed: {}", instance.body);
+    assert_eq!(header(&instance, "content-type"), "application/fhir+json");
+    let value: serde_json::Value = serde_json::from_str(&instance.body).unwrap();
+    assert_eq!(value["resourceType"], "Bundle");
+    assert_eq!(value["type"], "history");
+    assert_eq!(value["total"], 3);
+    assert_eq!(value["entry"][0]["request"]["method"], "DELETE");
+    assert_eq!(value["entry"][1]["request"]["method"], "PUT");
+    assert_eq!(value["entry"][2]["request"]["method"], "POST");
+    assert_eq!(value["entry"][2]["response"]["etag"], "W/\"1\"");
+
+    let typed: serde_json::Value = serde_json::from_str(&typed.body).unwrap();
+    assert_eq!(typed["entry"].as_array().unwrap().len(), 2);
+    let next = typed["link"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|link| link["relation"] == "next")
+        .expect("a further page must be linked");
+    assert!(next["url"].as_str().unwrap().contains("ct="));
+
+    let system: serde_json::Value = serde_json::from_str(&system.body).unwrap();
+    assert_eq!(system["total"], 3);
+    assert!(system["entry"].is_null());
+
+    let oldest: serde_json::Value = serde_json::from_str(&oldest.body).unwrap();
+    assert_eq!(oldest["entry"][0]["response"]["etag"], "W/\"1\"");
+
+    assert_eq!(unknown.status, 404);
+    assert_eq!(rejected.status, 400);
+    assert_eq!(issue_code(&rejected.body), "not-supported");
+}
