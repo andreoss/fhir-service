@@ -8,7 +8,8 @@ use tokio::net::TcpListener;
 
 use crate::handlers::{
     conditional_delete, conditional_patch, conditional_update, create, delete_instance, health,
-    method_not_allowed, not_found, patch_instance, purge_history, read, update, vread,
+    instance_history, method_not_allowed, not_found, patch_instance, purge_history, read,
+    system_history, type_history, update, vread,
 };
 
 #[derive(Clone)]
@@ -48,6 +49,9 @@ impl Service {
         Router::new()
             .route("/health", get(health))
             .route("/{type}/{id}", get(read).put(update).delete(delete_instance).patch(patch_instance))
+            .route("/_history", get(system_history))
+            .route("/{type}/_history", get(type_history))
+            .route("/{type}/{id}/_history", get(instance_history))
             .route("/{type}/{id}/_history/{vid}", get(vread))
             .route("/{type}", post(create).put(conditional_update).delete(conditional_delete).patch(conditional_patch))
             .route("/{type}/{id}/$purge-history", post(purge_history))

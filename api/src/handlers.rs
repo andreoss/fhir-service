@@ -6,11 +6,12 @@ use axum::response::{IntoResponse, Response};
 use fhir_core::{
     Error, FhirInstant, Patch, ResourceEnvelope, ResourceId, ResourceType, VersionId, WeakEtag,
 };
-use fhir_store::SearchParams;
+use fhir_store::{HistoryScope, SearchParams};
 use serde_json::Value;
 use uuid::Uuid;
 
 use crate::app::AppState;
+use crate::history::{history_bundle, HistoryRequest};
 use crate::query::{conditional_params, param};
 
 const FHIR_JSON: &str = "application/fhir+json";
@@ -447,4 +448,58 @@ fn write_envelope(
         .or_insert_with(|| Value::String(PLACEHOLDER_INSTANT.to_owned()));
     let bytes = serde_json::to_vec(&value).map_err(|error| Error::InvalidJson(error.to_string()))?;
     ResourceEnvelope::parse(version, &bytes)
+}
+pub async fn system_history(
+    State(state): State<AppState>,
+    RawQuery(query): RawQuery,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    respond_history(&state, HistoryScope::System, "/_history".to_owned(), query, &headers).await
+}
+
+pub async fn type_history(
+    State(state): State<AppState>,
+    Path(type_name): Path<String>,
+    RawQuery(query): RawQuery,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    let resource_type = type_name.parse::<ResourceType>()?;
+    let path = format!("/{resource_type}/_history");
+    respond_history(&state, HistoryScope::Type(resource_type), path, query, &headers).await
+}
+
+pub async fn instance_history(
+    State(state): State<AppState>,
+    Path((type_name, id_text)): Path<(String, String)>,
+    RawQuery(query): RawQuery,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    let resource_type = type_name.parse::<ResourceType>()?;
+    let id = id_text.parse::<ResourceId>()?;
+    let path = format!("/{resource_type}/{id}/_history");
+    let scope = HistoryScope::Instance(resource_type, id);
+    respond_history(&state, scope, path, query, &headers).await
+}
+
+async fn respond_history(
+    state: &AppState,
+    scope: HistoryScope,
+    path: String,
+    query: Option<String>,
+    headers: &HeaderMap,
+) -> Result<Response, AppError> {
+    let request = HistoryRequest::parse(query.as_deref())?;
+    let page = state.store.history(&scope, &request.query).await?;
+    let base = format!("http://{}", host_from(headers));
+    let self_url = match query.as_deref() {
+        Some(raw) if !raw.is_empty() => format!("{base}{path}?{raw}"),
+        _ => format!("{base}{path}"),
+    };
+    let body = history_bundle(&base, &self_url, &page, request.summary);
+    Ok((
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, FHIR_JSON), (header::CACHE_CONTROL, "no-store")],
+        body,
+    )
+        .into_response())
 }

@@ -20,6 +20,8 @@ pub enum Error {
     MethodNotAllowed,
     MultipleMatches,
     InvalidPatch(String),
+    InvalidParameter(String),
+    UnsupportedParameter(String),
 }
 
 impl Error {
@@ -75,6 +77,13 @@ impl Error {
             Error::InvalidPatch(message) => {
                 OperationOutcome::error(IssueCode::Invalid, format!("invalid patch: {message}"))
             }
+            Error::InvalidParameter(message) => {
+                OperationOutcome::error(IssueCode::Invalid, format!("invalid parameter: {message}"))
+            }
+            Error::UnsupportedParameter(message) => OperationOutcome::error(
+                IssueCode::NotSupported,
+                format!("unsupported parameter: {message}"),
+            ),
         }
     }
 }
@@ -99,6 +108,8 @@ impl fmt::Display for Error {
             Error::MethodNotAllowed => write!(f, "method not allowed"),
             Error::MultipleMatches => write!(f, "multiple matches for the conditional request"),
             Error::InvalidPatch(message) => write!(f, "invalid patch: {message}"),
+            Error::InvalidParameter(message) => write!(f, "invalid parameter: {message}"),
+            Error::UnsupportedParameter(message) => write!(f, "unsupported parameter: {message}"),
         }
     }
 }
@@ -188,6 +199,18 @@ mod tests {
             assert_eq!(error.http_status(), 400);
             assert_eq!(error.to_operation_outcome().code, IssueCode::Invalid);
         }
+    }
+
+    #[test]
+    fn parameter_errors_map_to_bad_request() {
+        let invalid = Error::InvalidParameter("_count \"many\"".to_owned());
+        assert_eq!(invalid.http_status(), 400);
+        assert_eq!(invalid.to_operation_outcome().code, IssueCode::Invalid);
+        assert!(invalid.to_string().contains("_count"));
+        let unsupported = Error::UnsupportedParameter("_sort \"name\"".to_owned());
+        assert_eq!(unsupported.http_status(), 400);
+        assert_eq!(unsupported.to_operation_outcome().code, IssueCode::NotSupported);
+        assert!(unsupported.to_string().contains("_sort"));
     }
 
     #[test]

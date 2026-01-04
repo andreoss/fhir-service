@@ -851,3 +851,178 @@ async fn conditional_patch_reports_no_match_and_many_matches() {
     let empty = request(&app, "PATCH", "/Patient", &[("content-type", JSON_PATCH)], patch).await;
     assert_eq!(empty.status, StatusCode::BAD_REQUEST);
 }
+
+fn ticking_service() -> Service {
+    let tick = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let store = MemoryStore::with_clock(Arc::new(move || {
+        let second = tick.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        FhirInstant::parse(&format!("2026-09-06T04:00:{second:02}Z")).unwrap()
+    }));
+    let dependencies = vec![Dependency {
+        name: "memory-store",
+        check: Arc::new(|| Ok(())),
+    }];
+    Service::new(Arc::new(store), FhirVersion::R4, dependencies)
+}
+
+async fn seeded_history() -> Service {
+    let app = ticking_service();
+    request(&app, "POST", "/Patient", &[], &patient("pt-h1", true)).await;
+    request(&app, "PUT", "/Patient/pt-h1", &[], &patient("pt-h1", false)).await;
+    request(&app, "DELETE", "/Patient/pt-h1", &[], &[]).await;
+    request(&app, "POST", "/Observation", &[], br#"{"resourceType":"Observation","id":"ob-h1","status":"final"}"#).await;
+    app
+}
+
+fn bundle(reply: &Reply) -> serde_json::Value {
+    serde_json::from_str(&reply.body).expect("history bundle must be json")
+}
+
+fn entry_versions(value: &serde_json::Value) -> Vec<String> {
+    value["entry"]
+        .as_array()
+        .map(|entries| {
+            entries
+                .iter()
+                .map(|entry| entry["response"]["etag"].as_str().unwrap_or_default().to_owned())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn link(value: &serde_json::Value, relation: &str) -> String {
+    value["link"]
+        .as_array()
+        .and_then(|links| {
+            links
+                .iter()
+                .find(|item| item["relation"] == relation)
+                .and_then(|item| item["url"].as_str())
+        })
+        .unwrap_or_default()
+        .to_owned()
+}
+
+#[tokio::test]
+async fn instance_history_is_a_bundle_newest_first() {
+    let app = seeded_history().await;
+    let reply = request(&app, "GET", "/Patient/pt-h1/_history", &[], &[]).await;
+    assert_eq!(reply.status, StatusCode::OK);
+    assert_eq!(header(&reply, "content-type"), "application/fhir+json");
+    let value = bundle(&reply);
+    assert_eq!(value["resourceType"], "Bundle");
+    assert_eq!(value["type"], "history");
+    assert_eq!(value["total"], 3);
+    assert_eq!(entry_versions(&value), ["W/\"3\"", "W/\"2\"", "W/\"1\""]);
+    assert_eq!(value["entry"][0]["request"]["method"], "DELETE");
+    assert_eq!(value["entry"][0]["request"]["url"], "Patient/pt-h1");
+    assert_eq!(value["entry"][0]["response"]["status"], "204");
+    assert!(value["entry"][0]["resource"].is_null(), "a delete marker carries no resource");
+    assert_eq!(value["entry"][1]["request"]["method"], "PUT");
+    assert_eq!(value["entry"][1]["request"]["url"], "Patient/pt-h1");
+    assert_eq!(value["entry"][1]["response"]["status"], "200");
+    assert_eq!(value["entry"][1]["resource"]["active"], false);
+    assert_eq!(value["entry"][2]["request"]["method"], "POST");
+    assert_eq!(value["entry"][2]["request"]["url"], "Patient");
+    assert_eq!(value["entry"][2]["response"]["status"], "201");
+    assert_eq!(value["entry"][2]["fullUrl"], "http://localhost/Patient/pt-h1");
+    assert_eq!(value["entry"][2]["response"]["lastModified"], "2026-09-06T04:00:00Z");
+}
+
+#[tokio::test]
+async fn type_and_system_history_span_the_right_resources() {
+    let app = seeded_history().await;
+    let typed = bundle(&request(&app, "GET", "/Patient/_history", &[], &[]).await);
+    assert_eq!(typed["total"], 3);
+    let system = bundle(&request(&app, "GET", "/_history", &[], &[]).await);
+    assert_eq!(system["total"], 4);
+    assert_eq!(system["entry"][0]["request"]["url"], "Observation");
+    let other = bundle(&request(&app, "GET", "/Encounter/_history", &[], &[]).await);
+    assert_eq!(other["total"], 0);
+    assert!(other["entry"].is_null());
+}
+
+#[tokio::test]
+async fn history_pages_through_a_continuation_token() {
+    let app = seeded_history().await;
+    let first = bundle(&request(&app, "GET", "/_history?_count=2", &[], &[]).await);
+    assert_eq!(first["total"], 4);
+    assert_eq!(first["entry"].as_array().unwrap().len(), 2);
+    assert_eq!(link(&first, "self"), "http://localhost/_history?_count=2");
+    let next = link(&first, "next");
+    assert!(next.contains("ct="), "next link was {next}");
+    let path = next.trim_start_matches("http://localhost").to_owned();
+    let second = bundle(&request(&app, "GET", &path, &[], &[]).await);
+    assert_eq!(entry_versions(&second), ["W/\"2\"", "W/\"1\""]);
+    assert_eq!(link(&second, "next"), "", "the last page has no next link");
+}
+
+#[tokio::test]
+async fn history_filters_by_write_time() {
+    let app = seeded_history().await;
+    let since = bundle(&request(&app, "GET", "/_history?_since=2026-09-06T04:00:02Z", &[], &[]).await);
+    assert_eq!(since["total"], 2);
+    let before = bundle(&request(&app, "GET", "/_history?_before=2026-09-06T04:00:01Z", &[], &[]).await);
+    assert_eq!(before["total"], 1);
+    let at = bundle(&request(&app, "GET", "/_history?_at=2026-09-06T04:00:01Z", &[], &[]).await);
+    assert_eq!(at["total"], 1);
+    let day = bundle(&request(&app, "GET", "/_history?_at=2026-09-06", &[], &[]).await);
+    assert_eq!(day["total"], 4);
+    let elsewhere = bundle(&request(&app, "GET", "/_history?_at=2025", &[], &[]).await);
+    assert_eq!(elsewhere["total"], 0);
+}
+
+#[tokio::test]
+async fn history_sorts_oldest_first_on_request() {
+    let app = seeded_history().await;
+    let value = bundle(&request(&app, "GET", "/Patient/pt-h1/_history?_sort=_lastUpdated", &[], &[]).await);
+    assert_eq!(entry_versions(&value), ["W/\"1\"", "W/\"2\"", "W/\"3\""]);
+    let reverse = bundle(&request(&app, "GET", "/Patient/pt-h1/_history?_sort=-_lastUpdated", &[], &[]).await);
+    assert_eq!(entry_versions(&reverse), ["W/\"3\"", "W/\"2\"", "W/\"1\""]);
+}
+
+#[tokio::test]
+async fn summary_count_reports_the_total_without_entries() {
+    let app = seeded_history().await;
+    let value = bundle(&request(&app, "GET", "/_history?_summary=count", &[], &[]).await);
+    assert_eq!(value["total"], 4);
+    assert!(value["entry"].is_null());
+    let zero = bundle(&request(&app, "GET", "/_history?_count=0", &[], &[]).await);
+    assert_eq!(zero["total"], 4);
+    assert!(zero["entry"].is_null());
+}
+
+#[tokio::test]
+async fn summary_true_carries_metadata_only() {
+    let app = seeded_history().await;
+    let value = bundle(&request(&app, "GET", "/Patient/pt-h1/_history?_summary=true", &[], &[]).await);
+    let resource = &value["entry"][1]["resource"];
+    assert_eq!(resource["resourceType"], "Patient");
+    assert_eq!(resource["meta"]["versionId"], "2");
+    assert!(resource["active"].is_null(), "the summary carries no body");
+}
+
+#[tokio::test]
+async fn malformed_history_parameters_are_rejected() {
+    let app = seeded_history().await;
+    for query in [
+        "_count=many",
+        "_sort=name",
+        "_summary=partial",
+        "_since=whenever",
+        "_at=2026-13",
+        "ct=zz",
+    ] {
+        let reply = request(&app, "GET", &format!("/_history?{query}"), &[], &[]).await;
+        assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{query} must be rejected");
+    }
+}
+
+#[tokio::test]
+async fn history_of_an_unknown_instance_or_type_fails() {
+    let app = seeded_history().await;
+    let unknown = request(&app, "GET", "/Patient/pt-none/_history", &[], &[]).await;
+    assert_eq!(unknown.status, StatusCode::NOT_FOUND);
+    let bad_type = request(&app, "GET", "/Nope/_history", &[], &[]).await;
+    assert_eq!(bad_type.status, StatusCode::BAD_REQUEST);
+}
