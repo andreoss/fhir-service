@@ -4,7 +4,7 @@ use axum::http::{Request, StatusCode};
 use fhir_adapter_memory::MemoryStore;
 use fhir_api::{Dependency, Service};
 use fhir_core::{Error, FhirInstant, FhirVersion, ResourceEnvelope, ResourceId, ResourceType, VersionId};
-use fhir_store::{ResourceStore, SearchParams};
+use fhir_store::{HistoryPage, HistoryQuery, HistoryScope, ResourceStore, SearchParams};
 use http_body_util::BodyExt;
 use std::sync::Arc;
 use tower::ServiceExt;
@@ -349,6 +349,9 @@ impl ResourceStore for FailingStore {
         Err(Error::Internal("boom".to_owned()))
     }
     async fn purge_history(&self, _: &ResourceId) -> Result<usize, Error> {
+        Err(Error::Internal("boom".to_owned()))
+    }
+    async fn history(&self, _: &HistoryScope, _: &HistoryQuery) -> Result<HistoryPage, Error> {
         Err(Error::Internal("boom".to_owned()))
     }
     fn health(&self) -> Result<(), Error> {

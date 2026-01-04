@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use fhir_core::{Error, FhirInstant, ResourceEnvelope, ResourceId, ResourceType, VersionId};
-use fhir_store::{ResourceStore, SearchParams};
+use fhir_store::{HistoryOrder, HistoryPage, HistoryQuery, HistoryScope, ResourceStore, SearchParams};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -81,6 +81,10 @@ impl Default for MemoryStore {
     }
 }
 
+fn version_number(envelope: &ResourceEnvelope) -> u64 {
+    envelope.version_id().as_str().parse::<u64>().unwrap_or_default()
+}
+
 fn next_version(current: &VersionId) -> Result<VersionId, Error> {
     let number = current.as_str().parse::<u64>().map_err(|_| {
         Error::Internal(format!("non-numeric stored version {:?}", current.as_str()))
@@ -157,6 +161,55 @@ impl ResourceStore for MemoryStore {
         }
         matches.sort_by(|a, b| a.id().as_str().cmp(b.id().as_str()));
         Ok(matches)
+    }
+
+    async fn history(
+        &self,
+        scope: &HistoryScope,
+        query: &HistoryQuery,
+    ) -> Result<HistoryPage, Error> {
+        let guard = self
+            .inner
+            .read()
+            .map_err(|_| Error::Internal("store lock poisoned".to_owned()))?;
+        let mut matches: Vec<ResourceEnvelope> = match scope {
+            HistoryScope::Instance(resource_type, id) => {
+                let versions = guard.get(id).ok_or(Error::NotFound)?;
+                if versions.first().is_none_or(|first| first.resource_type() != *resource_type) {
+                    return Err(Error::NotFound);
+                }
+                versions.iter().filter(|entry| query.keeps(entry)).cloned().collect()
+            }
+            HistoryScope::Type(resource_type) => guard
+                .values()
+                .flatten()
+                .filter(|entry| entry.resource_type() == *resource_type && query.keeps(entry))
+                .cloned()
+                .collect(),
+            HistoryScope::System => guard
+                .values()
+                .flatten()
+                .filter(|entry| query.keeps(entry))
+                .cloned()
+                .collect(),
+        };
+        matches.sort_by(|left, right| {
+            left.last_updated()
+                .key()
+                .cmp(&right.last_updated().key())
+                .then_with(|| left.id().as_str().cmp(right.id().as_str()))
+                .then_with(|| version_number(left).cmp(&version_number(right)))
+        });
+        if matches!(query.order, HistoryOrder::Newest) {
+            matches.reverse();
+        }
+        let total = matches.len();
+        let entries = matches.into_iter().skip(query.offset).take(query.count).collect();
+        Ok(HistoryPage {
+            entries,
+            total,
+            offset: query.offset,
+        })
     }
 
     fn health(&self) -> Result<(), Error> {

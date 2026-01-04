@@ -1,6 +1,6 @@
 use fhir_adapter_memory::MemoryStore;
-use fhir_core::{Error, FhirInstant, FhirVersion, ResourceEnvelope, ResourceId, VersionId};
-use fhir_store::ResourceStore;
+use fhir_core::{Error, FhirInstant, FhirVersion, InstantPeriod, ResourceEnvelope, ResourceId, VersionId};
+use fhir_store::{HistoryOrder, HistoryPage, HistoryQuery, HistoryScope, ResourceStore};
 use std::sync::Arc;
 
 fn store() -> MemoryStore {
@@ -329,4 +329,138 @@ async fn purge_history_keeps_the_current_version_only() {
 async fn purge_history_of_an_unknown_id_is_not_found() {
     let store = store();
     assert_eq!(store.purge_history(&id("pt-none")).await.unwrap_err(), Error::NotFound);
+}
+
+fn ticking_store() -> MemoryStore {
+    let tick = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    MemoryStore::with_clock(Arc::new(move || {
+        let second = tick.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        FhirInstant::parse(&format!("2026-09-06T04:00:{second:02}Z")).unwrap()
+    }))
+}
+
+fn observation(id: &str) -> ResourceEnvelope {
+    let bytes = format!(
+        r#"{{"resourceType":"Observation","id":"{id}","meta":{{"versionId":"0","lastUpdated":"2026-09-06T04:00:00Z"}},"status":"final"}}"#
+    )
+    .into_bytes();
+    ResourceEnvelope::parse(FhirVersion::R4, &bytes).unwrap()
+}
+
+fn versions(page: &HistoryPage) -> Vec<String> {
+    page.entries
+        .iter()
+        .map(|entry| format!("{}/{}", entry.id().as_str(), entry.version_id().as_str()))
+        .collect()
+}
+
+async fn seeded() -> MemoryStore {
+    let store = ticking_store();
+    store.create(envelope(FhirVersion::R4, "pt-h1", true)).await.unwrap();
+    store.update(envelope(FhirVersion::R4, "pt-h1", false), None).await.unwrap();
+    store.delete(&id("pt-h1")).await.unwrap();
+    store.create(observation("ob-h1")).await.unwrap();
+    store
+}
+
+#[tokio::test]
+async fn instance_history_is_newest_first_and_keeps_the_delete_marker() {
+    let store = seeded().await;
+    let scope = HistoryScope::Instance("Patient".parse().unwrap(), id("pt-h1"));
+    let page = store.history(&scope, &HistoryQuery::default()).await.unwrap();
+    assert_eq!(versions(&page), ["pt-h1/3", "pt-h1/2", "pt-h1/1"]);
+    assert_eq!(page.total, 3);
+    assert!(page.entries[0].is_deleted());
+}
+
+#[tokio::test]
+async fn oldest_first_reverses_the_order() {
+    let store = seeded().await;
+    let scope = HistoryScope::Instance("Patient".parse().unwrap(), id("pt-h1"));
+    let query = HistoryQuery { order: HistoryOrder::Oldest, ..HistoryQuery::default() };
+    let page = store.history(&scope, &query).await.unwrap();
+    assert_eq!(versions(&page), ["pt-h1/1", "pt-h1/2", "pt-h1/3"]);
+}
+
+#[tokio::test]
+async fn type_scope_covers_one_type_and_system_scope_covers_all() {
+    let store = seeded().await;
+    let typed = store
+        .history(&HistoryScope::Type("Patient".parse().unwrap()), &HistoryQuery::default())
+        .await
+        .unwrap();
+    assert_eq!(typed.total, 3);
+    assert!(typed.entries.iter().all(|entry| entry.id().as_str() == "pt-h1"));
+    let system = store.history(&HistoryScope::System, &HistoryQuery::default()).await.unwrap();
+    assert_eq!(system.total, 4);
+    assert_eq!(versions(&system)[0], "ob-h1/1");
+    let empty = store
+        .history(&HistoryScope::Type("Encounter".parse().unwrap()), &HistoryQuery::default())
+        .await
+        .unwrap();
+    assert_eq!(empty.total, 0);
+    assert!(empty.entries.is_empty());
+}
+
+#[tokio::test]
+async fn time_filters_select_versions_by_write_time() {
+    let store = seeded().await;
+    let since = HistoryQuery {
+        since: Some(InstantPeriod::parse("2026-09-06T04:00:02Z").unwrap()),
+        ..HistoryQuery::default()
+    };
+    assert_eq!(versions(&store.history(&HistoryScope::System, &since).await.unwrap()), ["ob-h1/1", "pt-h1/3"]);
+
+    let before = HistoryQuery {
+        before: Some(InstantPeriod::parse("2026-09-06T04:00:01Z").unwrap()),
+        ..HistoryQuery::default()
+    };
+    assert_eq!(versions(&store.history(&HistoryScope::System, &before).await.unwrap()), ["pt-h1/1"]);
+
+    let at = HistoryQuery {
+        at: Some(InstantPeriod::parse("2026-09-06T04:00:01Z").unwrap()),
+        ..HistoryQuery::default()
+    };
+    assert_eq!(versions(&store.history(&HistoryScope::System, &at).await.unwrap()), ["pt-h1/2"]);
+
+    let day = HistoryQuery {
+        at: Some(InstantPeriod::parse("2026-09-06").unwrap()),
+        ..HistoryQuery::default()
+    };
+    assert_eq!(store.history(&HistoryScope::System, &day).await.unwrap().total, 4);
+}
+
+#[tokio::test]
+async fn paging_reports_the_total_beyond_the_page() {
+    let store = seeded().await;
+    let first = HistoryQuery { count: 2, ..HistoryQuery::default() };
+    let page = store.history(&HistoryScope::System, &first).await.unwrap();
+    assert_eq!(versions(&page), ["ob-h1/1", "pt-h1/3"]);
+    assert_eq!(page.total, 4);
+    assert_eq!(page.offset, 0);
+
+    let second = HistoryQuery { count: 2, offset: 2, ..HistoryQuery::default() };
+    let page = store.history(&HistoryScope::System, &second).await.unwrap();
+    assert_eq!(versions(&page), ["pt-h1/2", "pt-h1/1"]);
+    assert_eq!(page.total, 4);
+    assert_eq!(page.offset, 2);
+
+    let past_end = HistoryQuery { count: 2, offset: 9, ..HistoryQuery::default() };
+    let page = store.history(&HistoryScope::System, &past_end).await.unwrap();
+    assert!(page.entries.is_empty());
+    assert_eq!(page.total, 4);
+
+    let none = HistoryQuery { count: 0, ..HistoryQuery::default() };
+    let page = store.history(&HistoryScope::System, &none).await.unwrap();
+    assert!(page.entries.is_empty());
+    assert_eq!(page.total, 4);
+}
+
+#[tokio::test]
+async fn instance_history_of_an_unknown_id_is_not_found() {
+    let store = seeded().await;
+    let scope = HistoryScope::Instance("Patient".parse().unwrap(), id("pt-none"));
+    assert_eq!(store.history(&scope, &HistoryQuery::default()).await, Err(Error::NotFound));
+    let mismatch = HistoryScope::Instance("Observation".parse().unwrap(), id("pt-h1"));
+    assert_eq!(store.history(&mismatch, &HistoryQuery::default()).await, Err(Error::NotFound));
 }

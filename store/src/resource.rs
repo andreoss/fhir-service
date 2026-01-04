@@ -1,6 +1,8 @@
 use async_trait::async_trait;
 use fhir_core::{Error, ResourceEnvelope, ResourceId, ResourceType, VersionId};
 
+use crate::history::{HistoryPage, HistoryQuery, HistoryScope};
+
 pub type SearchParam = (String, String);
 
 pub type SearchParams = Vec<SearchParam>;
@@ -30,6 +32,12 @@ pub trait ResourceStore: Send + Sync {
     async fn hard_delete(&self, id: &ResourceId) -> Result<(), Error>;
 
     async fn purge_history(&self, id: &ResourceId) -> Result<usize, Error>;
+
+    async fn history(
+        &self,
+        scope: &HistoryScope,
+        query: &HistoryQuery,
+    ) -> Result<HistoryPage, Error>;
 
     fn health(&self) -> Result<(), Error>;
 }
