@@ -237,7 +237,7 @@ fn body_type_mismatch_is_rejected() {
 fn unsupported_method_returns_outcome_405() {
     let (child, port) = spawn_server();
     request(port, "POST", "/Patient", &[], &patient("pt-7", true));
-    let reply = request(port, "DELETE", "/Patient/pt-7", &[], &[]);
+    let reply = request(port, "POST", "/Patient/pt-7", &[], &[]);
     stop(child);
     assert_eq!(reply.status, 405);
     assert_eq!(issue_code(&reply.body), "not-allowed");
@@ -284,4 +284,50 @@ fn conditional_update_with_many_matches_is_precondition_failed() {
     stop(child);
     assert_eq!(reply.status, 412, "body was {}", reply.body);
     assert_eq!(issue_code(&reply.body), "multiple-matches");
+}
+
+#[test]
+fn delete_then_read_reports_the_resource_as_gone() {
+    let (child, port) = spawn_server();
+    request(port, "POST", "/Patient", &[], &patient("pt-d1", true));
+    let deleted = request(port, "DELETE", "/Patient/pt-d1", &[], &[]);
+    let read = request(port, "GET", "/Patient/pt-d1", &[], &[]);
+    let old = request(port, "GET", "/Patient/pt-d1/_history/1", &[], &[]);
+    stop(child);
+    assert_eq!(deleted.status, 204, "delete failed: {}", deleted.body);
+    assert_eq!(header(&deleted, "etag"), "W/\"2\"");
+    assert_eq!(read.status, 410, "read said {}", read.body);
+    assert_eq!(issue_code(&read.body), "deleted");
+    assert_eq!(old.status, 200, "earlier version must stay readable");
+}
+
+#[test]
+fn hard_delete_and_purge_history_remove_versions() {
+    let (child, port) = spawn_server();
+    request(port, "POST", "/Patient", &[], &patient("pt-d2", true));
+    request(port, "PUT", "/Patient/pt-d2", &[], &patient("pt-d2", false));
+    let purged = request(port, "POST", "/Patient/pt-d2/$purge-history", &[], &[]);
+    let gone = request(port, "GET", "/Patient/pt-d2/_history/1", &[], &[]);
+    let hard = request(port, "DELETE", "/Patient/pt-d2?_hardDelete=true", &[], &[]);
+    let after = request(port, "GET", "/Patient/pt-d2", &[], &[]);
+    stop(child);
+    assert_eq!(purged.status, 200, "purge failed: {}", purged.body);
+    let value: serde_json::Value = serde_json::from_str(&purged.body).unwrap();
+    assert_eq!(value["parameter"][0]["valueInteger"], 1);
+    assert_eq!(gone.status, 404);
+    assert_eq!(hard.status, 204);
+    assert_eq!(after.status, 404);
+}
+
+#[test]
+fn conditional_delete_removes_the_single_match() {
+    let (child, port) = spawn_server();
+    request(port, "POST", "/Patient", &[], &patient("pt-d3", true));
+    let deleted = request(port, "DELETE", "/Patient?_id=pt-d3", &[], &[]);
+    let read = request(port, "GET", "/Patient/pt-d3", &[], &[]);
+    let again = request(port, "DELETE", "/Patient?_id=pt-none", &[], &[]);
+    stop(child);
+    assert_eq!(deleted.status, 204, "conditional delete failed: {}", deleted.body);
+    assert_eq!(read.status, 410);
+    assert_eq!(again.status, 404);
 }

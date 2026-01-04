@@ -9,10 +9,11 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use crate::app::AppState;
-use crate::query::conditional_params;
+use crate::query::{conditional_params, param};
 
 const FHIR_JSON: &str = "application/fhir+json";
 const IF_NONE_EXIST: &str = "if-none-exist";
+const HARD_DELETE: &str = "_hardDelete";
 const PLACEHOLDER_VERSION: &str = "0";
 const PLACEHOLDER_INSTANT: &str = "1970-01-01T00:00:00Z";
 
@@ -48,6 +49,9 @@ pub async fn read(
     if envelope.resource_type() != resource_type {
         return Err(Error::NotFound.into());
     }
+    if envelope.is_deleted() {
+        return Err(Error::Deleted.into());
+    }
     Ok(respond_resource(&envelope, host_from(&headers)))
 }
 
@@ -62,6 +66,9 @@ pub async fn vread(
     let envelope = state.store.vread(&id, &version).await?;
     if envelope.resource_type() != resource_type {
         return Err(Error::NotFound.into());
+    }
+    if envelope.is_deleted() {
+        return Err(Error::Deleted.into());
     }
     Ok(respond_resource(&envelope, host_from(&headers)))
 }
@@ -130,6 +137,56 @@ pub async fn update(
     Ok(respond_updated(&stored, host_from(&headers)))
 }
 
+pub async fn delete_instance(
+    State(state): State<AppState>,
+    Path((type_name, id_text)): Path<(String, String)>,
+    RawQuery(query): RawQuery,
+) -> Result<Response, AppError> {
+    let resource_type = type_name.parse::<ResourceType>()?;
+    let id = id_text.parse::<ResourceId>()?;
+    let current = state.store.read(&id).await?;
+    if current.resource_type() != resource_type {
+        return Err(Error::NotFound.into());
+    }
+    remove(&state, &id, hard_delete(query.as_deref())).await
+}
+
+pub async fn conditional_delete(
+    State(state): State<AppState>,
+    Path(type_name): Path<String>,
+    RawQuery(query): RawQuery,
+) -> Result<Response, AppError> {
+    let resource_type = type_name.parse::<ResourceType>()?;
+    let params = require_condition(conditional_params(query.as_deref()), "conditional delete")?;
+    match single_match(&state, resource_type, &params).await? {
+        Some(existing) => remove(&state, existing.id(), hard_delete(query.as_deref())).await,
+        None => Err(Error::NotFound.into()),
+    }
+}
+
+pub async fn purge_history(
+    State(state): State<AppState>,
+    Path((type_name, id_text)): Path<(String, String)>,
+) -> Result<Response, AppError> {
+    let resource_type = type_name.parse::<ResourceType>()?;
+    let id = id_text.parse::<ResourceId>()?;
+    let current = state.store.read(&id).await?;
+    if current.resource_type() != resource_type {
+        return Err(Error::NotFound.into());
+    }
+    let purged = state.store.purge_history(&id).await?;
+    let body = serde_json::json!({
+        "resourceType": "Parameters",
+        "parameter": [{ "name": "versionsPurged", "valueInteger": purged }],
+    });
+    Ok((
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, FHIR_JSON)],
+        serde_json::to_vec(&body).expect("parameters payload is serializable"),
+    )
+        .into_response())
+}
+
 pub async fn health(State(state): State<AppState>) -> Response {
     let mut any_failure = false;
     let dependencies: Vec<Value> = state
@@ -161,6 +218,33 @@ pub async fn not_found() -> Result<Response, AppError> {
 
 pub async fn method_not_allowed() -> Result<Response, AppError> {
     Err(Error::MethodNotAllowed.into())
+}
+
+async fn remove(state: &AppState, id: &ResourceId, hard: bool) -> Result<Response, AppError> {
+    if hard {
+        state.store.hard_delete(id).await?;
+        return Ok(no_content(None));
+    }
+    match state.store.delete(id).await {
+        Ok(marker) => Ok(no_content(Some(&marker))),
+        Err(Error::Deleted) => Ok(no_content(None)),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn hard_delete(query: Option<&str>) -> bool {
+    param(query, HARD_DELETE).is_some_and(|value| value.eq_ignore_ascii_case("true"))
+}
+
+fn no_content(marker: Option<&ResourceEnvelope>) -> Response {
+    let mut response = Response::new(Body::empty());
+    *response.status_mut() = StatusCode::NO_CONTENT;
+    if let Some(marker) = marker {
+        response
+            .headers_mut()
+            .insert(header::ETAG, HeaderValue::from_str(&etag(marker)).expect("etag is a header value"));
+    }
+    response
 }
 
 fn require_condition(params: SearchParams, what: &str) -> Result<SearchParams, Error> {

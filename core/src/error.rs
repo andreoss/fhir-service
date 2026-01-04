@@ -148,7 +148,7 @@ mod tests {
 
     #[test]
     fn deleted_maps_to_gone() {
-        assert_eq!(Error::Deleted.http_status(), 404);
+        assert_eq!(Error::Deleted.http_status(), 410);
         assert_eq!(Error::Deleted.to_operation_outcome().code, IssueCode::Deleted);
     }
 

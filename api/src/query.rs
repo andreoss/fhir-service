@@ -1,6 +1,7 @@
 use fhir_store::SearchParams;
 
-const RESULT_CONTROL: [&str; 8] = [
+const CONTROL: [&str; 9] = [
+    "_hardDelete",
     "_format",
     "_pretty",
     "_summary",
@@ -18,7 +19,7 @@ pub fn conditional_params(raw: Option<&str>) -> SearchParams {
         .filter_map(|pair| {
             let (name, value) = pair.split_once('=')?;
             let name = decode(name);
-            if RESULT_CONTROL.contains(&name.as_str()) {
+            if CONTROL.contains(&name.as_str()) {
                 return None;
             }
             Some((name, decode(value)))

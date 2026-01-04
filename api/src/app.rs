@@ -1,4 +1,4 @@
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::Router;
 use fhir_core::{Error, FhirVersion};
 use fhir_store::ResourceStore;
@@ -7,7 +7,8 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 
 use crate::handlers::{
-    conditional_update, create, health, method_not_allowed, not_found, read, update, vread,
+    conditional_delete, conditional_update, create, delete_instance, health, method_not_allowed,
+    not_found, purge_history, read, update, vread,
 };
 
 #[derive(Clone)]
@@ -46,9 +47,10 @@ impl Service {
     pub fn router(&self) -> Router<()> {
         Router::new()
             .route("/health", get(health))
-            .route("/{type}/{id}", get(read).put(update))
+            .route("/{type}/{id}", get(read).put(update).delete(delete_instance))
             .route("/{type}/{id}/_history/{vid}", get(vread))
-            .route("/{type}", post(create).put(conditional_update))
+            .route("/{type}", post(create).put(conditional_update).delete(conditional_delete))
+            .route("/{type}/{id}/$purge-history", post(purge_history))
             .fallback(not_found)
             .method_not_allowed_fallback(method_not_allowed)
             .with_state(self.state.clone())

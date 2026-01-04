@@ -316,7 +316,7 @@ async fn unknown_route_returns_outcome_404() {
 #[tokio::test]
 async fn unsupported_method_returns_outcome_405() {
     let app = service();
-    let reply = request(&app, "DELETE", "/Patient/pt-x", &[], &[]).await;
+    let reply = request(&app, "POST", "/Patient/pt-x", &[], &[]).await;
     assert_eq!(reply.status, StatusCode::METHOD_NOT_ALLOWED);
     let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
     assert_eq!(value["resourceType"], "OperationOutcome");
@@ -340,6 +340,15 @@ impl ResourceStore for FailingStore {
         Err(Error::Internal("boom".to_owned()))
     }
     async fn search(&self, _: Option<ResourceType>, _: &SearchParams) -> Result<Vec<ResourceEnvelope>, Error> {
+        Err(Error::Internal("boom".to_owned()))
+    }
+    async fn delete(&self, _: &ResourceId) -> Result<ResourceEnvelope, Error> {
+        Err(Error::Internal("boom".to_owned()))
+    }
+    async fn hard_delete(&self, _: &ResourceId) -> Result<(), Error> {
+        Err(Error::Internal("boom".to_owned()))
+    }
+    async fn purge_history(&self, _: &ResourceId) -> Result<usize, Error> {
         Err(Error::Internal("boom".to_owned()))
     }
     fn health(&self) -> Result<(), Error> {
@@ -541,4 +550,147 @@ async fn conditional_parameters_are_percent_decoded() {
     request(&app, "POST", "/Patient", &[], &body).await;
     let reply = request(&app, "PUT", "/Patient?identifier=a%20b", &[], &body).await;
     assert_eq!(reply.status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn delete_marks_the_resource_and_reports_the_new_version() {
+    let app = service();
+    request(&app, "POST", "/Patient", &[], &patient("pt-d1", true)).await;
+    let reply = request(&app, "DELETE", "/Patient/pt-d1", &[], &[]).await;
+    assert_eq!(reply.status, StatusCode::NO_CONTENT);
+    assert_eq!(header(&reply, "etag"), "W/\"2\"");
+    assert!(reply.body.is_empty());
+}
+
+#[tokio::test]
+async fn reading_a_deleted_resource_is_410_with_outcome() {
+    let app = service();
+    request(&app, "POST", "/Patient", &[], &patient("pt-d2", true)).await;
+    request(&app, "DELETE", "/Patient/pt-d2", &[], &[]).await;
+    let reply = request(&app, "GET", "/Patient/pt-d2", &[], &[]).await;
+    assert_eq!(reply.status, StatusCode::GONE);
+    let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
+    assert_eq!(value["issue"][0]["code"], "deleted");
+}
+
+#[tokio::test]
+async fn earlier_versions_stay_readable_after_a_delete() {
+    let app = service();
+    request(&app, "POST", "/Patient", &[], &patient("pt-d3", true)).await;
+    request(&app, "DELETE", "/Patient/pt-d3", &[], &[]).await;
+    let live = request(&app, "GET", "/Patient/pt-d3/_history/1", &[], &[]).await;
+    assert_eq!(live.status, StatusCode::OK);
+    let marker = request(&app, "GET", "/Patient/pt-d3/_history/2", &[], &[]).await;
+    assert_eq!(marker.status, StatusCode::GONE);
+}
+
+#[tokio::test]
+async fn deleting_twice_stays_no_content() {
+    let app = service();
+    request(&app, "POST", "/Patient", &[], &patient("pt-d4", true)).await;
+    request(&app, "DELETE", "/Patient/pt-d4", &[], &[]).await;
+    let reply = request(&app, "DELETE", "/Patient/pt-d4", &[], &[]).await;
+    assert_eq!(reply.status, StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn deleting_an_unknown_resource_is_404() {
+    let app = service();
+    let reply = request(&app, "DELETE", "/Patient/pt-none", &[], &[]).await;
+    assert_eq!(reply.status, StatusCode::NOT_FOUND);
+    let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
+    assert_eq!(value["issue"][0]["code"], "not-found");
+}
+
+#[tokio::test]
+async fn a_deleted_resource_is_restored_by_an_update() {
+    let app = service();
+    request(&app, "POST", "/Patient", &[], &patient("pt-d5", true)).await;
+    request(&app, "DELETE", "/Patient/pt-d5", &[], &[]).await;
+    let reply = request(&app, "PUT", "/Patient/pt-d5", &[], &patient("pt-d5", false)).await;
+    assert_eq!(reply.status, StatusCode::OK);
+    assert_eq!(header(&reply, "etag"), "W/\"3\"");
+    let read = request(&app, "GET", "/Patient/pt-d5", &[], &[]).await;
+    assert_eq!(read.status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn hard_delete_removes_the_history_too() {
+    let app = service();
+    request(&app, "POST", "/Patient", &[], &patient("pt-d6", true)).await;
+    let reply = request(&app, "DELETE", "/Patient/pt-d6?_hardDelete=true", &[], &[]).await;
+    assert_eq!(reply.status, StatusCode::NO_CONTENT);
+    let read = request(&app, "GET", "/Patient/pt-d6", &[], &[]).await;
+    assert_eq!(read.status, StatusCode::NOT_FOUND);
+    let old = request(&app, "GET", "/Patient/pt-d6/_history/1", &[], &[]).await;
+    assert_eq!(old.status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn purge_history_keeps_the_current_version() {
+    let app = service();
+    request(&app, "POST", "/Patient", &[], &patient("pt-d7", true)).await;
+    request(&app, "PUT", "/Patient/pt-d7", &[], &patient("pt-d7", false)).await;
+    let reply = request(&app, "POST", "/Patient/pt-d7/$purge-history", &[], &[]).await;
+    assert_eq!(reply.status, StatusCode::OK);
+    let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
+    assert_eq!(value["resourceType"], "Parameters");
+    assert_eq!(value["parameter"][0]["name"], "versionsPurged");
+    assert_eq!(value["parameter"][0]["valueInteger"], 1);
+    let current = request(&app, "GET", "/Patient/pt-d7", &[], &[]).await;
+    assert_eq!(current.status, StatusCode::OK);
+    let purged = request(&app, "GET", "/Patient/pt-d7/_history/1", &[], &[]).await;
+    assert_eq!(purged.status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn purge_history_of_an_unknown_resource_is_404() {
+    let app = service();
+    let reply = request(&app, "POST", "/Patient/pt-none/$purge-history", &[], &[]).await;
+    assert_eq!(reply.status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn conditional_delete_with_one_match_deletes_it() {
+    let app = service();
+    request(&app, "POST", "/Patient", &[], &patient("pt-d8", true)).await;
+    let reply = request(&app, "DELETE", "/Patient?_id=pt-d8", &[], &[]).await;
+    assert_eq!(reply.status, StatusCode::NO_CONTENT);
+    let read = request(&app, "GET", "/Patient/pt-d8", &[], &[]).await;
+    assert_eq!(read.status, StatusCode::GONE);
+}
+
+#[tokio::test]
+async fn conditional_delete_without_a_match_is_404() {
+    let app = service();
+    let reply = request(&app, "DELETE", "/Patient?_id=pt-none", &[], &[]).await;
+    assert_eq!(reply.status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn conditional_delete_with_many_matches_is_412() {
+    let app = service();
+    request(&app, "POST", "/Patient", &[], &patient("pt-d9", true)).await;
+    request(&app, "POST", "/Patient", &[], &patient("pt-da", true)).await;
+    let reply = request(&app, "DELETE", "/Patient?active=true", &[], &[]).await;
+    assert_eq!(reply.status, StatusCode::PRECONDITION_FAILED);
+    let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
+    assert_eq!(value["issue"][0]["code"], "multiple-matches");
+}
+
+#[tokio::test]
+async fn conditional_delete_without_parameters_is_rejected() {
+    let app = service();
+    let reply = request(&app, "DELETE", "/Patient", &[], &[]).await;
+    assert_eq!(reply.status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn conditional_hard_delete_removes_the_history() {
+    let app = service();
+    request(&app, "POST", "/Patient", &[], &patient("pt-db", true)).await;
+    let reply = request(&app, "DELETE", "/Patient?_id=pt-db&_hardDelete=true", &[], &[]).await;
+    assert_eq!(reply.status, StatusCode::NO_CONTENT);
+    let old = request(&app, "GET", "/Patient/pt-db/_history/1", &[], &[]).await;
+    assert_eq!(old.status, StatusCode::NOT_FOUND);
 }

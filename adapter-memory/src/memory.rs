@@ -145,6 +145,9 @@ impl ResourceStore for MemoryStore {
         let mut matches = Vec::new();
         for versions in guard.values() {
             let Some(current) = versions.last() else { continue };
+            if current.is_deleted() {
+                continue;
+            }
             if resource_type.is_some_and(|wanted| current.resource_type() != wanted) {
                 continue;
             }
@@ -192,11 +195,56 @@ impl ResourceStore for MemoryStore {
                 envelope.resource_type().as_str()
             )));
         }
-        if envelope.content_eq(&current) {
+        if !current.is_deleted() && envelope.content_eq(&current) {
             return Ok(current);
         }
         let stored = envelope.stored_with(next_version(current.version_id())?, (self.clock)())?;
         versions.push(stored.clone());
         Ok(stored)
+    }
+
+    async fn delete(&self, id: &ResourceId) -> Result<ResourceEnvelope, Error> {
+        let mut guard = self
+            .inner
+            .write()
+            .map_err(|_| Error::Internal("store lock poisoned".to_owned()))?;
+        let versions = guard.get_mut(id).ok_or(Error::NotFound)?;
+        let current = versions.last().ok_or(Error::NotFound)?.clone();
+        if current.is_deleted() {
+            return Err(Error::Deleted);
+        }
+        let marker = ResourceEnvelope::deleted_marker(
+            current.version(),
+            current.resource_type(),
+            id.clone(),
+            next_version(current.version_id())?,
+            (self.clock)(),
+        );
+        versions.push(marker.clone());
+        Ok(marker)
+    }
+
+    async fn hard_delete(&self, id: &ResourceId) -> Result<(), Error> {
+        let mut guard = self
+            .inner
+            .write()
+            .map_err(|_| Error::Internal("store lock poisoned".to_owned()))?;
+        match guard.remove(id) {
+            Some(_) => Ok(()),
+            None => Err(Error::NotFound),
+        }
+    }
+
+    async fn purge_history(&self, id: &ResourceId) -> Result<usize, Error> {
+        let mut guard = self
+            .inner
+            .write()
+            .map_err(|_| Error::Internal("store lock poisoned".to_owned()))?;
+        let versions = guard.get_mut(id).ok_or(Error::NotFound)?;
+        let purged = versions.len().saturating_sub(1);
+        if let Some(current) = versions.last().cloned() {
+            *versions = vec![current];
+        }
+        Ok(purged)
     }
 }

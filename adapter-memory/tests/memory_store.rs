@@ -242,3 +242,91 @@ async fn search_sees_the_current_version_only() {
     let params = vec![("active".to_owned(), "false".to_owned())];
     assert_eq!(store.search(None, &params).await.unwrap().len(), 1);
 }
+
+#[tokio::test]
+async fn delete_appends_a_marker_version() {
+    let store = store();
+    store.create(envelope(FhirVersion::R4, "pt-d1", true)).await.unwrap();
+    let marker = store.delete(&id("pt-d1")).await.unwrap();
+    assert!(marker.is_deleted());
+    assert_eq!(marker.version_id().as_str(), "2");
+    let current = store.read(&id("pt-d1")).await.unwrap();
+    assert!(current.is_deleted());
+}
+
+#[tokio::test]
+async fn delete_leaves_earlier_versions_readable() {
+    let store = store();
+    store.create(envelope(FhirVersion::R4, "pt-d2", true)).await.unwrap();
+    store.delete(&id("pt-d2")).await.unwrap();
+    let first = store.vread(&id("pt-d2"), &version("1")).await.unwrap();
+    assert!(!first.is_deleted());
+    assert_eq!(first.version_id().as_str(), "1");
+}
+
+#[tokio::test]
+async fn delete_of_an_unknown_id_is_not_found() {
+    let store = store();
+    assert_eq!(store.delete(&id("pt-none")).await.unwrap_err(), Error::NotFound);
+}
+
+#[tokio::test]
+async fn deleting_twice_reports_the_resource_as_deleted() {
+    let store = store();
+    store.create(envelope(FhirVersion::R4, "pt-d3", true)).await.unwrap();
+    store.delete(&id("pt-d3")).await.unwrap();
+    assert_eq!(store.delete(&id("pt-d3")).await.unwrap_err(), Error::Deleted);
+}
+
+#[tokio::test]
+async fn a_deleted_resource_is_invisible_to_search() {
+    let store = store();
+    store.create(envelope(FhirVersion::R4, "pt-d4", true)).await.unwrap();
+    store.delete(&id("pt-d4")).await.unwrap();
+    assert!(store.search(None, &Vec::new()).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn updating_a_deleted_resource_restores_it() {
+    let store = store();
+    store.create(envelope(FhirVersion::R4, "pt-d5", true)).await.unwrap();
+    store.delete(&id("pt-d5")).await.unwrap();
+    let restored = store.update(envelope(FhirVersion::R4, "pt-d5", true), None).await.unwrap();
+    assert!(!restored.is_deleted());
+    assert_eq!(restored.version_id().as_str(), "3");
+    assert_eq!(store.search(None, &Vec::new()).await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn hard_delete_removes_every_version() {
+    let store = store();
+    store.create(envelope(FhirVersion::R4, "pt-d6", true)).await.unwrap();
+    store.update(envelope(FhirVersion::R4, "pt-d6", false), None).await.unwrap();
+    store.hard_delete(&id("pt-d6")).await.unwrap();
+    assert_eq!(store.read(&id("pt-d6")).await.unwrap_err(), Error::NotFound);
+    assert_eq!(store.vread(&id("pt-d6"), &version("1")).await.unwrap_err(), Error::NotFound);
+}
+
+#[tokio::test]
+async fn hard_delete_of_an_unknown_id_is_not_found() {
+    let store = store();
+    assert_eq!(store.hard_delete(&id("pt-none")).await.unwrap_err(), Error::NotFound);
+}
+
+#[tokio::test]
+async fn purge_history_keeps_the_current_version_only() {
+    let store = store();
+    store.create(envelope(FhirVersion::R4, "pt-d7", true)).await.unwrap();
+    store.update(envelope(FhirVersion::R4, "pt-d7", false), None).await.unwrap();
+    let purged = store.purge_history(&id("pt-d7")).await.unwrap();
+    assert_eq!(purged, 1);
+    assert_eq!(store.read(&id("pt-d7")).await.unwrap().version_id().as_str(), "2");
+    assert_eq!(store.vread(&id("pt-d7"), &version("1")).await.unwrap_err(), Error::NotFound);
+    assert_eq!(store.purge_history(&id("pt-d7")).await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn purge_history_of_an_unknown_id_is_not_found() {
+    let store = store();
+    assert_eq!(store.purge_history(&id("pt-none")).await.unwrap_err(), Error::NotFound);
+}

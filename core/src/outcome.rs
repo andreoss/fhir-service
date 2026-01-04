@@ -54,7 +54,8 @@ impl IssueCode {
     pub fn http_status(&self) -> u16 {
         match self {
             IssueCode::Invalid | IssueCode::NotSupported => 400,
-            IssueCode::NotFound | IssueCode::Deleted => 404,
+            IssueCode::NotFound => 404,
+            IssueCode::Deleted => 410,
             IssueCode::Conflict | IssueCode::Duplicate => 409,
             IssueCode::Forbidden => 403,
             IssueCode::NotAllowed => 405,
@@ -134,9 +135,9 @@ mod tests {
         assert_eq!(IssueCode::Invalid.http_status(), 400);
         assert_eq!(IssueCode::NotSupported.http_status(), 400);
         assert_eq!(IssueCode::NotFound.http_status(), 404);
-        assert_eq!(IssueCode::Deleted.http_status(), 404);
         assert_eq!(IssueCode::Conflict.http_status(), 409);
         assert_eq!(IssueCode::Forbidden.http_status(), 403);
+        assert_eq!(IssueCode::Deleted.http_status(), 410);
         assert_eq!(IssueCode::Processing.http_status(), 500);
         assert_eq!(IssueCode::MultipleMatches.http_status(), 412);
     }

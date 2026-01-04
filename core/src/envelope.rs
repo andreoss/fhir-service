@@ -8,6 +8,7 @@ pub struct ResourceEnvelope {
     version_id: VersionId,
     last_updated: FhirInstant,
     raw: Vec<u8>,
+    deleted: bool,
 }
 
 impl ResourceEnvelope {
@@ -49,6 +50,7 @@ impl ResourceEnvelope {
             version_id,
             last_updated,
             raw: bytes.to_vec(),
+            deleted: false,
         })
     }
 
@@ -66,9 +68,23 @@ impl ResourceEnvelope {
             version_id,
             last_updated,
             raw: Vec::new(),
+            deleted: false,
         };
         let raw = envelope.render_metadata();
         ResourceEnvelope { raw, ..envelope }
+    }
+
+    pub fn deleted_marker(
+        version: FhirVersion,
+        resource_type: ResourceType,
+        id: ResourceId,
+        version_id: VersionId,
+        last_updated: FhirInstant,
+    ) -> ResourceEnvelope {
+        ResourceEnvelope {
+            deleted: true,
+            ..ResourceEnvelope::from_metadata(version, resource_type, id, version_id, last_updated)
+        }
     }
 
     pub fn version(&self) -> FhirVersion {
@@ -89,6 +105,10 @@ impl ResourceEnvelope {
 
     pub fn last_updated(&self) -> &FhirInstant {
         &self.last_updated
+    }
+
+    pub fn is_deleted(&self) -> bool {
+        self.deleted
     }
 
     pub fn raw(&self) -> &[u8] {
@@ -115,7 +135,10 @@ impl ResourceEnvelope {
         meta.insert("versionId".to_owned(), serde_json::Value::String(version_id.as_str().to_owned()));
         meta.insert("lastUpdated".to_owned(), serde_json::Value::String(last_updated.as_str().to_owned()));
         let bytes = serde_json::to_vec(&value).map_err(|e| Error::InvalidJson(e.to_string()))?;
-        ResourceEnvelope::parse(self.version, &bytes)
+        Ok(ResourceEnvelope {
+            deleted: self.deleted,
+            ..ResourceEnvelope::parse(self.version, &bytes)?
+        })
     }
 
     pub fn content_eq(&self, other: &ResourceEnvelope) -> bool {
@@ -379,5 +402,51 @@ mod tests {
             "resourceType": "Patient"
         }"#).unwrap();
         assert!(a.content_eq(&b));
+    }
+
+    #[test]
+    fn a_delete_marker_carries_metadata_only() {
+        let marker = ResourceEnvelope::deleted_marker(
+            FhirVersion::R4,
+            "Patient".parse().unwrap(),
+            ResourceId::parse("pt-1").unwrap(),
+            VersionId::parse("2").unwrap(),
+            FhirInstant::parse("2026-09-06T05:00:00Z").unwrap(),
+        );
+        assert!(marker.is_deleted());
+        assert_eq!(marker.version_id().as_str(), "2");
+        assert_eq!(marker.resource_type().as_str(), "Patient");
+        let value: serde_json::Value = serde_json::from_slice(marker.raw()).unwrap();
+        assert_eq!(value["id"], "pt-1");
+        assert!(!value.as_object().unwrap().contains_key("active"));
+    }
+
+    #[test]
+    fn a_parsed_envelope_is_not_deleted() {
+        let envelope = ResourceEnvelope::parse(
+            FhirVersion::R4,
+            br#"{"resourceType":"Patient","id":"pt-2","meta":{"versionId":"1","lastUpdated":"2026-09-06T04:00:00Z"}}"#,
+        )
+        .unwrap();
+        assert!(!envelope.is_deleted());
+    }
+
+    #[test]
+    fn storing_a_marker_again_keeps_it_deleted() {
+        let marker = ResourceEnvelope::deleted_marker(
+            FhirVersion::R4,
+            "Patient".parse().unwrap(),
+            ResourceId::parse("pt-3").unwrap(),
+            VersionId::parse("1").unwrap(),
+            FhirInstant::parse("2026-09-06T04:00:00Z").unwrap(),
+        );
+        let stored = marker
+            .stored_with(
+                VersionId::parse("2").unwrap(),
+                FhirInstant::parse("2026-09-06T05:00:00Z").unwrap(),
+            )
+            .unwrap();
+        assert!(stored.is_deleted());
+        assert_eq!(stored.version_id().as_str(), "2");
     }
 }

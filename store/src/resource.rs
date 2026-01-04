@@ -25,5 +25,11 @@ pub trait ResourceStore: Send + Sync {
         params: &SearchParams,
     ) -> Result<Vec<ResourceEnvelope>, Error>;
 
+    async fn delete(&self, id: &ResourceId) -> Result<ResourceEnvelope, Error>;
+
+    async fn hard_delete(&self, id: &ResourceId) -> Result<(), Error>;
+
+    async fn purge_history(&self, id: &ResourceId) -> Result<usize, Error>;
+
     fn health(&self) -> Result<(), Error>;
 }
