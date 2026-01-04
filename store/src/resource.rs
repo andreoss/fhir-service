@@ -1,7 +1,8 @@
 use async_trait::async_trait;
-use fhir_core::{Error, ResourceEnvelope, ResourceId, ResourceType, VersionId};
+use fhir_core::{Error, ResourceEnvelope, ResourceId, VersionId};
 
 use crate::history::{HistoryPage, HistoryQuery, HistoryScope};
+use crate::search::{SearchPage, SearchQuery};
 
 pub type SearchParam = (String, String);
 
@@ -21,11 +22,7 @@ pub trait ResourceStore: Send + Sync {
         expected_version: Option<&VersionId>,
     ) -> Result<ResourceEnvelope, Error>;
 
-    async fn search(
-        &self,
-        resource_type: Option<ResourceType>,
-        params: &SearchParams,
-    ) -> Result<Vec<ResourceEnvelope>, Error>;
+    async fn search(&self, query: &SearchQuery) -> Result<SearchPage, Error>;
 
     async fn delete(&self, id: &ResourceId) -> Result<ResourceEnvelope, Error>;
 

@@ -32,7 +32,30 @@ impl FhirInstant {
     }
 }
 
+impl InstantKey {
+    pub fn shifted(&self, seconds: i64) -> Option<InstantKey> {
+        Some(InstantKey {
+            seconds: self.seconds.checked_add(seconds)?,
+            nanos: self.nanos,
+        })
+    }
+}
+
 impl InstantPeriod {
+    pub fn between(low: InstantKey, high: InstantKey) -> Option<InstantPeriod> {
+        if low > high {
+            return None;
+        }
+        Some(InstantPeriod { low, high })
+    }
+
+    pub fn widened(&self, seconds: i64) -> Option<InstantPeriod> {
+        Some(InstantPeriod {
+            low: self.low.shifted(-seconds)?,
+            high: self.high.shifted(seconds)?,
+        })
+    }
+
     pub fn parse(value: &str) -> Result<InstantPeriod, Error> {
         period_of(value).map_err(|_| Error::InvalidInstant(value.to_owned()))
     }

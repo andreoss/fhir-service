@@ -1,29 +1,9 @@
-use fhir_store::SearchParams;
-
-const CONTROL: [&str; 9] = [
-    "_hardDelete",
-    "_format",
-    "_pretty",
-    "_summary",
-    "_count",
-    "_sort",
-    "_elements",
-    "_total",
-    "ct",
-];
-
-pub fn conditional_params(raw: Option<&str>) -> SearchParams {
+pub fn pairs(raw: Option<&str>) -> Vec<(String, String)> {
     let Some(raw) = raw else { return Vec::new() };
     raw.split('&')
         .filter(|pair| !pair.is_empty())
-        .filter_map(|pair| {
-            let (name, value) = pair.split_once('=')?;
-            let name = decode(name);
-            if CONTROL.contains(&name.as_str()) {
-                return None;
-            }
-            Some((name, decode(value)))
-        })
+        .filter_map(|pair| pair.split_once('='))
+        .map(|(name, value)| (decode(name), decode(value)))
         .collect()
 }
 
@@ -77,26 +57,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn empty_query_has_no_parameters() {
-        assert!(conditional_params(None).is_empty());
-        assert!(conditional_params(Some("")).is_empty());
-    }
-
-    #[test]
-    fn result_control_parameters_are_dropped() {
-        assert!(conditional_params(Some("_format=json&_count=10&ct=abc")).is_empty());
+    fn an_empty_query_has_no_pairs() {
+        assert!(pairs(None).is_empty());
+        assert!(pairs(Some("")).is_empty());
     }
 
     #[test]
     fn pairs_are_percent_decoded() {
-        let params = conditional_params(Some("name=de%20la%20Cruz&given=a+b"));
+        let params = pairs(Some("name=de%20la%20Cruz&given=a+b"));
         assert_eq!(params[0], ("name".to_owned(), "de la Cruz".to_owned()));
         assert_eq!(params[1], ("given".to_owned(), "a b".to_owned()));
     }
 
     #[test]
     fn a_malformed_escape_is_kept_verbatim() {
-        let params = conditional_params(Some("name=100%"));
+        let params = pairs(Some("name=100%"));
         assert_eq!(params[0].1, "100%");
     }
 

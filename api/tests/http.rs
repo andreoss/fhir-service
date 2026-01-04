@@ -3,8 +3,8 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use fhir_adapter_memory::MemoryStore;
 use fhir_api::{Dependency, Service};
-use fhir_core::{Error, FhirInstant, FhirVersion, ResourceEnvelope, ResourceId, ResourceType, VersionId};
-use fhir_store::{HistoryPage, HistoryQuery, HistoryScope, ResourceStore, SearchParams};
+use fhir_core::{Error, FhirInstant, FhirVersion, ResourceEnvelope, ResourceId, VersionId};
+use fhir_store::{HistoryPage, HistoryQuery, HistoryScope, ResourceStore, SearchPage, SearchQuery};
 use http_body_util::BodyExt;
 use std::sync::Arc;
 use tower::ServiceExt;
@@ -339,7 +339,7 @@ impl ResourceStore for FailingStore {
     async fn update(&self, _: ResourceEnvelope, _: Option<&VersionId>) -> Result<ResourceEnvelope, Error> {
         Err(Error::Internal("boom".to_owned()))
     }
-    async fn search(&self, _: Option<ResourceType>, _: &SearchParams) -> Result<Vec<ResourceEnvelope>, Error> {
+    async fn search(&self, _: &SearchQuery) -> Result<SearchPage, Error> {
         Err(Error::Internal("boom".to_owned()))
     }
     async fn delete(&self, _: &ResourceId) -> Result<ResourceEnvelope, Error> {
@@ -1025,4 +1025,116 @@ async fn history_of_an_unknown_instance_or_type_fails() {
     assert_eq!(unknown.status, StatusCode::NOT_FOUND);
     let bad_type = request(&app, "GET", "/Nope/_history", &[], &[]).await;
     assert_eq!(bad_type.status, StatusCode::BAD_REQUEST);
+}
+
+fn tagged(id: &str, tag: &str) -> Vec<u8> {
+    format!(
+        r#"{{"resourceType":"Patient","id":"{id}","meta":{{"tag":[{{"system":"urn:t","code":"{tag}"}}],"profile":["http://x/vip"],"security":[{{"system":"urn:s","code":"R"}}]}},"active":true}}"#
+    )
+    .into_bytes()
+}
+
+fn entries(value: &serde_json::Value) -> Vec<String> {
+    value["entry"]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .map(|item| item["resource"]["id"].as_str().unwrap_or_default().to_owned())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+async fn seeded() -> Service {
+    let app = service();
+    request(&app, "POST", "/Patient", &[], &tagged("pt-s1", "gold")).await;
+    request(&app, "POST", "/Patient", &[], &tagged("pt-s2", "silver")).await;
+    request(&app, "POST", "/Patient", &[], &patient("pt-s3", false)).await;
+    let list = br#"{"resourceType":"List","id":"ls-1","status":"current","mode":"working","entry":[{"item":{"reference":"Patient/pt-s2"}}]}"#;
+    request(&app, "POST", "/List", &[], list).await;
+    app
+}
+
+#[tokio::test]
+async fn a_type_search_returns_a_searchset_bundle() {
+    let app = seeded().await;
+    let reply = request(&app, "GET", "/Patient", &[], &[]).await;
+    assert_eq!(reply.status, StatusCode::OK);
+    assert_eq!(header(&reply, "content-type"), "application/fhir+json");
+    let value = bundle(&reply);
+    assert_eq!(value["resourceType"], "Bundle");
+    assert_eq!(value["type"], "searchset");
+    assert_eq!(value["total"], 3);
+    assert_eq!(value["entry"][0]["search"]["mode"], "match");
+    assert_eq!(link(&value, "self"), "http://localhost/Patient");
+}
+
+#[tokio::test]
+async fn a_search_selects_by_id_and_last_updated() {
+    let app = seeded().await;
+    let by_id = bundle(&request(&app, "GET", "/Patient?_id=pt-s2", &[], &[]).await);
+    assert_eq!(entries(&by_id), vec!["pt-s2".to_owned()]);
+    let recent = bundle(&request(&app, "GET", "/Patient?_lastUpdated=ge2026-09-06", &[], &[]).await);
+    assert_eq!(recent["total"], 3);
+    let old = bundle(&request(&app, "GET", "/Patient?_lastUpdated=lt2020", &[], &[]).await);
+    assert_eq!(old["total"], 0);
+    assert!(old["entry"].is_null());
+}
+
+#[tokio::test]
+async fn a_search_selects_by_profile_tag_and_security() {
+    let app = seeded().await;
+    let tag = bundle(&request(&app, "GET", "/Patient?_tag=urn:t|gold", &[], &[]).await);
+    assert_eq!(entries(&tag), vec!["pt-s1".to_owned()]);
+    let profile = bundle(&request(&app, "GET", "/Patient?_profile=http://x/vip", &[], &[]).await);
+    assert_eq!(profile["total"], 2);
+    let security = bundle(&request(&app, "GET", "/Patient?_security=urn:s|R", &[], &[]).await);
+    assert_eq!(security["total"], 2);
+}
+
+#[tokio::test]
+async fn a_search_across_every_type_is_restricted_by_type() {
+    let app = seeded().await;
+    let all = bundle(&request(&app, "GET", "/", &[], &[]).await);
+    assert_eq!(all["total"], 4);
+    let patients = bundle(&request(&app, "GET", "/?_type=Patient", &[], &[]).await);
+    assert_eq!(patients["total"], 3);
+    let both = bundle(&request(&app, "GET", "/?_type=Patient,List", &[], &[]).await);
+    assert_eq!(both["total"], 4);
+}
+
+#[tokio::test]
+async fn a_search_selects_the_members_of_a_list() {
+    let app = seeded().await;
+    let members = bundle(&request(&app, "GET", "/Patient?_list=ls-1", &[], &[]).await);
+    assert_eq!(entries(&members), vec!["pt-s2".to_owned()]);
+}
+
+#[tokio::test]
+async fn a_deleted_resource_is_invisible_to_search() {
+    let app = seeded().await;
+    request(&app, "DELETE", "/Patient/pt-s3", &[], &[]).await;
+    let value = bundle(&request(&app, "GET", "/Patient", &[], &[]).await);
+    assert_eq!(value["total"], 2);
+}
+
+#[tokio::test]
+async fn an_unsupported_search_parameter_is_rejected() {
+    let app = seeded().await;
+    for uri in ["/Patient?nonesuch=1", "/Patient?_include=Patient:link", "/Patient?_text=x", "/Patient?_type=Patient"] {
+        let reply = request(&app, "GET", uri, &[], &[]).await;
+        assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{uri}");
+        let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
+        assert_eq!(value["issue"][0]["code"], "not-supported", "{uri}");
+    }
+}
+
+#[tokio::test]
+async fn a_malformed_search_value_is_rejected() {
+    let app = seeded().await;
+    let reply = request(&app, "GET", "/Patient?_lastUpdated=whenever", &[], &[]).await;
+    assert_eq!(reply.status, StatusCode::BAD_REQUEST);
+    let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
+    assert_eq!(value["issue"][0]["code"], "invalid");
 }

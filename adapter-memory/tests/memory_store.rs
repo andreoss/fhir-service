@@ -1,6 +1,7 @@
 use fhir_adapter_memory::MemoryStore;
 use fhir_core::{Error, FhirInstant, FhirVersion, InstantPeriod, ResourceEnvelope, ResourceId, VersionId};
-use fhir_store::{HistoryOrder, HistoryPage, HistoryQuery, HistoryScope, ResourceStore};
+use fhir_core::search::{lookup, Filter, SearchValue};
+use fhir_store::{HistoryOrder, HistoryPage, HistoryQuery, HistoryScope, ResourceStore, SearchQuery};
 use std::sync::Arc;
 
 fn store() -> MemoryStore {
@@ -17,6 +18,47 @@ fn envelope(version: FhirVersion, id: &str, active: bool) -> ResourceEnvelope {
 
 fn id(value: &str) -> ResourceId {
     ResourceId::parse(value).unwrap()
+}
+
+fn observation(id: &str) -> ResourceEnvelope {
+    let bytes = format!(
+        r#"{{"resourceType":"Observation","id":"{id}","meta":{{"versionId":"0","lastUpdated":"2026-09-06T04:00:00Z"}},"status":"final"}}"#
+    )
+    .into_bytes();
+    ResourceEnvelope::parse(FhirVersion::R4, &bytes).unwrap()
+}
+
+fn list(id: &str, members: &[&str]) -> ResourceEnvelope {
+    let entries: Vec<String> = members
+        .iter()
+        .map(|reference| format!(r#"{{"item":{{"reference":"{reference}"}}}}"#))
+        .collect();
+    let bytes = format!(
+        r#"{{"resourceType":"List","id":"{id}","meta":{{"versionId":"0","lastUpdated":"2026-09-06T04:00:00Z"}},"status":"current","mode":"working","entry":[{}]}}"#,
+        entries.join(",")
+    )
+    .into_bytes();
+    ResourceEnvelope::parse(FhirVersion::R4, &bytes).unwrap()
+}
+
+fn query(params: &[(&str, &str)]) -> SearchQuery {
+    let resource_type = "Patient".parse().unwrap();
+    let filters = params
+        .iter()
+        .map(|(name, value)| {
+            let def = lookup(Some(resource_type), name).expect("parameter is registered");
+            Filter {
+                name: (*name).to_owned(),
+                target: def.target,
+                values: vec![SearchValue::parse(def.value_type, value).unwrap()],
+            }
+        })
+        .collect();
+    SearchQuery {
+        types: vec![resource_type],
+        filters,
+        ..SearchQuery::default()
+    }
 }
 
 fn version(value: &str) -> VersionId {
@@ -178,24 +220,26 @@ async fn history_reaches_final_state_after_update_chain() {
     assert_eq!(store.vread(&id("pt-9"), &version("2")).await.unwrap().version_id().as_str(), "2");
     assert_eq!(store.vread(&id("pt-9"), &version("1")).await.unwrap().version_id().as_str(), "1");
 }
+
 #[tokio::test]
 async fn search_without_parameters_returns_every_current_resource() {
     let store = store();
     store.create(envelope(FhirVersion::R4, "pt-1", true)).await.unwrap();
     store.create(envelope(FhirVersion::R4, "pt-2", false)).await.unwrap();
-    let found = store.search(None, &Vec::new()).await.unwrap();
-    assert_eq!(found.len(), 2);
+    let page = store.search(&SearchQuery::default()).await.unwrap();
+    assert_eq!(page.entries.len(), 2);
+    assert_eq!(page.total, Some(2));
+    assert_eq!(page.offset, 0);
 }
 
 #[tokio::test]
-async fn search_matches_a_top_level_field() {
+async fn search_matches_a_registered_parameter() {
     let store = store();
     store.create(envelope(FhirVersion::R4, "pt-1", true)).await.unwrap();
     store.create(envelope(FhirVersion::R4, "pt-2", false)).await.unwrap();
-    let params = vec![("active".to_owned(), "true".to_owned())];
-    let found = store.search(None, &params).await.unwrap();
-    assert_eq!(found.len(), 1);
-    assert_eq!(found[0].id().as_str(), "pt-1");
+    let page = store.search(&query(&[("active", "true")])).await.unwrap();
+    assert_eq!(page.entries.len(), 1);
+    assert_eq!(page.entries[0].id().as_str(), "pt-1");
 }
 
 #[tokio::test]
@@ -203,33 +247,29 @@ async fn search_matches_the_resource_id() {
     let store = store();
     store.create(envelope(FhirVersion::R4, "pt-1", true)).await.unwrap();
     store.create(envelope(FhirVersion::R4, "pt-2", true)).await.unwrap();
-    let params = vec![("_id".to_owned(), "pt-2".to_owned())];
-    let found = store.search(None, &params).await.unwrap();
-    assert_eq!(found.len(), 1);
-    assert_eq!(found[0].id().as_str(), "pt-2");
+    let page = store.search(&query(&[("_id", "pt-2")])).await.unwrap();
+    assert_eq!(page.entries.len(), 1);
+    assert_eq!(page.entries[0].id().as_str(), "pt-2");
 }
 
 #[tokio::test]
 async fn search_restricted_to_a_type_ignores_other_types() {
     let store = store();
     store.create(envelope(FhirVersion::R4, "pt-1", true)).await.unwrap();
-    let observation = ResourceEnvelope::parse(
-        FhirVersion::R4,
-        br#"{"resourceType":"Observation","id":"ob-1","meta":{"versionId":"0","lastUpdated":"2026-09-06T04:00:00Z"},"status":"final"}"#,
-    )
-    .unwrap();
-    store.create(observation).await.unwrap();
-    let patients = store.search(Some("Patient".parse().unwrap()), &Vec::new()).await.unwrap();
-    assert_eq!(patients.len(), 1);
-    assert_eq!(patients[0].resource_type().as_str(), "Patient");
+    store.create(observation("ob-1")).await.unwrap();
+    let patients = store
+        .search(&SearchQuery::of_type("Patient".parse().unwrap()))
+        .await
+        .unwrap();
+    assert_eq!(patients.entries.len(), 1);
+    assert_eq!(patients.entries[0].resource_type().as_str(), "Patient");
 }
 
 #[tokio::test]
-async fn search_reports_no_match_for_an_unknown_field() {
+async fn search_reports_no_match_for_an_absent_element() {
     let store = store();
     store.create(envelope(FhirVersion::R4, "pt-1", true)).await.unwrap();
-    let params = vec![("gender".to_owned(), "female".to_owned())];
-    assert!(store.search(None, &params).await.unwrap().is_empty());
+    assert!(store.search(&query(&[("gender", "female")])).await.unwrap().entries.is_empty());
 }
 
 #[tokio::test]
@@ -237,10 +277,46 @@ async fn search_sees_the_current_version_only() {
     let store = store();
     store.create(envelope(FhirVersion::R4, "pt-1", true)).await.unwrap();
     store.update(envelope(FhirVersion::R4, "pt-1", false), None).await.unwrap();
-    let params = vec![("active".to_owned(), "true".to_owned())];
-    assert!(store.search(None, &params).await.unwrap().is_empty());
-    let params = vec![("active".to_owned(), "false".to_owned())];
-    assert_eq!(store.search(None, &params).await.unwrap().len(), 1);
+    assert!(store.search(&query(&[("active", "true")])).await.unwrap().entries.is_empty());
+    assert_eq!(store.search(&query(&[("active", "false")])).await.unwrap().entries.len(), 1);
+}
+
+#[tokio::test]
+async fn search_filters_are_conjunctive() {
+    let store = store();
+    store.create(envelope(FhirVersion::R4, "pt-1", true)).await.unwrap();
+    store.create(envelope(FhirVersion::R4, "pt-2", true)).await.unwrap();
+    let both = query(&[("active", "true"), ("_id", "pt-2")]);
+    assert_eq!(store.search(&both).await.unwrap().entries.len(), 1);
+    let neither = query(&[("active", "false"), ("_id", "pt-2")]);
+    assert!(store.search(&neither).await.unwrap().entries.is_empty());
+}
+
+#[tokio::test]
+async fn search_selects_the_members_of_a_list() {
+    let store = store();
+    store.create(envelope(FhirVersion::R4, "pt-1", true)).await.unwrap();
+    store.create(envelope(FhirVersion::R4, "pt-2", true)).await.unwrap();
+    store.create(list("ls-1", &["Patient/pt-2"])).await.unwrap();
+    let mut selection = SearchQuery::of_type("Patient".parse().unwrap());
+    selection.list = Some(id("ls-1"));
+    let page = store.search(&selection).await.unwrap();
+    assert_eq!(page.entries.len(), 1);
+    assert_eq!(page.entries[0].id().as_str(), "pt-2");
+    let mut unknown = SearchQuery::of_type("Patient".parse().unwrap());
+    unknown.list = Some(id("ls-none"));
+    assert!(store.search(&unknown).await.unwrap().entries.is_empty());
+}
+
+#[tokio::test]
+async fn a_deleted_list_selects_nothing() {
+    let store = store();
+    store.create(envelope(FhirVersion::R4, "pt-1", true)).await.unwrap();
+    store.create(list("ls-2", &["Patient/pt-1"])).await.unwrap();
+    store.delete(&id("ls-2")).await.unwrap();
+    let mut selection = SearchQuery::of_type("Patient".parse().unwrap());
+    selection.list = Some(id("ls-2"));
+    assert!(store.search(&selection).await.unwrap().entries.is_empty());
 }
 
 #[tokio::test]
@@ -283,7 +359,7 @@ async fn a_deleted_resource_is_invisible_to_search() {
     let store = store();
     store.create(envelope(FhirVersion::R4, "pt-d4", true)).await.unwrap();
     store.delete(&id("pt-d4")).await.unwrap();
-    assert!(store.search(None, &Vec::new()).await.unwrap().is_empty());
+    assert!(store.search(&SearchQuery::default()).await.unwrap().entries.is_empty());
 }
 
 #[tokio::test]
@@ -294,7 +370,7 @@ async fn updating_a_deleted_resource_restores_it() {
     let restored = store.update(envelope(FhirVersion::R4, "pt-d5", true), None).await.unwrap();
     assert!(!restored.is_deleted());
     assert_eq!(restored.version_id().as_str(), "3");
-    assert_eq!(store.search(None, &Vec::new()).await.unwrap().len(), 1);
+    assert_eq!(store.search(&SearchQuery::default()).await.unwrap().entries.len(), 1);
 }
 
 #[tokio::test]
@@ -339,13 +415,6 @@ fn ticking_store() -> MemoryStore {
     }))
 }
 
-fn observation(id: &str) -> ResourceEnvelope {
-    let bytes = format!(
-        r#"{{"resourceType":"Observation","id":"{id}","meta":{{"versionId":"0","lastUpdated":"2026-09-06T04:00:00Z"}},"status":"final"}}"#
-    )
-    .into_bytes();
-    ResourceEnvelope::parse(FhirVersion::R4, &bytes).unwrap()
-}
 
 fn versions(page: &HistoryPage) -> Vec<String> {
     page.entries

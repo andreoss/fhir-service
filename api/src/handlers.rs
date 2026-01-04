@@ -6,13 +6,14 @@ use axum::response::{IntoResponse, Response};
 use fhir_core::{
     Error, FhirInstant, Patch, ResourceEnvelope, ResourceId, ResourceType, VersionId, WeakEtag,
 };
-use fhir_store::{HistoryScope, SearchParams};
+use fhir_store::{HistoryScope, SearchQuery};
 use serde_json::Value;
 use uuid::Uuid;
 
 use crate::app::AppState;
 use crate::history::{history_bundle, HistoryRequest};
-use crate::query::{conditional_params, param};
+use crate::query::param;
+use crate::search::{parse_query, search_bundle};
 
 const FHIR_JSON: &str = "application/fhir+json";
 const IF_NONE_EXIST: &str = "if-none-exist";
@@ -87,8 +88,8 @@ pub async fn create(
         let raw = condition
             .to_str()
             .map_err(|_| Error::InvalidEnvelope("if-none-exist is not ascii".to_owned()))?;
-        let params = require_condition(conditional_params(Some(raw)), "if-none-exist")?;
-        if let Some(existing) = single_match(&state, resource_type, &params).await? {
+        let query = require_condition(parse_query(Some(resource_type), Some(raw))?, "if-none-exist")?;
+        if let Some(existing) = single_match(&state, &query).await? {
             return Ok(respond_updated(&existing, host_from(&headers)));
         }
     }
@@ -107,10 +108,10 @@ pub async fn conditional_update(
     body: Bytes,
 ) -> Result<Response, AppError> {
     let resource_type = type_name.parse::<ResourceType>()?;
-    let params = require_condition(conditional_params(query.as_deref()), "conditional update")?;
+    let selection = require_condition(parse_query(Some(resource_type), query.as_deref())?, "conditional update")?;
     let value: Value = serde_json::from_slice(&body).map_err(|error| Error::InvalidJson(error.to_string()))?;
     let expected = expected_version(&headers)?;
-    match single_match(&state, resource_type, &params).await? {
+    match single_match(&state, &selection).await? {
         Some(existing) => {
             let envelope = write_envelope(state.version, resource_type, value, existing.id())?;
             let stored = state.store.update(envelope, expected.as_ref()).await?;
@@ -160,8 +161,8 @@ pub async fn conditional_delete(
     RawQuery(query): RawQuery,
 ) -> Result<Response, AppError> {
     let resource_type = type_name.parse::<ResourceType>()?;
-    let params = require_condition(conditional_params(query.as_deref()), "conditional delete")?;
-    match single_match(&state, resource_type, &params).await? {
+    let selection = require_condition(parse_query(Some(resource_type), query.as_deref())?, "conditional delete")?;
+    match single_match(&state, &selection).await? {
         Some(existing) => remove(&state, existing.id(), hard_delete(query.as_deref())).await,
         None => Err(Error::NotFound.into()),
     }
@@ -193,8 +194,8 @@ pub async fn conditional_patch(
     body: Bytes,
 ) -> Result<Response, AppError> {
     let resource_type = type_name.parse::<ResourceType>()?;
-    let params = require_condition(conditional_params(query.as_deref()), "conditional patch")?;
-    match single_match(&state, resource_type, &params).await? {
+    let selection = require_condition(parse_query(Some(resource_type), query.as_deref())?, "conditional patch")?;
+    match single_match(&state, &selection).await? {
         Some(existing) => patch_stored(&state, resource_type, &existing, &headers, &body).await,
         None => Err(Error::NotFound.into()),
     }
@@ -298,22 +299,21 @@ fn no_content(marker: Option<&ResourceEnvelope>) -> Response {
     response
 }
 
-fn require_condition(params: SearchParams, what: &str) -> Result<SearchParams, Error> {
-    if params.is_empty() {
+fn require_condition(query: SearchQuery, what: &str) -> Result<SearchQuery, Error> {
+    if query.is_unconditional() {
         return Err(Error::InvalidEnvelope(format!("{what} requires search parameters")));
     }
-    Ok(params)
+    Ok(query)
 }
 
 async fn single_match(
     state: &AppState,
-    resource_type: ResourceType,
-    params: &SearchParams,
+    query: &SearchQuery,
 ) -> Result<Option<ResourceEnvelope>, Error> {
-    let mut matches = state.store.search(Some(resource_type), params).await?;
-    match matches.len() {
+    let mut page = state.store.search(query).await?;
+    match page.entries.len() {
         0 => Ok(None),
-        1 => Ok(Some(matches.remove(0))),
+        1 => Ok(Some(page.entries.remove(0))),
         _ => Err(Error::MultipleMatches),
     }
 }
@@ -496,6 +496,48 @@ async fn respond_history(
         _ => format!("{base}{path}"),
     };
     let body = history_bundle(&base, &self_url, &page, request.summary);
+    Ok((
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, FHIR_JSON), (header::CACHE_CONTROL, "no-store")],
+        body,
+    )
+        .into_response())
+}
+
+pub async fn search_type(
+    State(state): State<AppState>,
+    Path(type_name): Path<String>,
+    RawQuery(query): RawQuery,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    let resource_type = type_name.parse::<ResourceType>()?;
+    let path = format!("/{resource_type}");
+    respond_search(&state, Some(resource_type), path, query, &headers).await
+}
+
+pub async fn search_system(
+    State(state): State<AppState>,
+    RawQuery(query): RawQuery,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    respond_search(&state, None, String::new(), query, &headers).await
+}
+
+async fn respond_search(
+    state: &AppState,
+    base_type: Option<ResourceType>,
+    path: String,
+    query: Option<String>,
+    headers: &HeaderMap,
+) -> Result<Response, AppError> {
+    let selection = parse_query(base_type, query.as_deref())?;
+    let page = state.store.search(&selection).await?;
+    let base = format!("http://{}", host_from(headers));
+    let self_url = match query.as_deref() {
+        Some(raw) if !raw.is_empty() => format!("{base}{path}?{raw}"),
+        _ => format!("{base}{path}"),
+    };
+    let body = search_bundle(&base, &self_url, &page);
     Ok((
         StatusCode::OK,
         [(header::CONTENT_TYPE, FHIR_JSON), (header::CACHE_CONTROL, "no-store")],

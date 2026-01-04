@@ -1,7 +1,7 @@
 = FHIR Service
 
 A FHIR server. Resources are stored with every version of
-themselves and answered over HTTP.
+themselves and answered over HTTP: read, write, history and search.
 
 == Build
 
@@ -10,6 +10,15 @@ themselves and answered over HTTP.
 cargo build --workspace
 cargo test --workspace
 cargo run --bin fhir-host
+----
+
+== Serving
+
+[source,http]
+----
+GET /Patient/1
+GET /Patient?name=Smith&_count=10&_sort=-_lastUpdated
+GET /Patient/1/_history
 ----
 
 == Layout

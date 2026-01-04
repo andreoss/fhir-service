@@ -7,6 +7,7 @@ pub mod outcome;
 pub mod patch;
 pub mod resource_id;
 pub mod resource_type;
+pub mod search;
 pub mod version;
 
 pub use envelope::ResourceEnvelope;
@@ -18,4 +19,5 @@ pub use outcome::{IssueCode, IssueSeverity, OperationOutcome};
 pub use patch::{JsonOperation, Patch, PathOperation};
 pub use resource_id::ResourceId;
 pub use resource_type::ResourceType;
+pub use search::{sort_value, Filter, ParamDef, SearchValue, SortValue, Target, ValueType};
 pub use version::VersionId;

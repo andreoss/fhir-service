@@ -1,50 +1,54 @@
 use async_trait::async_trait;
-use fhir_core::{Error, FhirInstant, ResourceEnvelope, ResourceId, ResourceType, VersionId};
-use fhir_store::{HistoryOrder, HistoryPage, HistoryQuery, HistoryScope, ResourceStore, SearchParams};
+use fhir_core::{Error, FhirInstant, ResourceEnvelope, ResourceId, VersionId};
+use fhir_store::{
+    HistoryOrder, HistoryPage, HistoryQuery, HistoryScope, ResourceStore, SearchPage, SearchQuery,
+    SortDirection, SortKey, TotalMode,
+};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
 type StoreMap = HashMap<ResourceId, Vec<ResourceEnvelope>>;
 
-fn matches_params(envelope: &ResourceEnvelope, params: &SearchParams) -> Result<bool, Error> {
-    let text = std::str::from_utf8(envelope.raw()).map_err(|e| Error::InvalidJson(e.to_string()))?;
-    let value: Value = serde_json::from_str(text).map_err(|e| Error::InvalidJson(e.to_string()))?;
-    for (name, expected) in params {
-        let matched = match name.as_str() {
-            "_id" => envelope.id().as_str() == expected.as_str(),
-            other => match value.get(other) {
-                Some(field) => field_matches(field, expected),
-                None => false,
-            },
-        };
-        if !matched {
-            return Ok(false);
-        }
-    }
-    Ok(true)
+fn body_of(envelope: &ResourceEnvelope) -> Result<Value, Error> {
+    serde_json::from_slice(envelope.raw()).map_err(|error| Error::InvalidJson(error.to_string()))
 }
 
-fn field_matches(field: &Value, expected: &str) -> bool {
-    match field {
-        Value::Array(items) => items.iter().any(|item| field_matches(item, expected)),
-        Value::String(text) => text.eq_ignore_ascii_case(expected),
-        Value::Bool(value) => expected.eq_ignore_ascii_case(&value.to_string()),
-        Value::Number(number) => match (number.as_f64(), expected.parse::<f64>()) {
-            (Some(actual), Ok(wanted)) => (actual - wanted).abs() < f64::EPSILON,
-            _ => false,
-        },
-        Value::Object(map) => {
-            let code = expected.rsplit('|').next().unwrap_or_default();
-            !code.is_empty()
-                && ["value", "code", "text", "reference", "system"].iter().any(|key| {
-                    matches!(map.get(*key), Some(Value::String(text)) if text.eq_ignore_ascii_case(code))
-                })
-        }
-        Value::Null => false,
-    }
+fn reference_of(envelope: &ResourceEnvelope) -> String {
+    format!("{}/{}", envelope.resource_type().as_str(), envelope.id().as_str())
 }
 
+fn list_members(guard: &StoreMap, id: &ResourceId) -> Result<HashSet<String>, Error> {
+    let Some(current) = guard.get(id).and_then(|versions| versions.last()) else {
+        return Ok(HashSet::new());
+    };
+    if current.is_deleted() {
+        return Ok(HashSet::new());
+    }
+    let body = body_of(current)?;
+    Ok(fhir_core::search::select(&body, "entry.item.reference")
+        .into_iter()
+        .filter_map(|value| value.as_str().map(str::to_owned))
+        .collect())
+}
+
+fn order(matches: &mut [(ResourceEnvelope, Value)], keys: &[SortKey]) {
+    matches.sort_by(|left, right| {
+        for key in keys {
+            let a = fhir_core::search::sort_value(key.target, left.0.id(), left.0.last_updated(), &left.1);
+            let b = fhir_core::search::sort_value(key.target, right.0.id(), right.0.last_updated(), &right.1);
+            let ordering = match key.direction {
+                SortDirection::Ascending => a.cmp(&b),
+                SortDirection::Descending => b.cmp(&a),
+            };
+            if ordering != std::cmp::Ordering::Equal {
+                return ordering;
+            }
+        }
+        left.0.id().as_str().cmp(right.0.id().as_str())
+
+    });
+}
 pub type Clock = Arc<dyn Fn() -> FhirInstant + Send + Sync>;
 
 pub fn system_clock() -> Clock {
@@ -137,30 +141,54 @@ impl ResourceStore for MemoryStore {
         }
     }
 
-    async fn search(
-        &self,
-        resource_type: Option<ResourceType>,
-        params: &SearchParams,
-    ) -> Result<Vec<ResourceEnvelope>, Error> {
+    async fn search(&self, query: &SearchQuery) -> Result<SearchPage, Error> {
         let guard = self
             .inner
             .read()
             .map_err(|_| Error::Internal("store lock poisoned".to_owned()))?;
-        let mut matches = Vec::new();
+        let members = match &query.list {
+            Some(id) => Some(list_members(&guard, id)?),
+            None => None,
+        };
+        let mut matches: Vec<(ResourceEnvelope, Value)> = Vec::new();
         for versions in guard.values() {
             let Some(current) = versions.last() else { continue };
             if current.is_deleted() {
                 continue;
             }
-            if resource_type.is_some_and(|wanted| current.resource_type() != wanted) {
+            if !query.types.is_empty() && !query.types.contains(&current.resource_type()) {
                 continue;
             }
-            if matches_params(current, params)? {
-                matches.push(current.clone());
+            if let Some(members) = &members {
+                if !members.contains(&reference_of(current)) {
+                    continue;
+                }
+            }
+            let body = body_of(current)?;
+            let kept = query
+                .filters
+                .iter()
+                .all(|filter| filter.matches(current.id(), current.last_updated(), &body));
+            if kept {
+                matches.push((current.clone(), body));
             }
         }
-        matches.sort_by(|a, b| a.id().as_str().cmp(b.id().as_str()));
-        Ok(matches)
+        order(&mut matches, &query.sort);
+        let total = match query.total {
+            TotalMode::None => None,
+            TotalMode::Accurate | TotalMode::Estimate => Some(matches.len()),
+        };
+        let entries = matches
+            .into_iter()
+            .skip(query.offset)
+            .take(query.count)
+            .map(|(envelope, _)| envelope)
+            .collect();
+        Ok(SearchPage {
+            entries,
+            total,
+            offset: query.offset,
+        })
     }
 
     async fn history(
