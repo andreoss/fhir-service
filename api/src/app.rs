@@ -1,4 +1,4 @@
-use axum::routing::{delete, get, post};
+use axum::routing::{get, post};
 use axum::Router;
 use fhir_core::{Error, FhirVersion};
 use fhir_store::ResourceStore;
