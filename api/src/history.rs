@@ -4,6 +4,7 @@ use serde_json::{Map, Value};
 use uuid::Uuid;
 
 use crate::query::param;
+use crate::token::{decode, encode, with_token};
 
 const DEFAULT_COUNT: usize = 20;
 const MAX_COUNT: usize = 100;
@@ -12,6 +13,7 @@ const MAX_COUNT: usize = 100;
 pub enum Summary {
     Full,
     Metadata,
+    Text,
     Count,
 }
 
@@ -26,6 +28,7 @@ impl HistoryRequest {
         let summary = match param(raw, "_summary").as_deref() {
             None | Some("false") | Some("data") => Summary::Full,
             Some("true") => Summary::Metadata,
+            Some("text") => Summary::Text,
             Some("count") => Summary::Count,
             Some(other) => {
                 return Err(Error::UnsupportedParameter(format!("_summary {other:?}")))
@@ -48,7 +51,7 @@ impl HistoryRequest {
             _ => requested,
         };
         let offset = match param(raw, "ct") {
-            Some(text) => decode_token(&text)?,
+            Some(text) => decode(&text)?,
             None => 0,
         };
         Ok(HistoryRequest {
@@ -71,7 +74,7 @@ pub fn history_bundle(base: &str, self_url: &str, page: &HistoryPage, summary: S
     if consumed < page.total && !page.entries.is_empty() {
         links.push(serde_json::json!({
             "relation": "next",
-            "url": with_token(self_url, &encode_token(consumed)),
+            "url": with_token(self_url, &encode(consumed)),
         }));
     }
     let mut bundle = Map::new();
@@ -131,45 +134,9 @@ fn resource_of(envelope: &ResourceEnvelope, summary: Summary) -> Option<Value> {
     }
     match summary {
         Summary::Count => None,
-        Summary::Metadata => serde_json::from_slice(&envelope.to_json()).ok(),
+        Summary::Metadata | Summary::Text => serde_json::from_slice(&envelope.to_json()).ok(),
         Summary::Full => serde_json::from_slice(envelope.raw()).ok(),
     }
-}
-
-fn with_token(self_url: &str, token: &str) -> String {
-    let (path, query) = match self_url.split_once('?') {
-        Some((path, query)) => (path, query),
-        None => (self_url, ""),
-    };
-    let mut parts: Vec<String> = query
-        .split('&')
-        .filter(|pair| !pair.is_empty() && !pair.starts_with("ct="))
-        .map(str::to_owned)
-        .collect();
-    parts.push(format!("ct={token}"));
-    format!("{path}?{}", parts.join("&"))
-}
-
-fn encode_token(offset: usize) -> String {
-    let body = format!("{offset:x}");
-    format!("{:02x}{body}", checksum(&body))
-}
-
-fn decode_token(text: &str) -> Result<usize, Error> {
-    let invalid = || Error::InvalidParameter(format!("ct {text:?}"));
-    if text.len() < 3 || !text.is_char_boundary(2) {
-        return Err(invalid());
-    }
-    let (check, body) = text.split_at(2);
-    if check != format!("{:02x}", checksum(body)) {
-        return Err(invalid());
-    }
-    usize::from_str_radix(body, 16).map_err(|_| invalid())
-}
-
-fn checksum(body: &str) -> u8 {
-    body.bytes()
-        .fold(7u8, |acc, byte| acc.wrapping_mul(31).wrapping_add(byte))
 }
 
 #[cfg(test)]
@@ -192,23 +159,4 @@ mod tests {
         assert_eq!(HistoryRequest::parse(Some("_summary=count")).unwrap().query.count, 0);
     }
 
-    #[test]
-    fn a_token_round_trips_and_rejects_tampering() {
-        for offset in [0usize, 1, 25, 4096] {
-            let token = encode_token(offset);
-            assert_eq!(decode_token(&token).unwrap(), offset);
-        }
-        let token = encode_token(25);
-        let mangled = format!("{}f", &token[..token.len() - 1]);
-        assert!(decode_token(&mangled).is_err());
-        assert!(decode_token("").is_err());
-        assert!(decode_token("zz").is_err());
-    }
-
-    #[test]
-    fn a_next_link_replaces_an_existing_token() {
-        let url = with_token("http://localhost/_history?_count=2&ct=abc", "ff10");
-        assert_eq!(url, "http://localhost/_history?_count=2&ct=ff10");
-        assert_eq!(with_token("http://localhost/_history", "ff10"), "http://localhost/_history?ct=ff10");
-    }
 }

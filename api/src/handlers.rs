@@ -13,7 +13,7 @@ use uuid::Uuid;
 use crate::app::AppState;
 use crate::history::{history_bundle, HistoryRequest};
 use crate::query::param;
-use crate::search::{parse_query, search_bundle};
+use crate::search::{parse_query, search_bundle, SearchRequest};
 
 const FHIR_JSON: &str = "application/fhir+json";
 const IF_NONE_EXIST: &str = "if-none-exist";
@@ -530,14 +530,14 @@ async fn respond_search(
     query: Option<String>,
     headers: &HeaderMap,
 ) -> Result<Response, AppError> {
-    let selection = parse_query(base_type, query.as_deref())?;
-    let page = state.store.search(&selection).await?;
+    let request = SearchRequest::parse(base_type, query.as_deref())?;
+    let page = state.store.search(&request.query).await?;
     let base = format!("http://{}", host_from(headers));
     let self_url = match query.as_deref() {
         Some(raw) if !raw.is_empty() => format!("{base}{path}?{raw}"),
         _ => format!("{base}{path}"),
     };
-    let body = search_bundle(&base, &self_url, &page);
+    let body = search_bundle(&base, &self_url, &page, request.summary, &request.elements);
     Ok((
         StatusCode::OK,
         [(header::CONTENT_TYPE, FHIR_JSON), (header::CACHE_CONTROL, "no-store")],

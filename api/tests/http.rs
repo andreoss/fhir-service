@@ -1138,3 +1138,105 @@ async fn a_malformed_search_value_is_rejected() {
     let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
     assert_eq!(value["issue"][0]["code"], "invalid");
 }
+
+async fn many() -> Service {
+    let app = service();
+    for index in 1..=5 {
+        request(&app, "POST", "/Patient", &[], &patient(&format!("pt-r{index}"), true)).await;
+    }
+    app
+}
+
+#[tokio::test]
+async fn count_pages_the_result_and_offers_a_next_link() {
+    let app = many().await;
+    let first = bundle(&request(&app, "GET", "/Patient?_count=2", &[], &[]).await);
+    assert_eq!(first["total"], 5);
+    assert_eq!(entries(&first), vec!["pt-r1".to_owned(), "pt-r2".to_owned()]);
+    let next = link(&first, "next");
+    assert!(next.contains("ct="), "next was {next}");
+    let token = next.rsplit("ct=").next().unwrap().to_owned();
+    let second = bundle(&request(&app, "GET", &format!("/Patient?_count=2&ct={token}"), &[], &[]).await);
+    assert_eq!(entries(&second), vec!["pt-r3".to_owned(), "pt-r4".to_owned()]);
+    let last = bundle(&request(&app, "GET", "/Patient?_count=10", &[], &[]).await);
+    assert_eq!(last["link"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn a_tampered_continuation_token_is_rejected() {
+    let app = many().await;
+    let reply = request(&app, "GET", "/Patient?ct=zzzz", &[], &[]).await;
+    assert_eq!(reply.status, StatusCode::BAD_REQUEST);
+    let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
+    assert_eq!(value["issue"][0]["code"], "invalid");
+}
+
+#[tokio::test]
+async fn sort_orders_by_a_validated_parameter() {
+    let app = many().await;
+    let down = bundle(&request(&app, "GET", "/Patient?_sort=-_id", &[], &[]).await);
+    assert_eq!(entries(&down).first(), Some(&"pt-r5".to_owned()));
+    let up = bundle(&request(&app, "GET", "/Patient?_sort=_id", &[], &[]).await);
+    assert_eq!(entries(&up).first(), Some(&"pt-r1".to_owned()));
+    let by_time = bundle(&request(&app, "GET", "/Patient?_sort=_lastUpdated,_id", &[], &[]).await);
+    assert_eq!(by_time["total"], 5);
+}
+
+#[tokio::test]
+async fn sort_on_an_unsortable_parameter_is_rejected() {
+    let app = many().await;
+    for uri in ["/Patient?_sort=active", "/Patient?_sort=nonesuch"] {
+        let reply = request(&app, "GET", uri, &[], &[]).await;
+        assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{uri}");
+        let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
+        assert_eq!(value["issue"][0]["code"], "not-supported", "{uri}");
+    }
+}
+
+#[tokio::test]
+async fn total_is_accurate_estimated_or_absent() {
+    let app = many().await;
+    assert_eq!(bundle(&request(&app, "GET", "/Patient?_total=accurate", &[], &[]).await)["total"], 5);
+    assert_eq!(bundle(&request(&app, "GET", "/Patient?_total=estimate", &[], &[]).await)["total"], 5);
+    let none = bundle(&request(&app, "GET", "/Patient?_total=none", &[], &[]).await);
+    assert!(none["total"].is_null());
+    let reply = request(&app, "GET", "/Patient?_total=guess", &[], &[]).await;
+    assert_eq!(reply.status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn elements_and_summary_narrow_every_entry() {
+    let app = seeded().await;
+    let elements = bundle(&request(&app, "GET", "/Patient?_elements=active", &[], &[]).await);
+    let first = &elements["entry"][0]["resource"];
+    assert!(first["active"].is_boolean());
+    assert!(first["id"].is_string());
+    let tags = first["meta"]["tag"].as_array().unwrap();
+    assert!(tags.iter().any(|tag| tag["code"] == "SUBSETTED"));
+    let counted = bundle(&request(&app, "GET", "/Patient?_summary=count", &[], &[]).await);
+    assert_eq!(counted["total"], 3);
+    assert!(counted["entry"].is_null());
+    let brief = bundle(&request(&app, "GET", "/Patient?_summary=true", &[], &[]).await);
+    assert!(brief["entry"][0]["resource"]["id"].is_string());
+    let reply = request(&app, "GET", "/Patient?_summary=partial", &[], &[]).await;
+    assert_eq!(reply.status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn format_selects_a_supported_rendering() {
+    let app = seeded().await;
+    for uri in ["/Patient?_format=json", "/Patient?_format=application/fhir%2Bjson"] {
+        assert_eq!(request(&app, "GET", uri, &[], &[]).await.status, StatusCode::OK, "{uri}");
+    }
+    let reply = request(&app, "GET", "/Patient?_format=xml", &[], &[]).await;
+    assert_eq!(reply.status, StatusCode::BAD_REQUEST);
+    let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
+    assert_eq!(value["issue"][0]["code"], "not-supported");
+}
+
+#[tokio::test]
+async fn a_malformed_count_is_rejected() {
+    let app = many().await;
+    let reply = request(&app, "GET", "/Patient?_count=many", &[], &[]).await;
+    assert_eq!(reply.status, StatusCode::BAD_REQUEST);
+}

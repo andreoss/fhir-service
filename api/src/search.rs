@@ -1,10 +1,12 @@
 use fhir_core::search::{lookup, Filter, SearchValue};
 use fhir_core::{Error, ResourceEnvelope, ResourceId, ResourceType};
-use fhir_store::{SearchPage, SearchQuery};
+use fhir_store::{SearchPage, SearchQuery, SortDirection, SortKey, TotalMode};
 use serde_json::{Map, Value};
 use uuid::Uuid;
 
-use crate::query::pairs;
+use crate::history::Summary;
+use crate::query::{pairs, param};
+use crate::token::{decode, encode, with_token};
 
 const CONTROL: [&str; 9] = [
     "_hardDelete",
@@ -39,8 +41,125 @@ pub fn parse_query(
     Ok(query)
 }
 
-pub fn search_bundle(base: &str, self_url: &str, page: &SearchPage) -> Vec<u8> {
-    let links = vec![serde_json::json!({ "relation": "self", "url": self_url })];
+const DEFAULT_COUNT: usize = 20;
+const MAX_COUNT: usize = 100;
+
+#[derive(Debug, Clone)]
+pub struct SearchRequest {
+    pub query: SearchQuery,
+    pub summary: Summary,
+    pub elements: Vec<String>,
+}
+
+impl SearchRequest {
+    pub fn parse(base_type: Option<ResourceType>, raw: Option<&str>) -> Result<SearchRequest, Error> {
+        let mut query = parse_query(base_type, raw)?;
+        let summary = summary_of(raw)?;
+        rendering(raw)?;
+        query.sort = sort_of(base_type, raw)?;
+        query.total = match summary {
+            Summary::Count => TotalMode::Accurate,
+            _ => total_of(raw)?,
+        };
+        query.count = match summary {
+            Summary::Count => 0,
+            _ => count_of(raw)?,
+        };
+        query.offset = match param(raw, "ct") {
+            Some(text) => decode(&text)?,
+            None => 0,
+        };
+        let elements = param(raw, "_elements")
+            .map(|text| {
+                text.split(',')
+                    .filter(|part| !part.is_empty())
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default();
+        Ok(SearchRequest {
+            query,
+            summary,
+            elements,
+        })
+    }
+}
+
+fn summary_of(raw: Option<&str>) -> Result<Summary, Error> {
+    match param(raw, "_summary").as_deref() {
+        None | Some("false") | Some("data") => Ok(Summary::Full),
+        Some("true") => Ok(Summary::Metadata),
+        Some("text") => Ok(Summary::Text),
+        Some("count") => Ok(Summary::Count),
+        Some(other) => Err(Error::UnsupportedParameter(format!("_summary {other:?}"))),
+    }
+}
+
+fn rendering(raw: Option<&str>) -> Result<(), Error> {
+    match param(raw, "_format") {
+        None => Ok(()),
+        Some(text) => match text.replace(' ', "+").as_str() {
+            "json" | "fhir+json" | "text/json" | "application/json" | "application/fhir+json" => Ok(()),
+            other => Err(Error::UnsupportedParameter(format!("_format {other:?}"))),
+        },
+    }
+}
+
+fn total_of(raw: Option<&str>) -> Result<TotalMode, Error> {
+    match param(raw, "_total").as_deref() {
+        None | Some("accurate") => Ok(TotalMode::Accurate),
+        Some("estimate") => Ok(TotalMode::Estimate),
+        Some("none") => Ok(TotalMode::None),
+        Some(other) => Err(Error::UnsupportedParameter(format!("_total {other:?}"))),
+    }
+}
+
+fn count_of(raw: Option<&str>) -> Result<usize, Error> {
+    match param(raw, "_count") {
+        Some(text) => Ok(text
+            .parse::<usize>()
+            .map_err(|_| Error::InvalidParameter(format!("_count {text:?}")))?
+            .min(MAX_COUNT)),
+        None => Ok(DEFAULT_COUNT),
+    }
+}
+
+fn sort_of(base_type: Option<ResourceType>, raw: Option<&str>) -> Result<Vec<SortKey>, Error> {
+    let Some(text) = param(raw, "_sort") else { return Ok(Vec::new()) };
+    text.split(',')
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let (direction, name) = match part.strip_prefix('-') {
+                Some(rest) => (SortDirection::Descending, rest),
+                None => (SortDirection::Ascending, part),
+            };
+            let def = lookup(base_type, name).filter(|def| def.sortable).ok_or_else(|| {
+                Error::UnsupportedParameter(format!("_sort {name:?}"))
+            })?;
+            Ok(SortKey {
+                name: name.to_owned(),
+                target: def.target,
+                direction,
+            })
+        })
+        .collect()
+}
+
+pub fn search_bundle(
+    base: &str,
+    self_url: &str,
+    page: &SearchPage,
+    summary: Summary,
+    elements: &[String],
+) -> Vec<u8> {
+    let mut links = vec![serde_json::json!({ "relation": "self", "url": self_url })];
+    let consumed = page.offset + page.entries.len();
+    if page.total.is_some_and(|total| consumed < total) && !page.entries.is_empty() {
+        links.push(serde_json::json!({
+            "relation": "next",
+            "url": with_token(self_url, &encode(consumed)),
+        }));
+    }
     let mut bundle = Map::new();
     bundle.insert("resourceType".to_owned(), Value::String("Bundle".to_owned()));
     bundle.insert("id".to_owned(), Value::String(Uuid::new_v4().to_string()));
@@ -50,22 +169,73 @@ pub fn search_bundle(base: &str, self_url: &str, page: &SearchPage) -> Vec<u8> {
     }
     bundle.insert("link".to_owned(), Value::Array(links));
     if !page.entries.is_empty() {
-        let entries: Vec<Value> = page.entries.iter().map(|found| entry(base, found)).collect();
+        let entries: Vec<Value> = page
+            .entries
+            .iter()
+            .map(|found| entry(base, found, summary, elements))
+            .collect();
         bundle.insert("entry".to_owned(), Value::Array(entries));
     }
     serde_json::to_vec(&Value::Object(bundle)).expect("search bundle is serializable")
 }
 
-fn entry(base: &str, envelope: &ResourceEnvelope) -> Value {
+fn entry(base: &str, envelope: &ResourceEnvelope, summary: Summary, elements: &[String]) -> Value {
     let resource_type = envelope.resource_type().as_str().to_owned();
     let id = envelope.id().as_str().to_owned();
     let mut entry = Map::new();
     entry.insert("fullUrl".to_owned(), Value::String(format!("{base}/{resource_type}/{id}")));
-    if let Ok(resource) = serde_json::from_slice::<Value>(envelope.raw()) {
+    if let Some(resource) = resource_of(envelope, summary, elements) {
         entry.insert("resource".to_owned(), resource);
     }
     entry.insert("search".to_owned(), serde_json::json!({ "mode": "match" }));
     Value::Object(entry)
+}
+
+fn resource_of(envelope: &ResourceEnvelope, summary: Summary, elements: &[String]) -> Option<Value> {
+    let rendered: Value = match summary {
+        Summary::Count => return None,
+        Summary::Metadata => serde_json::from_slice(&envelope.to_json()).ok()?,
+        Summary::Text => narrowed(envelope, &["text".to_owned()])?,
+        Summary::Full if elements.is_empty() => return serde_json::from_slice(envelope.raw()).ok(),
+        Summary::Full => narrowed(envelope, elements)?,
+    };
+    Some(subsetted(rendered))
+}
+
+fn narrowed(envelope: &ResourceEnvelope, elements: &[String]) -> Option<Value> {
+    let value: Value = serde_json::from_slice(envelope.raw()).ok()?;
+    let source = value.as_object()?;
+    let mut kept = Map::new();
+    for name in ["resourceType", "id", "meta"] {
+        if let Some(found) = source.get(name) {
+            kept.insert(name.to_owned(), found.clone());
+        }
+    }
+    for name in elements {
+        if let Some(found) = source.get(name.as_str()) {
+            kept.insert(name.clone(), found.clone());
+        }
+    }
+    Some(Value::Object(kept))
+}
+
+fn subsetted(mut value: Value) -> Value {
+    let tag = serde_json::json!({
+        "system": "http://terminology.hl7.org/CodeSystem/v3-ObservationValue",
+        "code": "SUBSETTED",
+    });
+    if let Some(object) = value.as_object_mut() {
+        let meta = object
+            .entry("meta".to_owned())
+            .or_insert_with(|| Value::Object(Map::new()));
+        if let Some(meta) = meta.as_object_mut() {
+            match meta.entry("tag".to_owned()).or_insert_with(|| Value::Array(Vec::new())) {
+                Value::Array(tags) => tags.push(tag),
+                other => *other = Value::Array(vec![tag]),
+            }
+        }
+    }
+    value
 }
 
 fn types(raw: &str) -> Result<Vec<ResourceType>, Error> {
@@ -170,5 +340,43 @@ mod tests {
         );
         let current = parse_query(patient(), Some("_list=$current-problems")).unwrap_err();
         assert!(matches!(current, Error::UnsupportedParameter(_)));
+    }
+
+    #[test]
+    fn result_control_defaults_apply_when_nothing_is_asked_for() {
+        let request = SearchRequest::parse(patient(), None).unwrap();
+        assert_eq!(request.summary, Summary::Full);
+        assert_eq!(request.query.count, DEFAULT_COUNT);
+        assert_eq!(request.query.total, TotalMode::Accurate);
+        assert!(request.query.sort.is_empty());
+        assert!(request.elements.is_empty());
+    }
+
+    #[test]
+    fn count_is_capped_and_a_count_summary_drops_entries() {
+        assert_eq!(SearchRequest::parse(patient(), Some("_count=5000")).unwrap().query.count, MAX_COUNT);
+        let counted = SearchRequest::parse(patient(), Some("_summary=count&_total=none")).unwrap();
+        assert_eq!(counted.query.count, 0);
+        assert_eq!(counted.query.total, TotalMode::Accurate);
+    }
+
+    #[test]
+    fn a_sort_key_carries_its_direction() {
+        let request = SearchRequest::parse(patient(), Some("_sort=-_lastUpdated,_id")).unwrap();
+        assert_eq!(request.query.sort[0].direction, SortDirection::Descending);
+        assert_eq!(request.query.sort[1].name, "_id");
+        assert_eq!(request.query.sort[1].direction, SortDirection::Ascending);
+    }
+
+    #[test]
+    fn elements_are_split_on_commas() {
+        let request = SearchRequest::parse(patient(), Some("_elements=active,gender")).unwrap();
+        assert_eq!(request.elements, vec!["active".to_owned(), "gender".to_owned()]);
+    }
+
+    #[test]
+    fn a_narrative_summary_is_recognised() {
+        assert_eq!(SearchRequest::parse(patient(), Some("_summary=text")).unwrap().summary, Summary::Text);
+        assert_eq!(SearchRequest::parse(patient(), Some("_summary=data")).unwrap().summary, Summary::Full);
     }
 }
