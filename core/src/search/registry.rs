@@ -274,6 +274,13 @@ pub fn lookup(resource_type: Option<ResourceType>, name: &str) -> Option<&'stati
         .find(|def| def.name == name)
 }
 
+pub fn references(resource_type: ResourceType) -> Vec<&'static ParamDef> {
+    per_type(resource_type)
+        .iter()
+        .filter(|def| def.value_type == ValueType::Reference)
+        .collect()
+}
+
 pub fn common() -> &'static [ParamDef] {
     COMMON
 }

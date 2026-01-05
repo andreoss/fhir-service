@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use fhir_core::search::{ChainDirection, Criterion, Filter, Target};
+use fhir_core::search::{ChainDirection, Criterion, Filter, Include, IncludeDirection, Target};
 use fhir_core::{Error, FhirInstant, ResourceEnvelope, ResourceId, VersionId};
 use fhir_store::{
     HistoryOrder, HistoryPage, HistoryQuery, HistoryScope, ResourceStore, SearchPage, SearchQuery,
@@ -162,6 +162,107 @@ fn holds(resolved: &Resolved, envelope: &ResourceEnvelope, body: &Value) -> bool
     }
 }
 
+const INCLUDE_ROUNDS: usize = 5;
+
+fn every_reference(body: &Value, out: &mut Vec<String>) {
+    match body {
+        Value::Array(items) => items.iter().for_each(|item| every_reference(item, out)),
+        Value::Object(map) => {
+            if let Some(text) = map.get("reference").and_then(Value::as_str) {
+                out.push(text.to_owned());
+            }
+            map.values().for_each(|nested| every_reference(nested, out));
+        }
+        Value::String(_) | Value::Bool(_) | Value::Number(_) | Value::Null => {}
+    }
+}
+
+fn linked(rule: &Include, body: &Value) -> Vec<String> {
+    if rule.is_wildcard() {
+        let mut found = Vec::new();
+        every_reference(body, &mut found);
+        return found;
+    }
+    rule.paths
+        .iter()
+        .flat_map(|path| fhir_core::search::select(body, path))
+        .flat_map(references)
+        .collect()
+}
+
+fn stored<'a>(guard: &'a StoreMap, text: &str) -> Option<&'a ResourceEnvelope> {
+    let full = normalized(text);
+    let (kind, id) = match full.split_once('/') {
+        Some((kind, id)) => (Some(kind), id),
+        None => (None, full.as_str()),
+    };
+    let current = guard.get(&ResourceId::parse(id).ok()?)?.last()?;
+    if current.is_deleted() || kind.is_some_and(|kind| kind != current.resource_type().as_str()) {
+        return None;
+    }
+    Some(current)
+}
+
+fn pulled_in(
+    guard: &StoreMap,
+    entries: &[ResourceEnvelope],
+    rules: &[Include],
+) -> Result<Vec<ResourceEnvelope>, Error> {
+    let mut seen: HashSet<String> = entries.iter().map(reference_of).collect();
+    let mut included: Vec<ResourceEnvelope> = Vec::new();
+    let mut frontier: Vec<ResourceEnvelope> = entries.to_vec();
+    let mut round = 0;
+    while !frontier.is_empty() && round < INCLUDE_ROUNDS {
+        let mut found: Vec<ResourceEnvelope> = Vec::new();
+        for rule in rules.iter().filter(|rule| round == 0 || rule.iterate) {
+            match rule.direction {
+                IncludeDirection::Forward => {
+                    for envelope in &frontier {
+                        if !rule.covers(envelope.resource_type()) {
+                            continue;
+                        }
+                        let body = body_of(envelope)?;
+                        for text in linked(rule, &body) {
+                            let Some(target) = stored(guard, &text) else { continue };
+                            if rule.target.is_some_and(|kind| kind != target.resource_type()) {
+                                continue;
+                            }
+                            if seen.insert(reference_of(target)) {
+                                found.push(target.clone());
+                            }
+                        }
+                    }
+                }
+                IncludeDirection::Reverse => {
+                    let mut wanted = HashSet::new();
+                    for envelope in &frontier {
+                        if rule.target.is_none_or(|kind| kind == envelope.resource_type()) {
+                            record(&mut wanted, &reference_of(envelope));
+                        }
+                    }
+                    for versions in guard.values() {
+                        let Some(current) = versions.last() else { continue };
+                        if current.is_deleted() || !rule.covers(current.resource_type()) {
+                            continue;
+                        }
+                        let body = body_of(current)?;
+                        let hit = linked(rule, &body)
+                            .iter()
+                            .any(|text| wanted.contains(&normalized(text)));
+                        if hit && seen.insert(reference_of(current)) {
+                            found.push(current.clone());
+                        }
+                    }
+                }
+            }
+        }
+        included.extend(found.iter().cloned());
+        frontier = found;
+        round += 1;
+    }
+    Ok(included)
+}
+
 fn order(matches: &mut [(ResourceEnvelope, Value)], keys: &[SortKey]) {
     matches.sort_by(|left, right| {
         for key in keys {
@@ -318,14 +419,16 @@ impl ResourceStore for MemoryStore {
             TotalMode::None => None,
             TotalMode::Accurate | TotalMode::Estimate => Some(matches.len()),
         };
-        let entries = matches
+        let entries: Vec<ResourceEnvelope> = matches
             .into_iter()
             .skip(query.offset)
             .take(query.count)
             .map(|(envelope, _)| envelope)
             .collect();
+        let included = pulled_in(&guard, &entries, &query.includes)?;
         Ok(SearchPage {
             entries,
+            included,
             total,
             offset: query.offset,
         })

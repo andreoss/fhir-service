@@ -1,4 +1,7 @@
-use fhir_core::search::{lookup, Chain, ChainDirection, Criterion, Filter, Modifier, SearchValue};
+use fhir_core::search::{
+    lookup, references, Chain, ChainDirection, Criterion, Filter, Include, IncludeDirection,
+    Modifier, SearchValue,
+};
 use fhir_core::{Error, ResourceEnvelope, ResourceId, ResourceType};
 use fhir_store::{SearchPage, SearchQuery, SortDirection, SortKey, TotalMode};
 use serde_json::{Map, Value};
@@ -35,6 +38,12 @@ pub fn parse_query(
         match name.as_str() {
             "_type" if base_type.is_none() => query.types = types(&value)?,
             "_list" => query.list = Some(list_id(&value)?),
+            spelled if spelled == "_include" || spelled.starts_with("_include:") => query
+                .includes
+                .push(inclusion(&name, &value, IncludeDirection::Forward)?),
+            spelled if spelled == "_revinclude" || spelled.starts_with("_revinclude:") => query
+                .includes
+                .push(inclusion(&name, &value, IncludeDirection::Reverse)?),
             _ => match criterion(base_type, &name, &value)? {
                 Criterion::Direct(found) => query.filters.push(found),
                 Criterion::Linked(chain) => query.chains.push(chain),
@@ -171,18 +180,29 @@ pub fn search_bundle(
         bundle.insert("total".to_owned(), Value::from(total));
     }
     bundle.insert("link".to_owned(), Value::Array(links));
-    if !page.entries.is_empty() {
-        let entries: Vec<Value> = page
-            .entries
+    let mut rendered: Vec<Value> = page
+        .entries
+        .iter()
+        .map(|found| entry(base, found, "match", summary, elements))
+        .collect();
+    rendered.extend(
+        page.included
             .iter()
-            .map(|found| entry(base, found, summary, elements))
-            .collect();
-        bundle.insert("entry".to_owned(), Value::Array(entries));
+            .map(|found| entry(base, found, "include", summary, elements)),
+    );
+    if !rendered.is_empty() {
+        bundle.insert("entry".to_owned(), Value::Array(rendered));
     }
     serde_json::to_vec(&Value::Object(bundle)).expect("search bundle is serializable")
 }
 
-fn entry(base: &str, envelope: &ResourceEnvelope, summary: Summary, elements: &[String]) -> Value {
+fn entry(
+    base: &str,
+    envelope: &ResourceEnvelope,
+    mode: &str,
+    summary: Summary,
+    elements: &[String],
+) -> Value {
     let resource_type = envelope.resource_type().as_str().to_owned();
     let id = envelope.id().as_str().to_owned();
     let mut entry = Map::new();
@@ -190,7 +210,7 @@ fn entry(base: &str, envelope: &ResourceEnvelope, summary: Summary, elements: &[
     if let Some(resource) = resource_of(envelope, summary, elements) {
         entry.insert("resource".to_owned(), resource);
     }
-    entry.insert("search".to_owned(), serde_json::json!({ "mode": "match" }));
+    entry.insert("search".to_owned(), serde_json::json!({ "mode": mode }));
     Value::Object(entry)
 }
 
@@ -275,6 +295,69 @@ fn filter(
         target: def.target,
         modifier,
         values,
+    })
+}
+
+fn paths_of(def: &'static fhir_core::search::ParamDef) -> Vec<&'static str> {
+    match def.target {
+        fhir_core::search::Target::Path(paths) => paths.to_vec(),
+        _ => Vec::new(),
+    }
+}
+
+fn inclusion(name: &str, raw: &str, direction: IncludeDirection) -> Result<Include, Error> {
+    let iterate = match name.split_once(':') {
+        None => false,
+        Some((_, "iterate")) | Some((_, "recurse")) => true,
+        Some((_, other)) => {
+            return Err(Error::UnsupportedParameter(format!("{name:?} {other:?}")))
+        }
+    };
+    let spelling = format!("{name}={raw}");
+    let unsupported = || Error::UnsupportedParameter(format!("{spelling:?}"));
+    let mut parts = raw.split(':');
+    let head = parts.next().unwrap_or_default();
+    if head == "*" {
+        if parts.next().is_some() {
+            return Err(unsupported());
+        }
+        return Ok(Include {
+            name: spelling,
+            source: None,
+            paths: Vec::new(),
+            target: None,
+            direction,
+            iterate,
+        });
+    }
+    let source: ResourceType = head.parse()?;
+    let param = parts.next().ok_or_else(unsupported)?;
+    let target = match parts.next() {
+        Some(text) => Some(text.parse::<ResourceType>()?),
+        None => None,
+    };
+    if parts.next().is_some() {
+        return Err(unsupported());
+    }
+    let paths: Vec<&'static str> = if param == "*" {
+        references(source).into_iter().flat_map(paths_of).collect()
+    } else {
+        let def = lookup(Some(source), param).ok_or_else(unsupported)?;
+        if def.value_type != fhir_core::search::ValueType::Reference {
+            return Err(unsupported());
+        }
+        paths_of(def)
+    };
+    if paths.is_empty() {
+        return Err(unsupported());
+    }
+    Ok(Include {
+        name: spelling,
+        source: Some(source),
+        paths,
+        target,
+        direction,
+        iterate,
     })
 }
 

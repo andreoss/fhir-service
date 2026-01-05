@@ -1492,3 +1492,85 @@ async fn a_chain_the_server_cannot_follow_is_rejected() {
         assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{uri} gave {}", reply.body);
     }
 }
+
+fn by_mode(value: &serde_json::Value, mode: &str) -> Vec<String> {
+    value["entry"]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter(|item| item["search"]["mode"] == mode)
+                .map(|item| item["resource"]["id"].as_str().unwrap_or_default().to_owned())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+async fn page(app: &Service, uri: &str) -> serde_json::Value {
+    let reply = request(app, "GET", uri, &[], &[]).await;
+    assert_eq!(reply.status, StatusCode::OK, "{uri} gave {}", reply.body);
+    bundle(&reply)
+}
+
+#[tokio::test]
+async fn an_include_pulls_the_referenced_resource_in() {
+    let app = qualified().await;
+    let value = page(&app, "/Observation?_id=ob-m1&_include=Observation:subject").await;
+    assert_eq!(value["total"], 1);
+    assert_eq!(by_mode(&value, "match"), vec!["ob-m1".to_owned()]);
+    assert_eq!(by_mode(&value, "include"), vec!["pt-m1".to_owned()]);
+}
+
+#[tokio::test]
+async fn an_iterating_include_follows_what_it_has_pulled_in() {
+    let app = qualified().await;
+    let uri = "/Observation?_id=ob-m1&_include=Observation:subject&_include:iterate=Patient:organization";
+    let value = page(&app, uri).await;
+    let mut included = by_mode(&value, "include");
+    included.sort();
+    assert_eq!(included, vec!["org-m1".to_owned(), "pt-m1".to_owned()]);
+    let once = page(&app, "/Observation?_id=ob-m1&_include=Observation:subject&_include=Patient:organization").await;
+    assert_eq!(by_mode(&once, "include"), vec!["pt-m1".to_owned()]);
+}
+
+#[tokio::test]
+async fn a_wildcard_include_follows_every_reference() {
+    let app = qualified().await;
+    let typed = page(&app, "/Observation?_id=ob-m1&_include=Observation:*").await;
+    assert_eq!(by_mode(&typed, "include"), vec!["pt-m1".to_owned()]);
+    let any = page(&app, "/Observation?_id=ob-m1&_include=*").await;
+    assert_eq!(by_mode(&any, "include"), vec!["pt-m1".to_owned()]);
+}
+
+#[tokio::test]
+async fn a_reverse_include_pulls_what_points_at_the_match() {
+    let app = qualified().await;
+    let value = page(&app, "/Patient?_id=pt-m1&_revinclude=Observation:patient").await;
+    assert_eq!(by_mode(&value, "match"), vec!["pt-m1".to_owned()]);
+    assert_eq!(by_mode(&value, "include"), vec!["ob-m1".to_owned()]);
+}
+
+#[tokio::test]
+async fn includes_apply_to_the_page_and_never_to_the_total() {
+    let app = qualified().await;
+    let value = page(&app, "/Observation?_count=1&_sort=_id&_include=Observation:subject").await;
+    assert_eq!(value["total"], 2);
+    assert_eq!(by_mode(&value, "match"), vec!["ob-m1".to_owned()]);
+    assert_eq!(by_mode(&value, "include"), vec!["pt-m1".to_owned()]);
+    assert!(link(&value, "next").contains("ct="));
+}
+
+#[tokio::test]
+async fn an_include_the_server_cannot_follow_is_rejected() {
+    let app = qualified().await;
+    for uri in [
+        "/Observation?_include=Nonesuch:subject",
+        "/Observation?_include=Observation:status",
+        "/Observation?_include=Observation:nonesuch",
+        "/Observation?_include:sideways=Observation:subject",
+        "/Observation?_include=Observation",
+    ] {
+        let reply = request(&app, "GET", uri, &[], &[]).await;
+        assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{uri} gave {}", reply.body);
+    }
+}
