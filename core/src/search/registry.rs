@@ -257,4 +257,44 @@ mod tests {
         }
         assert!(lookup(None, "name").is_none());
     }
+
+    #[test]
+    fn every_registered_type_resolves_its_own_parameters() {
+        for (type_name, name) in [
+            ("Patient", "family"),
+            ("Observation", "value-quantity"),
+            ("Encounter", "class"),
+            ("List", "item"),
+            ("Organization", "name"),
+            ("Practitioner", "given"),
+            ("RiskAssessment", "probability"),
+            ("ValueSet", "url"),
+        ] {
+            let resource_type = type_name.parse().unwrap();
+            assert!(lookup(Some(resource_type), name).is_some(), "{type_name} {name}");
+        }
+        let unregistered = "Device".parse().unwrap();
+        assert!(lookup(Some(unregistered), "patient").is_none());
+        assert!(lookup(Some("Patient".parse().unwrap()), "_id").is_some());
+    }
+
+    #[test]
+    fn a_composite_value_is_split_on_the_separator() {
+        let def = lookup(Some("Observation".parse().unwrap()), "code-value-quantity").unwrap();
+        assert!(def.value("http://loinc.org|8867-4$72.5").unwrap().components().is_some());
+        assert!(matches!(def.value("8867-4").unwrap_err(), Error::InvalidParameter(_)));
+    }
+
+    #[test]
+    fn a_composite_type_alone_cannot_parse_a_value() {
+        let error = SearchValue::parse(ValueType::Composite, "a$b").unwrap_err();
+        assert!(matches!(error, Error::InvalidParameter(_)));
+    }
+
+    #[test]
+    fn only_declared_parameters_are_sortable() {
+        let patient = Some("Patient".parse().unwrap());
+        assert!(lookup(patient, "birthdate").is_some_and(|def| def.sortable));
+        assert!(lookup(patient, "identifier").is_some_and(|def| !def.sortable));
+    }
 }
