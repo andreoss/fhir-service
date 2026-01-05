@@ -1240,3 +1240,91 @@ async fn a_malformed_count_is_rejected() {
     let reply = request(&app, "GET", "/Patient?_count=many", &[], &[]).await;
     assert_eq!(reply.status, StatusCode::BAD_REQUEST);
 }
+
+async fn clinical() -> Service {
+    let app = service();
+    let ana = br#"{"resourceType":"Patient","id":"pt-v1","name":[{"family":"de la Cruz","given":["Ana"]}],"birthDate":"1980-04-01","managingOrganization":{"reference":"Organization/org-1"}}"#;
+    let bo = br#"{"resourceType":"Patient","id":"pt-v2","name":[{"family":"Okonkwo","given":["Bo"]}],"birthDate":"1995-11-20"}"#;
+    request(&app, "POST", "/Patient", &[], ana).await;
+    request(&app, "POST", "/Patient", &[], bo).await;
+    let rate = br#"{"resourceType":"Observation","id":"ob-v1","status":"final","code":{"coding":[{"system":"http://loinc.org","code":"8867-4"}]},"subject":{"reference":"Patient/pt-v1"},"effectiveDateTime":"2026-09-06T04:00:00Z","valueQuantity":{"value":72.5,"system":"http://unitsofmeasure.org","code":"/min"}}"#;
+    let pressure = br#"{"resourceType":"Observation","id":"ob-v2","status":"final","code":{"coding":[{"system":"http://loinc.org","code":"85354-9"}]},"subject":{"reference":"Patient/pt-v2"},"effectiveDateTime":"2026-09-06T04:00:00Z","component":[{"code":{"coding":[{"system":"http://loinc.org","code":"8480-6"}]},"valueQuantity":{"value":120,"system":"http://unitsofmeasure.org","code":"mm[Hg]"}}]}"#;
+    request(&app, "POST", "/Observation", &[], rate).await;
+    request(&app, "POST", "/Observation", &[], pressure).await;
+    let risk = br#"{"resourceType":"RiskAssessment","id":"ra-v1","subject":{"reference":"Patient/pt-v1"},"prediction":[{"probabilityDecimal":0.42}]}"#;
+    request(&app, "POST", "/RiskAssessment", &[], risk).await;
+    app
+}
+
+async fn found(app: &Service, uri: &str) -> Vec<String> {
+    let reply = request(app, "GET", uri, &[], &[]).await;
+    assert_eq!(reply.status, StatusCode::OK, "{uri} gave {}", reply.body);
+    entries(&bundle(&reply))
+}
+
+#[tokio::test]
+async fn a_search_matches_string_and_date_values() {
+    let app = clinical().await;
+    assert_eq!(found(&app, "/Patient?family=de%20la").await, vec!["pt-v1".to_owned()]);
+    assert_eq!(found(&app, "/Patient?given=BO").await, vec!["pt-v2".to_owned()]);
+    assert_eq!(found(&app, "/Patient?birthdate=lt1990").await, vec!["pt-v1".to_owned()]);
+    assert_eq!(found(&app, "/Patient?birthdate=1995-11-20").await, vec!["pt-v2".to_owned()]);
+}
+
+#[tokio::test]
+async fn a_search_matches_token_reference_and_uri_values() {
+    let app = clinical().await;
+    assert_eq!(found(&app, "/Observation?code=http://loinc.org|8867-4").await, vec!["ob-v1".to_owned()]);
+    assert_eq!(found(&app, "/Observation?subject=Patient/pt-v2").await, vec!["ob-v2".to_owned()]);
+    assert_eq!(found(&app, "/Observation?patient=pt-v1").await, vec!["ob-v1".to_owned()]);
+    assert_eq!(found(&app, "/Observation?status=final").await.len(), 2);
+    assert_eq!(found(&app, "/Patient?organization=Organization/org-1").await, vec!["pt-v1".to_owned()]);
+}
+
+#[tokio::test]
+async fn a_search_matches_quantity_number_and_composite_values() {
+    let app = clinical().await;
+    assert_eq!(
+        found(&app, "/Observation?value-quantity=72.5|http://unitsofmeasure.org|/min").await,
+        vec!["ob-v1".to_owned()]
+    );
+    assert_eq!(found(&app, "/Observation?value-quantity=gt70").await, vec!["ob-v1".to_owned()]);
+    assert!(found(&app, "/Observation?value-quantity=lt70").await.is_empty());
+    assert_eq!(found(&app, "/RiskAssessment?probability=0.42").await, vec!["ra-v1".to_owned()]);
+    assert_eq!(
+        found(&app, "/Observation?component-code-value-quantity=8480-6$120").await,
+        vec!["ob-v2".to_owned()]
+    );
+    assert!(found(&app, "/Observation?component-code-value-quantity=8867-4$120").await.is_empty());
+}
+
+#[tokio::test]
+async fn a_malformed_composite_value_is_rejected() {
+    let app = clinical().await;
+    let reply = request(&app, "GET", "/Observation?component-code-value-quantity=8480-6", &[], &[]).await;
+    assert_eq!(reply.status, StatusCode::BAD_REQUEST);
+    let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
+    assert_eq!(value["issue"][0]["code"], "invalid");
+}
+
+#[tokio::test]
+async fn a_parameter_of_another_type_is_not_accepted() {
+    let app = clinical().await;
+    let reply = request(&app, "GET", "/Patient?value-quantity=72.5", &[], &[]).await;
+    assert_eq!(reply.status, StatusCode::BAD_REQUEST);
+    let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
+    assert_eq!(value["issue"][0]["code"], "not-supported");
+}
+
+#[tokio::test]
+async fn sorting_orders_by_a_typed_parameter() {
+    let app = clinical().await;
+    assert_eq!(
+        found(&app, "/Patient?_sort=birthdate").await,
+        vec!["pt-v1".to_owned(), "pt-v2".to_owned()]
+    );
+    assert_eq!(
+        found(&app, "/Patient?_sort=-family").await,
+        vec!["pt-v2".to_owned(), "pt-v1".to_owned()]
+    );
+}
