@@ -1,3 +1,4 @@
+use crate::search::modifier::{value_of, Modifier};
 use crate::search::value::{SearchValue, ValueType};
 use crate::{Error, ResourceType};
 
@@ -45,6 +46,13 @@ impl ParamDef {
             Target::Id | Target::LastUpdated | Target::Path(_) => {
                 SearchValue::parse(self.value_type, raw)
             }
+        }
+    }
+
+    pub fn value_with(&self, modifier: &Modifier, raw: &str) -> Result<SearchValue, Error> {
+        match modifier {
+            Modifier::None => self.value(raw),
+            other => value_of(other, self.value_type, raw),
         }
     }
 }

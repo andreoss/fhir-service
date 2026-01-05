@@ -1,8 +1,10 @@
 
+pub mod modifier;
 pub mod path;
 pub mod registry;
 pub mod value;
 
+pub use modifier::Modifier;
 pub use path::select;
 pub use registry::{common, lookup, CompositeDef, ParamDef, SubDef, Target};
 pub use value::{Comparator, SearchValue, Token, TokenSystem, ValueType};
@@ -14,14 +16,77 @@ use serde_json::Value;
 pub struct Filter {
     pub name: String,
     pub target: Target,
+    pub modifier: Modifier,
     pub values: Vec<SearchValue>,
 }
 
 impl Filter {
+    pub fn new(name: &str, target: Target, values: Vec<SearchValue>) -> Filter {
+        Filter {
+            name: name.to_owned(),
+            target,
+            modifier: Modifier::None,
+            values,
+        }
+    }
+
     pub fn matches(&self, id: &ResourceId, last_updated: &FhirInstant, body: &Value) -> bool {
-        self.values
-            .iter()
-            .any(|value| self.accepts(value, id, last_updated, body))
+        match &self.modifier {
+            Modifier::Missing => {
+                let wanted = matches!(self.values.first(), Some(SearchValue::Missing(true)));
+                self.absent(body) == wanted
+            }
+            modifier if modifier.is_exclusive() => !self
+                .values
+                .iter()
+                .any(|value| self.hit(value, id, last_updated, body)),
+            _ => self
+                .values
+                .iter()
+                .any(|value| self.accepts(value, id, last_updated, body)),
+        }
+    }
+
+    pub fn resolved(&self, values: &[SearchValue]) -> Filter {
+        Filter {
+            name: self.name.clone(),
+            target: self.target,
+            modifier: match self.modifier {
+                Modifier::In => Modifier::None,
+                Modifier::NotIn => Modifier::Not,
+                ref other => other.clone(),
+            },
+            values: values.to_vec(),
+        }
+    }
+
+    pub fn code_sets(&self) -> Vec<String> {
+        match self.modifier {
+            Modifier::In | Modifier::NotIn => self
+                .values
+                .iter()
+                .filter_map(|value| match value {
+                    SearchValue::Uri(text) => Some(text.clone()),
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    fn absent(&self, body: &Value) -> bool {
+        match self.target {
+            Target::Id | Target::LastUpdated => false,
+            Target::Path(paths) => paths
+                .iter()
+                .flat_map(|path| select(body, path))
+                .all(Value::is_null),
+            Target::Composite(def) => def
+                .base
+                .iter()
+                .flat_map(|path| select(body, path))
+                .all(Value::is_null),
+        }
     }
 
     fn accepts(
@@ -31,13 +96,27 @@ impl Filter {
         last_updated: &FhirInstant,
         body: &Value,
     ) -> bool {
-        let hit = match self.target {
-            Target::Id => value.matches(&Value::String(id.as_str().to_owned())),
-            Target::LastUpdated => value.matches(&Value::String(last_updated.as_str().to_owned())),
+        self.hit(value, id, last_updated, body) != value.is_negated()
+    }
+
+    fn hit(
+        &self,
+        value: &SearchValue,
+        id: &ResourceId,
+        last_updated: &FhirInstant,
+        body: &Value,
+    ) -> bool {
+        match self.target {
+            Target::Id => self
+                .modifier
+                .accepts(value, &Value::String(id.as_str().to_owned())),
+            Target::LastUpdated => self
+                .modifier
+                .accepts(value, &Value::String(last_updated.as_str().to_owned())),
             Target::Path(paths) => paths
                 .iter()
                 .flat_map(|path| select(body, path))
-                .any(|element| value.matches(element)),
+                .any(|element| self.modifier.accepts(value, element)),
             Target::Composite(def) => match value.components() {
                 Some((left, right)) => def
                     .base
@@ -49,8 +128,7 @@ impl Filter {
                     }),
                 None => false,
             },
-        };
-        hit != value.is_negated()
+        }
     }
 }
 
@@ -103,6 +181,45 @@ pub fn sort_value(
     }
 }
 
+pub fn code_set(body: &Value) -> Vec<SearchValue> {
+    let mut codes = Vec::new();
+    for include in items(select(body, "compose.include")) {
+        let system = include.get("system").and_then(Value::as_str);
+        for concept in items(select(include, "concept")) {
+            if let Some(code) = concept.get("code").and_then(Value::as_str) {
+                codes.push(coded(system, code));
+            }
+        }
+    }
+    for contains in items(select(body, "expansion.contains")) {
+        let system = contains.get("system").and_then(Value::as_str);
+        if let Some(code) = contains.get("code").and_then(Value::as_str) {
+            codes.push(coded(system, code));
+        }
+    }
+    codes
+}
+
+fn items(found: Vec<&Value>) -> Vec<&Value> {
+    found
+        .into_iter()
+        .flat_map(|value| match value {
+            Value::Array(entries) => entries.iter().collect(),
+            other => vec![other],
+        })
+        .collect()
+}
+
+fn coded(system: Option<&str>, code: &str) -> SearchValue {
+    SearchValue::Token(Token {
+        system: match system {
+            Some(text) => TokenSystem::Exact(text.to_owned()),
+            None => TokenSystem::Any,
+        },
+        code: Some(code.to_owned()),
+    })
+}
+
 fn scalar(value: &Value) -> Option<String> {
     match value {
         Value::String(text) => Some(text.clone()),
@@ -138,11 +255,7 @@ mod tests {
     }
 
     fn filter(name: &str, target: Target, values: Vec<SearchValue>) -> Filter {
-        Filter {
-            name: name.to_owned(),
-            target,
-            values,
-        }
+        Filter::new(name, target, values)
     }
 
     #[test]
@@ -210,5 +323,21 @@ mod tests {
         assert!(instant < text);
         assert!(text > instant);
         assert_eq!(text.partial_cmp(&SortValue::Text("B".to_owned())), Some(std::cmp::Ordering::Less));
+    }
+
+    #[test]
+    fn a_code_set_yields_every_code_it_defines() {
+        let body = serde_json::json!({
+            "resourceType": "ValueSet",
+            "compose": {"include": [{"system": "urn:s", "concept": [{"code": "a"}, {"code": "b"}]}]},
+            "expansion": {"contains": [{"system": "urn:t", "code": "c"}, {"display": "no code"}]}
+        });
+        let codes = code_set(&body);
+        assert_eq!(codes.len(), 3);
+        assert!(codes.contains(&SearchValue::Token(Token {
+            system: TokenSystem::Exact("urn:t".to_owned()),
+            code: Some("c".to_owned())
+        })));
+        assert!(code_set(&serde_json::json!({})).is_empty());
     }
 }

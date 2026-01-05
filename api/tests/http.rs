@@ -1328,3 +1328,103 @@ async fn sorting_orders_by_a_typed_parameter() {
         vec!["pt-v2".to_owned(), "pt-v1".to_owned()]
     );
 }
+
+async fn qualified() -> Service {
+    let app = service();
+    let ann = br#"{"resourceType":"Patient","id":"pt-m1","name":[{"family":"Sorensen","given":["Ann"]}],"gender":"female","identifier":[{"type":{"coding":[{"system":"urn:t","code":"MR"}]},"system":"urn:mrn","value":"12345"}]}"#;
+    let bo = br#"{"resourceType":"Patient","id":"pt-m2","name":[{"family":"Okonkwo"}],"gender":"male"}"#;
+    request(&app, "POST", "/Patient", &[], ann).await;
+    request(&app, "POST", "/Patient", &[], bo).await;
+    let warm = br#"{"resourceType":"Observation","id":"ob-m1","status":"final","code":{"text":"Body Temperature","coding":[{"system":"urn:s","code":"vital.temperature"}]},"subject":{"reference":"Patient/pt-m1"}}"#;
+    let other = br#"{"resourceType":"Observation","id":"ob-m2","status":"registered","code":{"coding":[{"system":"urn:s","code":"survey"}]},"subject":{"identifier":{"system":"urn:mrn","value":"12345"}}}"#;
+    request(&app, "POST", "/Observation", &[], warm).await;
+    request(&app, "POST", "/Observation", &[], other).await;
+    let set = br#"{"resourceType":"ValueSet","id":"vs-m1","url":"http://x/vitals","status":"active","compose":{"include":[{"system":"urn:s","concept":[{"code":"vital.temperature"}]}]}}"#;
+    request(&app, "POST", "/ValueSet", &[], set).await;
+    app
+}
+
+#[tokio::test]
+async fn string_modifiers_narrow_a_search() {
+    let app = qualified().await;
+    assert_eq!(found(&app, "/Patient?family:exact=Okonkwo").await, vec!["pt-m2".to_owned()]);
+    assert!(found(&app, "/Patient?family:exact=okonkwo").await.is_empty());
+    assert_eq!(found(&app, "/Patient?family:contains=oren").await, vec!["pt-m1".to_owned()]);
+}
+
+#[tokio::test]
+async fn the_missing_modifier_selects_by_presence() {
+    let app = qualified().await;
+    assert_eq!(found(&app, "/Patient?identifier:missing=true").await, vec!["pt-m2".to_owned()]);
+    assert_eq!(found(&app, "/Patient?identifier:missing=false").await, vec!["pt-m1".to_owned()]);
+}
+
+#[tokio::test]
+async fn the_not_modifier_excludes_every_matching_value() {
+    let app = qualified().await;
+    assert_eq!(found(&app, "/Patient?gender:not=male").await, vec!["pt-m1".to_owned()]);
+    assert!(found(&app, "/Observation?status:not=final,registered").await.is_empty());
+}
+
+#[tokio::test]
+async fn the_text_modifier_matches_the_narrative_of_a_code() {
+    let app = qualified().await;
+    assert_eq!(found(&app, "/Observation?code:text=temperature").await, vec!["ob-m1".to_owned()]);
+    assert!(found(&app, "/Observation?code:text=survey").await.is_empty());
+}
+
+#[tokio::test]
+async fn code_set_membership_is_resolved_by_the_store() {
+    let app = qualified().await;
+    assert_eq!(found(&app, "/Observation?code:in=http://x/vitals").await, vec!["ob-m1".to_owned()]);
+    assert_eq!(found(&app, "/Observation?code:not-in=http://x/vitals").await, vec!["ob-m2".to_owned()]);
+    let unknown = request(&app, "GET", "/Observation?code:in=http://x/none", &[], &[]).await;
+    assert_eq!(unknown.status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn hierarchy_modifiers_walk_a_code() {
+    let app = qualified().await;
+    assert_eq!(found(&app, "/Observation?code:below=vital").await, vec!["ob-m1".to_owned()]);
+    assert!(found(&app, "/Observation?code:below=other").await.is_empty());
+    assert_eq!(
+        found(&app, "/Observation?code:above=vital.temperature.core").await,
+        vec!["ob-m1".to_owned()]
+    );
+}
+
+#[tokio::test]
+async fn reference_modifiers_read_the_type_and_the_identifier() {
+    let app = qualified().await;
+    assert_eq!(found(&app, "/Observation?subject:Patient=pt-m1").await, vec!["ob-m1".to_owned()]);
+    assert!(found(&app, "/Observation?subject:Group=pt-m1").await.is_empty());
+    assert_eq!(
+        found(&app, "/Observation?subject:identifier=urn:mrn|12345").await,
+        vec!["ob-m2".to_owned()]
+    );
+}
+
+#[tokio::test]
+async fn the_of_type_modifier_matches_a_qualified_identifier() {
+    let app = qualified().await;
+    assert_eq!(
+        found(&app, "/Patient?identifier:of-type=urn:t|MR|12345").await,
+        vec!["pt-m1".to_owned()]
+    );
+    assert!(found(&app, "/Patient?identifier:of-type=urn:t|MR|999").await.is_empty());
+}
+
+#[tokio::test]
+async fn a_modifier_the_parameter_forbids_is_rejected() {
+    let app = qualified().await;
+    for uri in ["/Patient?gender:exact=male", "/Patient?family:nonesuch=Ann"] {
+        let reply = request(&app, "GET", uri, &[], &[]).await;
+        assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{uri}");
+        let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
+        assert_eq!(value["issue"][0]["code"], "not-supported", "{uri}");
+    }
+    let reply = request(&app, "GET", "/Patient?identifier:missing=perhaps", &[], &[]).await;
+    assert_eq!(reply.status, StatusCode::BAD_REQUEST);
+    let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
+    assert_eq!(value["issue"][0]["code"], "invalid");
+}

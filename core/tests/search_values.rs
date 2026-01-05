@@ -5,14 +5,13 @@ use serde_json::{json, Value};
 fn filter(type_name: &str, name: &str, raw: &str) -> Filter {
     let resource_type = type_name.parse().unwrap();
     let def = lookup(Some(resource_type), name).expect("parameter is registered");
-    Filter {
-        name: name.to_owned(),
-        target: def.target,
-        values: raw
-            .split(',')
+    Filter::new(
+        name,
+        def.target,
+        raw.split(',')
             .map(|part| def.value(part).expect("value parses"))
             .collect(),
-    }
+    )
 }
 
 fn matches(type_name: &str, name: &str, raw: &str, body: &Value) -> bool {

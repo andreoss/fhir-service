@@ -1,4 +1,4 @@
-use fhir_core::search::{lookup, Filter, SearchValue};
+use fhir_core::search::{lookup, Filter, Modifier, SearchValue};
 use fhir_core::{Error, ResourceEnvelope, ResourceId, ResourceType};
 use fhir_store::{SearchPage, SearchQuery, SortDirection, SortKey, TotalMode};
 use serde_json::{Map, Value};
@@ -257,11 +257,12 @@ fn filter(
     name: &str,
     raw: &str,
 ) -> Result<Filter, Error> {
-    let def = lookup(base_type, name)
+    let (base, modifier) = split_modifier(name)?;
+    let def = lookup(base_type, base)
         .ok_or_else(|| Error::UnsupportedParameter(format!("{name:?}")))?;
     let values = raw
         .split(',')
-        .map(|part| def.value(part))
+        .map(|part| def.value_with(&modifier, part))
         .collect::<Result<Vec<SearchValue>, Error>>()?;
     if values.is_empty() {
         return Err(Error::InvalidParameter(format!("{name:?} has no value")));
@@ -269,8 +270,16 @@ fn filter(
     Ok(Filter {
         name: name.to_owned(),
         target: def.target,
+        modifier,
         values,
     })
+}
+
+fn split_modifier(name: &str) -> Result<(&str, Modifier), Error> {
+    match name.split_once(':') {
+        Some((base, text)) => Ok((base, text.parse::<Modifier>()?)),
+        None => Ok((name, Modifier::None)),
+    }
 }
 
 #[cfg(test)]
@@ -309,7 +318,7 @@ mod tests {
 
     #[test]
     fn an_unimplemented_parameter_is_rejected() {
-        for raw in ["nonesuch=1", "_include=Patient:link", "name:exact=Ann", "subject.name=Ann"] {
+        for raw in ["nonesuch=1", "_include=Patient:link", "subject.name=Ann"] {
             let error = parse_query(patient(), Some(raw)).unwrap_err();
             assert!(matches!(error, Error::UnsupportedParameter(_)), "{raw} gave {error:?}");
         }

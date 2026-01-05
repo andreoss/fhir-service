@@ -4,14 +4,13 @@ use serde_json::json;
 
 fn filter(name: &str, raw: &str) -> Filter {
     let def = lookup(None, name).expect("common parameter is registered");
-    Filter {
-        name: name.to_owned(),
-        target: def.target,
-        values: raw
-            .split(',')
+    Filter::new(
+        name,
+        def.target,
+        raw.split(',')
             .map(|part| SearchValue::parse(def.value_type, part).expect("value parses"))
             .collect(),
-    }
+    )
 }
 
 fn body() -> serde_json::Value {

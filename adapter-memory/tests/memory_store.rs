@@ -47,11 +47,7 @@ fn query(params: &[(&str, &str)]) -> SearchQuery {
         .iter()
         .map(|(name, value)| {
             let def = lookup(Some(resource_type), name).expect("parameter is registered");
-            Filter {
-                name: (*name).to_owned(),
-                target: def.target,
-                values: vec![def.value(value).unwrap()],
-            }
+            Filter::new(name, def.target, vec![def.value(value).unwrap()])
         })
         .collect();
     SearchQuery {
@@ -532,4 +528,72 @@ async fn instance_history_of_an_unknown_id_is_not_found() {
     assert_eq!(store.history(&scope, &HistoryQuery::default()).await, Err(Error::NotFound));
     let mismatch = HistoryScope::Instance("Observation".parse().unwrap(), id("pt-h1"));
     assert_eq!(store.history(&mismatch, &HistoryQuery::default()).await, Err(Error::NotFound));
+}
+
+fn value_set(id: &str, url: &str, codes: &[&str]) -> ResourceEnvelope {
+    let concepts: Vec<String> = codes
+        .iter()
+        .map(|code| format!(r#"{{"code":"{code}"}}"#))
+        .collect();
+    let bytes = format!(
+        r#"{{"resourceType":"ValueSet","id":"{id}","meta":{{"versionId":"0","lastUpdated":"2026-09-06T04:00:00Z"}},"url":"{url}","status":"active","compose":{{"include":[{{"system":"urn:s","concept":[{}]}}]}}}}"#,
+        concepts.join(",")
+    )
+    .into_bytes();
+    ResourceEnvelope::parse(FhirVersion::R4, &bytes).unwrap()
+}
+
+fn coded_observation(id: &str, code: &str) -> ResourceEnvelope {
+    let bytes = format!(
+        r#"{{"resourceType":"Observation","id":"{id}","meta":{{"versionId":"0","lastUpdated":"2026-09-06T04:00:00Z"}},"status":"final","code":{{"coding":[{{"system":"urn:s","code":"{code}"}}]}}}}"#
+    )
+    .into_bytes();
+    ResourceEnvelope::parse(FhirVersion::R4, &bytes).unwrap()
+}
+
+fn coded_query(modifier: fhir_core::search::Modifier, url: &str) -> SearchQuery {
+    let resource_type: fhir_core::ResourceType = "Observation".parse().unwrap();
+    let def = lookup(Some(resource_type), "code").unwrap();
+    let filter = Filter {
+        name: "code".to_owned(),
+        target: def.target,
+        values: vec![def.value_with(&modifier, url).unwrap()],
+        modifier,
+    };
+    SearchQuery {
+        types: vec![resource_type],
+        filters: vec![filter],
+        ..SearchQuery::default()
+    }
+}
+
+#[tokio::test]
+async fn a_code_set_membership_filter_is_expanded_by_the_store() {
+    let store = store();
+    store.create(value_set("vs-1", "http://x/vs", &["a", "b"])).await.unwrap();
+    store.create(coded_observation("ob-1", "a")).await.unwrap();
+    store.create(coded_observation("ob-2", "z")).await.unwrap();
+    let inside = store
+        .search(&coded_query(fhir_core::search::Modifier::In, "http://x/vs"))
+        .await
+        .unwrap();
+    assert_eq!(inside.entries.len(), 1);
+    assert_eq!(inside.entries[0].id().as_str(), "ob-1");
+    let outside = store
+        .search(&coded_query(fhir_core::search::Modifier::NotIn, "http://x/vs"))
+        .await
+        .unwrap();
+    assert_eq!(outside.entries.len(), 1);
+    assert_eq!(outside.entries[0].id().as_str(), "ob-2");
+}
+
+#[tokio::test]
+async fn an_unknown_code_set_is_an_invalid_parameter() {
+    let store = store();
+    store.create(coded_observation("ob-1", "a")).await.unwrap();
+    let error = store
+        .search(&coded_query(fhir_core::search::Modifier::In, "http://x/none"))
+        .await
+        .unwrap_err();
+    assert!(matches!(error, Error::InvalidParameter(_)));
 }

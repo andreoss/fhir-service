@@ -89,6 +89,12 @@ pub enum SearchValue {
         right: Box<SearchValue>,
     },
     Uri(String),
+    OfType {
+        system: TokenSystem,
+        code: Option<String>,
+        value: String,
+    },
+    Missing(bool),
 }
 
 impl SearchValue {
@@ -109,6 +115,24 @@ impl SearchValue {
                 "composite value {raw:?} needs a parameter definition"
             ))),
             ValueType::Uri => Ok(SearchValue::Uri(raw.to_owned())),
+        }
+    }
+
+    pub fn of_type(raw: &str) -> Result<SearchValue, Error> {
+        let mut parts = raw.splitn(3, '|');
+        let system = parts.next().unwrap_or_default();
+        match (parts.next(), parts.next()) {
+            (Some(code), Some(value)) if !value.is_empty() => Ok(SearchValue::OfType {
+                system: match system {
+                    "" => TokenSystem::Any,
+                    text => TokenSystem::Exact(text.to_owned()),
+                },
+                code: (!code.is_empty()).then(|| code.to_owned()),
+                value: value.to_owned(),
+            }),
+            _ => Err(Error::InvalidParameter(format!(
+                "of-type {raw:?} needs a system, a code and a value"
+            ))),
         }
     }
 
@@ -157,7 +181,37 @@ impl SearchValue {
             SearchValue::Reference(target) => reference_matches(target, element),
             SearchValue::Composite { .. } => false,
             SearchValue::Uri(text) => uri_matches(text, element),
+            SearchValue::OfType {
+                system,
+                code,
+                value,
+            } => of_type_matches(system, code.as_deref(), value, element),
+            SearchValue::Missing(_) => false,
         }
+    }
+}
+
+fn of_type_matches(
+    system: &TokenSystem,
+    code: Option<&str>,
+    value: &str,
+    element: &Value,
+) -> bool {
+    match element {
+        Value::Array(items) => items
+            .iter()
+            .any(|item| of_type_matches(system, code, value, item)),
+        Value::Object(map) => {
+            let qualifier = Token {
+                system: system.clone(),
+                code: code.map(str::to_owned),
+            };
+            map.get("value").and_then(Value::as_str) == Some(value)
+                && map
+                    .get("type")
+                    .is_some_and(|found| token_matches(&qualifier, found))
+        }
+        Value::Bool(_) | Value::Number(_) | Value::String(_) | Value::Null => false,
     }
 }
 

@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use fhir_core::search::Filter;
 use fhir_core::{Error, FhirInstant, ResourceEnvelope, ResourceId, VersionId};
 use fhir_store::{
     HistoryOrder, HistoryPage, HistoryQuery, HistoryScope, ResourceStore, SearchPage, SearchQuery,
@@ -30,6 +31,32 @@ fn list_members(guard: &StoreMap, id: &ResourceId) -> Result<HashSet<String>, Er
         .into_iter()
         .filter_map(|value| value.as_str().map(str::to_owned))
         .collect())
+}
+
+fn code_set(guard: &StoreMap, url: &str) -> Result<Vec<fhir_core::SearchValue>, Error> {
+    for versions in guard.values() {
+        let Some(current) = versions.last() else { continue };
+        if current.is_deleted() || current.resource_type().as_str() != "ValueSet" {
+            continue;
+        }
+        let body = body_of(current)?;
+        if body.get("url").and_then(Value::as_str) == Some(url) {
+            return Ok(fhir_core::search::code_set(&body));
+        }
+    }
+    Err(Error::InvalidParameter(format!("code set {url:?} is unknown")))
+}
+
+fn expanded(guard: &StoreMap, filter: &Filter) -> Result<Filter, Error> {
+    let addresses = filter.code_sets();
+    if addresses.is_empty() {
+        return Ok(filter.clone());
+    }
+    let mut values = Vec::new();
+    for address in addresses {
+        values.extend(code_set(guard, &address)?);
+    }
+    Ok(filter.resolved(&values))
 }
 
 fn order(matches: &mut [(ResourceEnvelope, Value)], keys: &[SortKey]) {
@@ -150,6 +177,11 @@ impl ResourceStore for MemoryStore {
             Some(id) => Some(list_members(&guard, id)?),
             None => None,
         };
+        let filters = query
+            .filters
+            .iter()
+            .map(|filter| expanded(&guard, filter))
+            .collect::<Result<Vec<Filter>, Error>>()?;
         let mut matches: Vec<(ResourceEnvelope, Value)> = Vec::new();
         for versions in guard.values() {
             let Some(current) = versions.last() else { continue };
@@ -165,8 +197,7 @@ impl ResourceStore for MemoryStore {
                 }
             }
             let body = body_of(current)?;
-            let kept = query
-                .filters
+            let kept = filters
                 .iter()
                 .all(|filter| filter.matches(current.id(), current.last_updated(), &body));
             if kept {
