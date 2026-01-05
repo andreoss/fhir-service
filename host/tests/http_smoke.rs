@@ -422,3 +422,91 @@ fn history_over_http_pages_and_orders_versions() {
     assert_eq!(rejected.status, 400);
     assert_eq!(issue_code(&rejected.body), "not-supported");
 }
+
+fn ids(body: &str) -> Vec<String> {
+    let value: serde_json::Value = serde_json::from_str(body).expect("bundle must be json");
+    value["entry"]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .map(|item| item["resource"]["id"].as_str().unwrap_or_default().to_owned())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn total(body: &str) -> serde_json::Value {
+    let value: serde_json::Value = serde_json::from_str(body).expect("bundle must be json");
+    value["total"].clone()
+}
+
+fn next_token(body: &str) -> String {
+    let value: serde_json::Value = serde_json::from_str(body).expect("bundle must be json");
+    value["link"]
+        .as_array()
+        .and_then(|links| {
+            links
+                .iter()
+                .find(|link| link["relation"] == "next")
+                .and_then(|link| link["url"].as_str())
+        })
+        .and_then(|url| url.rsplit("ct=").next())
+        .unwrap_or_default()
+        .to_owned()
+}
+
+#[test]
+fn live_search_selects_pages_and_reports_totals() {
+    let (child, port) = spawn_server();
+    for index in 1..=5 {
+        request(port, "POST", "/Patient", &[], &patient(&format!("pt-k{index}"), index % 2 == 1));
+    }
+    let all = request(port, "GET", "/Patient", &[], &[]);
+    let by_id = request(port, "GET", "/Patient?_id=pt-k3", &[], &[]);
+    let active = request(port, "GET", "/Patient?active=true", &[], &[]);
+    let first = request(port, "GET", "/Patient?_count=2&_sort=_id", &[], &[]);
+    let token = next_token(&first.body);
+    let second = request(port, "GET", &format!("/Patient?_count=2&_sort=_id&ct={token}"), &[], &[]);
+    let counted = request(port, "GET", "/Patient?_summary=count", &[], &[]);
+    let untotalled = request(port, "GET", "/Patient?_total=none", &[], &[]);
+    stop(child);
+
+    assert_eq!(all.status, 200);
+    assert_eq!(header(&all, "content-type"), "application/fhir+json");
+    assert_eq!(total(&all.body), 5);
+    assert_eq!(ids(&by_id.body), vec!["pt-k3".to_owned()]);
+    assert_eq!(total(&active.body), 3);
+    assert_eq!(ids(&first.body), vec!["pt-k1".to_owned(), "pt-k2".to_owned()]);
+    assert!(!token.is_empty(), "no continuation token was offered");
+    assert_eq!(ids(&second.body), vec!["pt-k3".to_owned(), "pt-k4".to_owned()]);
+    assert_eq!(total(&counted.body), 5);
+    assert!(ids(&counted.body).is_empty());
+    assert!(total(&untotalled.body).is_null());
+}
+
+#[test]
+fn live_search_matches_typed_values_and_rejects_the_unsupported() {
+    let (child, port) = spawn_server();
+    let observation = br#"{"resourceType":"Observation","id":"ob-k1","status":"final","code":{"coding":[{"system":"http://loinc.org","code":"8867-4"}]},"subject":{"reference":"Patient/pt-k1"},"effectiveDateTime":"2026-09-06T04:00:00Z","valueQuantity":{"value":72.5,"system":"http://unitsofmeasure.org","code":"/min"}}"#;
+    request(port, "POST", "/Observation", &[], observation);
+    let by_code = request(port, "GET", "/Observation?code=http%3A%2F%2Floinc.org%7C8867-4", &[], &[]);
+    let by_reference = request(port, "GET", "/Observation?patient=pt-k1", &[], &[]);
+    let by_quantity = request(port, "GET", "/Observation?value-quantity=gt70", &[], &[]);
+    let below = request(port, "GET", "/Observation?value-quantity=lt70", &[], &[]);
+    let unknown = request(port, "GET", "/Observation?nonesuch=1", &[], &[]);
+    let unsortable = request(port, "GET", "/Observation?_sort=code", &[], &[]);
+    let malformed = request(port, "GET", "/Observation?date=whenever", &[], &[]);
+    stop(child);
+
+    assert_eq!(ids(&by_code.body), vec!["ob-k1".to_owned()]);
+    assert_eq!(ids(&by_reference.body), vec!["ob-k1".to_owned()]);
+    assert_eq!(ids(&by_quantity.body), vec!["ob-k1".to_owned()]);
+    assert_eq!(total(&below.body), 0);
+    assert_eq!(unknown.status, 400);
+    assert_eq!(issue_code(&unknown.body), "not-supported");
+    assert_eq!(unsortable.status, 400);
+    assert_eq!(issue_code(&unsortable.body), "not-supported");
+    assert_eq!(malformed.status, 400);
+    assert_eq!(issue_code(&malformed.body), "invalid");
+}
