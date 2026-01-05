@@ -1,9 +1,11 @@
 
+pub mod chain;
 pub mod modifier;
 pub mod path;
 pub mod registry;
 pub mod value;
 
+pub use chain::{Chain, ChainDirection, Criterion};
 pub use modifier::Modifier;
 pub use path::select;
 pub use registry::{common, lookup, CompositeDef, ParamDef, SubDef, Target};

@@ -28,6 +28,7 @@ pub struct ParamDef {
     pub name: &'static str,
     pub value_type: ValueType,
     pub target: Target,
+    pub targets: &'static [&'static str],
     pub sortable: bool,
 }
 
@@ -63,30 +64,35 @@ const COMMON: &[ParamDef] = &[
         name: "_id",
         value_type: ValueType::Token,
         target: Target::Id,
+        targets: &[],
         sortable: true,
     },
     ParamDef {
         name: "_lastUpdated",
         value_type: ValueType::Date,
         target: Target::LastUpdated,
+        targets: &[],
         sortable: true,
     },
     ParamDef {
         name: "_profile",
         value_type: ValueType::Uri,
         target: Target::Path(&["meta.profile"]),
+        targets: &[],
         sortable: false,
     },
     ParamDef {
         name: "_tag",
         value_type: ValueType::Token,
         target: Target::Path(&["meta.tag"]),
+        targets: &[],
         sortable: false,
     },
     ParamDef {
         name: "_security",
         value_type: ValueType::Token,
         target: Target::Path(&["meta.security"]),
+        targets: &[],
         sortable: false,
     },
 ];
@@ -96,6 +102,21 @@ const fn def(name: &'static str, value_type: ValueType, paths: &'static [&'stati
         name,
         value_type,
         target: Target::Path(paths),
+        targets: &[],
+        sortable: false,
+    }
+}
+
+const fn refers(
+    name: &'static str,
+    paths: &'static [&'static str],
+    targets: &'static [&'static str],
+) -> ParamDef {
+    ParamDef {
+        name,
+        value_type: ValueType::Reference,
+        target: Target::Path(paths),
+        targets,
         sortable: false,
     }
 }
@@ -109,6 +130,7 @@ const fn sorted(
         name,
         value_type,
         target: Target::Path(paths),
+        targets: &[],
         sortable: true,
     }
 }
@@ -144,11 +166,11 @@ const PATIENT: &[ParamDef] = &[
     def("death-date", ValueType::Date, &["deceasedDateTime"]),
     sorted("family", ValueType::String, &["name.family"]),
     sorted("gender", ValueType::Token, &["gender"]),
-    def("general-practitioner", ValueType::Reference, &["generalPractitioner"]),
+    refers("general-practitioner", &["generalPractitioner"], &["Practitioner", "Organization"]),
     def("given", ValueType::String, &["name.given"]),
     def("identifier", ValueType::Token, &["identifier"]),
     sorted("name", ValueType::String, &["name"]),
-    def("organization", ValueType::Reference, &["managingOrganization"]),
+    refers("organization", &["managingOrganization"], &["Organization"]),
     def("telecom", ValueType::Token, &["telecom"]),
 ];
 
@@ -159,6 +181,7 @@ const OBSERVATION: &[ParamDef] = &[
         name: "code-value-quantity",
         value_type: ValueType::Composite,
         target: Target::Composite(&CODE_VALUE_QUANTITY),
+        targets: &[],
         sortable: false,
     },
     def("component-code", ValueType::Token, &["component.code"]),
@@ -166,15 +189,16 @@ const OBSERVATION: &[ParamDef] = &[
         name: "component-code-value-quantity",
         value_type: ValueType::Composite,
         target: Target::Composite(&COMPONENT_CODE_VALUE_QUANTITY),
+        targets: &[],
         sortable: false,
     },
     def("component-value-quantity", ValueType::Quantity, &["component.valueQuantity"]),
     sorted("date", ValueType::Date, &["effectiveDateTime", "effectivePeriod"]),
-    def("encounter", ValueType::Reference, &["encounter"]),
+    refers("encounter", &["encounter"], &["Encounter"]),
     def("identifier", ValueType::Token, &["identifier"]),
-    def("patient", ValueType::Reference, &["subject"]),
+    refers("patient", &["subject"], &["Patient"]),
     sorted("status", ValueType::Token, &["status"]),
-    def("subject", ValueType::Reference, &["subject"]),
+    refers("subject", &["subject"], &["Patient", "Group"]),
     def("value-quantity", ValueType::Quantity, &["valueQuantity"]),
     def("value-string", ValueType::String, &["valueString"]),
 ];
@@ -183,19 +207,19 @@ const ENCOUNTER: &[ParamDef] = &[
     def("class", ValueType::Token, &["class"]),
     sorted("date", ValueType::Date, &["period"]),
     def("identifier", ValueType::Token, &["identifier"]),
-    def("patient", ValueType::Reference, &["subject"]),
-    def("service-provider", ValueType::Reference, &["serviceProvider"]),
+    refers("patient", &["subject"], &["Patient"]),
+    refers("service-provider", &["serviceProvider"], &["Organization"]),
     sorted("status", ValueType::Token, &["status"]),
-    def("subject", ValueType::Reference, &["subject"]),
+    refers("subject", &["subject"], &["Patient", "Group"]),
 ];
 
 const LIST: &[ParamDef] = &[
     sorted("date", ValueType::Date, &["date"]),
     def("identifier", ValueType::Token, &["identifier"]),
-    def("item", ValueType::Reference, &["entry.item"]),
-    def("patient", ValueType::Reference, &["subject"]),
+    refers("item", &["entry.item"], &[]),
+    refers("patient", &["subject"], &["Patient"]),
     sorted("status", ValueType::Token, &["status"]),
-    def("subject", ValueType::Reference, &["subject"]),
+    refers("subject", &["subject"], &["Patient", "Group"]),
     sorted("title", ValueType::String, &["title"]),
 ];
 
@@ -216,9 +240,9 @@ const PRACTITIONER: &[ParamDef] = &[
 
 const RISK_ASSESSMENT: &[ParamDef] = &[
     def("identifier", ValueType::Token, &["identifier"]),
-    def("patient", ValueType::Reference, &["subject"]),
+    refers("patient", &["subject"], &["Patient"]),
     def("probability", ValueType::Number, &["prediction.probabilityDecimal"]),
-    def("subject", ValueType::Reference, &["subject"]),
+    refers("subject", &["subject"], &["Patient", "Group"]),
 ];
 
 const VALUE_SET: &[ParamDef] = &[

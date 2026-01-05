@@ -1331,7 +1331,9 @@ async fn sorting_orders_by_a_typed_parameter() {
 
 async fn qualified() -> Service {
     let app = service();
-    let ann = br#"{"resourceType":"Patient","id":"pt-m1","name":[{"family":"Sorensen","given":["Ann"]}],"gender":"female","identifier":[{"type":{"coding":[{"system":"urn:t","code":"MR"}]},"system":"urn:mrn","value":"12345"}]}"#;
+    let ann = br#"{"resourceType":"Patient","id":"pt-m1","name":[{"family":"Sorensen","given":["Ann"]}],"gender":"female","managingOrganization":{"reference":"Organization/org-m1"},"identifier":[{"type":{"coding":[{"system":"urn:t","code":"MR"}]},"system":"urn:mrn","value":"12345"}]}"#;
+    let clinic = br#"{"resourceType":"Organization","id":"org-m1","name":"Mercy","active":true}"#;
+    request(&app, "POST", "/Organization", &[], clinic).await;
     let bo = br#"{"resourceType":"Patient","id":"pt-m2","name":[{"family":"Okonkwo"}],"gender":"male"}"#;
     request(&app, "POST", "/Patient", &[], ann).await;
     request(&app, "POST", "/Patient", &[], bo).await;
@@ -1427,4 +1429,66 @@ async fn a_modifier_the_parameter_forbids_is_rejected() {
     assert_eq!(reply.status, StatusCode::BAD_REQUEST);
     let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
     assert_eq!(value["issue"][0]["code"], "invalid");
+}
+
+#[tokio::test]
+async fn a_chained_search_follows_a_reference() {
+    let app = qualified().await;
+    assert_eq!(
+        found(&app, "/Observation?subject:Patient.family:exact=Sorensen").await,
+        vec!["ob-m1".to_owned()]
+    );
+    assert_eq!(found(&app, "/Observation?patient.gender=female").await, vec!["ob-m1".to_owned()]);
+    assert!(found(&app, "/Observation?patient.gender=male").await.is_empty());
+}
+
+#[tokio::test]
+async fn a_chain_reaches_across_more_than_one_link() {
+    let app = qualified().await;
+    assert_eq!(
+        found(&app, "/Observation?patient.organization.name=Mercy").await,
+        vec!["ob-m1".to_owned()]
+    );
+    assert!(found(&app, "/Observation?patient.organization.name=Other").await.is_empty());
+}
+
+#[tokio::test]
+async fn a_reverse_chain_selects_by_what_points_at_the_resource() {
+    let app = qualified().await;
+    assert_eq!(
+        found(&app, "/Patient?_has:Observation:patient:status=final").await,
+        vec!["pt-m1".to_owned()]
+    );
+    assert!(found(&app, "/Patient?_has:Observation:patient:status=cancelled").await.is_empty());
+}
+
+#[tokio::test]
+async fn reverse_chains_nest() {
+    let app = qualified().await;
+    let uri = "/Organization?_has:Patient:organization:_has:Observation:patient:status=final";
+    assert_eq!(found(&app, uri).await, vec!["org-m1".to_owned()]);
+    let none = "/Organization?_has:Patient:organization:_has:Observation:patient:status=amended";
+    assert!(found(&app, none).await.is_empty());
+}
+
+#[tokio::test]
+async fn a_reverse_chain_carries_a_forward_chain() {
+    let app = qualified().await;
+    let uri = "/Patient?_has:Observation:patient:patient.gender=female";
+    assert_eq!(found(&app, uri).await, vec!["pt-m1".to_owned()]);
+}
+
+#[tokio::test]
+async fn a_chain_the_server_cannot_follow_is_rejected() {
+    let app = qualified().await;
+    for uri in [
+        "/Observation?subject.nonesuch=x",
+        "/Observation?status.name=x",
+        "/Patient?_has:Observation:nonesuch:status=final",
+        "/Patient?_has:Observation:patient=final",
+        "/Patient?_has:Nonesuch:patient:status=final",
+    ] {
+        let reply = request(&app, "GET", uri, &[], &[]).await;
+        assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{uri} gave {}", reply.body);
+    }
 }

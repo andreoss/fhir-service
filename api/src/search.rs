@@ -1,4 +1,4 @@
-use fhir_core::search::{lookup, Filter, Modifier, SearchValue};
+use fhir_core::search::{lookup, Chain, ChainDirection, Criterion, Filter, Modifier, SearchValue};
 use fhir_core::{Error, ResourceEnvelope, ResourceId, ResourceType};
 use fhir_store::{SearchPage, SearchQuery, SortDirection, SortKey, TotalMode};
 use serde_json::{Map, Value};
@@ -35,7 +35,10 @@ pub fn parse_query(
         match name.as_str() {
             "_type" if base_type.is_none() => query.types = types(&value)?,
             "_list" => query.list = Some(list_id(&value)?),
-            _ => query.filters.push(filter(base_type, &name, &value)?),
+            _ => match criterion(base_type, &name, &value)? {
+                Criterion::Direct(found) => query.filters.push(found),
+                Criterion::Linked(chain) => query.chains.push(chain),
+            },
         }
     }
     Ok(query)
@@ -273,6 +276,114 @@ fn filter(
         modifier,
         values,
     })
+}
+
+fn criterion(
+    base_type: Option<ResourceType>,
+    name: &str,
+    raw: &str,
+) -> Result<Criterion, Error> {
+    if let Some(rest) = name.strip_prefix("_has:") {
+        return reverse(name, rest, raw);
+    }
+    match name.split_once('.') {
+        Some((head, tail)) => forward(base_type, name, head, tail, raw),
+        None => Ok(Criterion::Direct(filter(base_type, name, raw)?)),
+    }
+}
+
+fn link_of(
+    base_type: Option<ResourceType>,
+    name: &str,
+    spelling: &str,
+) -> Result<(&'static fhir_core::search::ParamDef, Option<ResourceType>), Error> {
+    let (param, wanted) = match spelling.split_once(':') {
+        Some((param, text)) => (param, Some(text.parse::<ResourceType>()?)),
+        None => (spelling, None),
+    };
+    let def = lookup(base_type, param)
+        .ok_or_else(|| Error::UnsupportedParameter(format!("{name:?}")))?;
+    if def.value_type != fhir_core::search::ValueType::Reference {
+        return Err(Error::UnsupportedParameter(format!(
+            "{name:?} does not follow a reference"
+        )));
+    }
+    Ok((def, wanted))
+}
+
+fn forward(
+    base_type: Option<ResourceType>,
+    name: &str,
+    head: &str,
+    tail: &str,
+    raw: &str,
+) -> Result<Criterion, Error> {
+    let (def, wanted) = link_of(base_type, name, head)?;
+    let candidates: Vec<ResourceType> = match wanted {
+        Some(one) => vec![one],
+        None => def
+            .targets
+            .iter()
+            .map(|text| text.parse::<ResourceType>())
+            .collect::<Result<Vec<ResourceType>, Error>>()?,
+    };
+    let mut types = Vec::new();
+    let mut next: Option<Criterion> = None;
+    for candidate in candidates {
+        match criterion(Some(candidate), tail, raw) {
+            Ok(found) => {
+                match &next {
+                    None => next = Some(found),
+                    Some(existing) if *existing == found => {}
+                    Some(_) => {
+                        return Err(Error::UnsupportedParameter(format!(
+                            "{name:?} needs the type of the resource it chains to"
+                        )))
+                    }
+                }
+                types.push(candidate);
+            }
+            Err(Error::UnsupportedParameter(_)) => continue,
+            Err(other) => return Err(other),
+        }
+    }
+    match next {
+        Some(next) => Ok(Criterion::Linked(Chain {
+            name: name.to_owned(),
+            target: def.target,
+            types,
+            direction: ChainDirection::Forward,
+            next: Box::new(next),
+        })),
+        None => Err(Error::UnsupportedParameter(format!("{name:?}"))),
+    }
+}
+
+fn reverse(name: &str, rest: &str, raw: &str) -> Result<Criterion, Error> {
+    let mut parts = rest.splitn(3, ':');
+    let spelled = (parts.next(), parts.next(), parts.next());
+    let (source, link, remainder) = match spelled {
+        (Some(source), Some(link), Some(remainder))
+            if !source.is_empty() && !link.is_empty() && !remainder.is_empty() =>
+        {
+            (source, link, remainder)
+        }
+        _ => {
+            return Err(Error::UnsupportedParameter(format!(
+                "{name:?} needs a type, a reference and a parameter"
+            )))
+        }
+    };
+    let source_type: ResourceType = source.parse()?;
+    let (def, _) = link_of(Some(source_type), name, link)?;
+    let next = criterion(Some(source_type), remainder, raw)?;
+    Ok(Criterion::Linked(Chain {
+        name: name.to_owned(),
+        target: def.target,
+        types: vec![source_type],
+        direction: ChainDirection::Reverse,
+        next: Box::new(next),
+    }))
 }
 
 fn split_modifier(name: &str) -> Result<(&str, Modifier), Error> {

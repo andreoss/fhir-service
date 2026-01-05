@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use fhir_core::search::Filter;
+use fhir_core::search::{ChainDirection, Criterion, Filter, Target};
 use fhir_core::{Error, FhirInstant, ResourceEnvelope, ResourceId, VersionId};
 use fhir_store::{
     HistoryOrder, HistoryPage, HistoryQuery, HistoryScope, ResourceStore, SearchPage, SearchQuery,
@@ -57,6 +57,109 @@ fn expanded(guard: &StoreMap, filter: &Filter) -> Result<Filter, Error> {
         values.extend(code_set(guard, &address)?);
     }
     Ok(filter.resolved(&values))
+}
+
+enum Resolved {
+    Direct(Filter),
+    Forward {
+        target: Target,
+        refs: HashSet<String>,
+    },
+    Reverse {
+        refs: HashSet<String>,
+    },
+}
+
+fn references(element: &Value) -> Vec<String> {
+    match element {
+        Value::String(text) => vec![text.clone()],
+        Value::Array(items) => items.iter().flat_map(references).collect(),
+        Value::Object(map) => map
+            .get("reference")
+            .and_then(Value::as_str)
+            .map(|text| vec![text.to_owned()])
+            .unwrap_or_default(),
+        Value::Bool(_) | Value::Number(_) | Value::Null => Vec::new(),
+    }
+}
+
+fn normalized(text: &str) -> String {
+    let mut parts = text.rsplit('/');
+    let id = parts.next().unwrap_or_default();
+    match parts.next() {
+        Some(kind) => format!("{kind}/{id}"),
+        None => id.to_owned(),
+    }
+}
+
+fn record(refs: &mut HashSet<String>, text: &str) {
+    let full = normalized(text);
+    if let Some((_, id)) = full.split_once('/') {
+        refs.insert(id.to_owned());
+    }
+    refs.insert(full);
+}
+
+fn at(target: Target, body: &Value) -> Vec<String> {
+    match target {
+        Target::Path(paths) => paths
+            .iter()
+            .flat_map(|path| fhir_core::search::select(body, path))
+            .flat_map(references)
+            .collect(),
+        Target::Id | Target::LastUpdated | Target::Composite(_) => Vec::new(),
+    }
+}
+
+fn resolve(guard: &StoreMap, criterion: &Criterion) -> Result<Resolved, Error> {
+    let chain = match criterion {
+        Criterion::Direct(filter) => return Ok(Resolved::Direct(expanded(guard, filter)?)),
+        Criterion::Linked(chain) => chain,
+    };
+    let inner = resolve(guard, &chain.next)?;
+    let mut refs = HashSet::new();
+    for versions in guard.values() {
+        let Some(current) = versions.last() else { continue };
+        if current.is_deleted() {
+            continue;
+        }
+        if !chain.types.is_empty() && !chain.types.contains(&current.resource_type()) {
+            continue;
+        }
+        let body = body_of(current)?;
+        if !holds(&inner, current, &body) {
+            continue;
+        }
+        match chain.direction {
+            ChainDirection::Forward => record(&mut refs, &reference_of(current)),
+            ChainDirection::Reverse => {
+                for text in at(chain.target, &body) {
+                    record(&mut refs, &text);
+                }
+            }
+        }
+    }
+    Ok(match chain.direction {
+        ChainDirection::Forward => Resolved::Forward {
+            target: chain.target,
+            refs,
+        },
+        ChainDirection::Reverse => Resolved::Reverse { refs },
+    })
+}
+
+fn holds(resolved: &Resolved, envelope: &ResourceEnvelope, body: &Value) -> bool {
+    match resolved {
+        Resolved::Direct(filter) => {
+            filter.matches(envelope.id(), envelope.last_updated(), body)
+        }
+        Resolved::Forward { target, refs } => at(*target, body)
+            .iter()
+            .any(|text| refs.contains(&normalized(text))),
+        Resolved::Reverse { refs } => {
+            refs.contains(&reference_of(envelope)) || refs.contains(envelope.id().as_str())
+        }
+    }
 }
 
 fn order(matches: &mut [(ResourceEnvelope, Value)], keys: &[SortKey]) {
@@ -182,6 +285,11 @@ impl ResourceStore for MemoryStore {
             .iter()
             .map(|filter| expanded(&guard, filter))
             .collect::<Result<Vec<Filter>, Error>>()?;
+        let chains = query
+            .chains
+            .iter()
+            .map(|chain| resolve(&guard, &Criterion::Linked(chain.clone())))
+            .collect::<Result<Vec<Resolved>, Error>>()?;
         let mut matches: Vec<(ResourceEnvelope, Value)> = Vec::new();
         for versions in guard.values() {
             let Some(current) = versions.last() else { continue };
@@ -199,7 +307,8 @@ impl ResourceStore for MemoryStore {
             let body = body_of(current)?;
             let kept = filters
                 .iter()
-                .all(|filter| filter.matches(current.id(), current.last_updated(), &body));
+                .all(|filter| filter.matches(current.id(), current.last_updated(), &body))
+                && chains.iter().all(|chain| holds(chain, current, &body));
             if kept {
                 matches.push((current.clone(), body));
             }
