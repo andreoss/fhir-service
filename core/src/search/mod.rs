@@ -4,13 +4,13 @@ pub mod registry;
 pub mod value;
 
 pub use path::select;
-pub use registry::{common, lookup, ParamDef, Target};
+pub use registry::{common, lookup, CompositeDef, ParamDef, SubDef, Target};
 pub use value::{Comparator, SearchValue, Token, TokenSystem, ValueType};
 
 use crate::{FhirInstant, ResourceId};
 use serde_json::Value;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Filter {
     pub name: String,
     pub target: Target,
@@ -38,6 +38,17 @@ impl Filter {
                 .iter()
                 .flat_map(|path| select(body, path))
                 .any(|element| value.matches(element)),
+            Target::Composite(def) => match value.components() {
+                Some((left, right)) => def
+                    .base
+                    .iter()
+                    .flat_map(|path| select(body, path))
+                    .any(|element| {
+                        component(&def.left, left, element)
+                            && component(&def.right, right, element)
+                    }),
+                None => false,
+            },
         };
         hit != value.is_negated()
     }
@@ -88,6 +99,7 @@ pub fn sort_value(
             .find_map(scalar)
             .map(SortValue::Text)
             .unwrap_or(SortValue::Missing),
+        Target::Composite(_) => SortValue::Missing,
     }
 }
 
@@ -102,4 +114,11 @@ fn scalar(value: &Value) -> Option<String> {
         Value::Array(items) => items.iter().find_map(scalar),
         Value::Null => None,
     }
+}
+
+fn component(sub: &SubDef, value: &SearchValue, element: &Value) -> bool {
+    sub.paths
+        .iter()
+        .flat_map(|path| select(element, path))
+        .any(|found| value.matches(found))
 }

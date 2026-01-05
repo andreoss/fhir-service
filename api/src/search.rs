@@ -261,7 +261,7 @@ fn filter(
         .ok_or_else(|| Error::UnsupportedParameter(format!("{name:?}")))?;
     let values = raw
         .split(',')
-        .map(|part| SearchValue::parse(def.value_type, part))
+        .map(|part| def.value(part))
         .collect::<Result<Vec<SearchValue>, Error>>()?;
     if values.is_empty() {
         return Err(Error::InvalidParameter(format!("{name:?} has no value")));

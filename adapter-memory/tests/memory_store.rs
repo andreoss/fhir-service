@@ -1,6 +1,6 @@
 use fhir_adapter_memory::MemoryStore;
 use fhir_core::{Error, FhirInstant, FhirVersion, InstantPeriod, ResourceEnvelope, ResourceId, VersionId};
-use fhir_core::search::{lookup, Filter, SearchValue};
+use fhir_core::search::{lookup, Filter};
 use fhir_store::{HistoryOrder, HistoryPage, HistoryQuery, HistoryScope, ResourceStore, SearchQuery};
 use std::sync::Arc;
 
@@ -50,7 +50,7 @@ fn query(params: &[(&str, &str)]) -> SearchQuery {
             Filter {
                 name: (*name).to_owned(),
                 target: def.target,
-                values: vec![SearchValue::parse(def.value_type, value).unwrap()],
+                values: vec![def.value(value).unwrap()],
             }
         })
         .collect();

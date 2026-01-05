@@ -21,7 +21,7 @@ pub struct SortKey {
     pub direction: SortDirection,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SearchQuery {
     pub types: Vec<ResourceType>,
     pub filters: Vec<Filter>,
