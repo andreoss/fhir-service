@@ -1648,7 +1648,7 @@ async fn a_continuation_token_is_opaque_and_carries_no_offset() {
     let token = next_token(&app, "/Patient?_count=1&_sort=_id").await;
     assert_eq!(token.len(), 32);
     assert!(token.chars().all(|found| found.is_ascii_hexdigit()));
-    assert!(!token.contains('1') || token != "1");
+    assert_ne!(&token[16..], format!("{:016x}", 1u64));
 }
 
 #[tokio::test]
@@ -1674,7 +1674,9 @@ async fn a_continuation_token_belongs_to_one_query_only() {
 async fn an_edited_continuation_token_is_refused() {
     let app = qualified().await;
     let token = next_token(&app, "/Patient?_count=1&_sort=_id").await;
-    let edited = format!("{}0", &token[..token.len() - 1]);
+    let last = token.chars().last().unwrap_or('0');
+    let flipped = if last == '0' { '1' } else { '0' };
+    let edited = format!("{}{flipped}", &token[..token.len() - 1]);
     let reply = request(
         &app,
         "GET",

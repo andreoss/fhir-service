@@ -78,7 +78,9 @@ mod tests {
     #[test]
     fn an_edited_token_is_refused() {
         let token = encode(25, "_count=2");
-        let mangled = format!("{}f", &token[..token.len() - 1]);
+        let last = token.chars().last().unwrap_or('0');
+        let flipped = if last == 'f' { '0' } else { 'f' };
+        let mangled = format!("{}{flipped}", &token[..token.len() - 1]);
         assert!(decode(&mangled, "_count=2").is_err());
         assert!(decode("", "_count=2").is_err());
         assert!(decode("zz", "_count=2").is_err());
@@ -96,7 +98,7 @@ mod tests {
     fn a_token_hides_the_offset_it_carries() {
         let token = encode(25, "_count=2");
         assert_eq!(token.len(), TOKEN);
-        assert!(!token.ends_with("19"));
+        assert_ne!(&token[TAG..], format!("{:016x}", 25u64));
     }
 
     #[test]
