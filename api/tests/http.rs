@@ -1782,3 +1782,17 @@ async fn a_malformed_grant_is_rejected() {
     let reply = request(&app, "GET", "/Patient", &[("x-scope", "nonesuch=1")], &[]).await;
     assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{}", reply.body);
 }
+
+#[tokio::test]
+async fn a_token_longer_than_the_index_key_matches_exactly() {
+    let app = service();
+    let value = "u".repeat(600);
+    let body = format!(
+        r#"{{"resourceType":"Patient","id":"pt-t1","identifier":[{{"system":"urn:mrn","value":"{value}-a"}}]}}"#
+    );
+    request(&app, "POST", "/Patient", &[], body.as_bytes()).await;
+    let hit = format!("/Patient?identifier=urn:mrn|{value}-a");
+    assert_eq!(found(&app, &hit).await, vec!["pt-t1".to_owned()]);
+    let miss = format!("/Patient?identifier=urn:mrn|{value}-b");
+    assert!(found(&app, &miss).await.is_empty());
+}

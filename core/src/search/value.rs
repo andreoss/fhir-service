@@ -1,3 +1,4 @@
+use crate::search::index::IndexKey;
 use crate::{Error, InstantPeriod};
 use serde_json::Value;
 
@@ -384,9 +385,15 @@ fn accepts(token: &Token, system: Option<&str>, code: &str) -> bool {
     let system_ok = match &token.system {
         TokenSystem::Any => true,
         TokenSystem::Absent => system.is_none(),
-        TokenSystem::Exact(wanted) => system == Some(wanted.as_str()),
+        TokenSystem::Exact(wanted) => {
+            system.is_some_and(|found| IndexKey::of(wanted).matches(found))
+        }
     };
-    system_ok && token.code.as_ref().is_none_or(|wanted| wanted == code)
+    system_ok
+        && token
+            .code
+            .as_ref()
+            .is_none_or(|wanted| IndexKey::of(wanted).matches(code))
 }
 
 fn uri_matches(wanted: &str, element: &Value) -> bool {
