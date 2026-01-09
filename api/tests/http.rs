@@ -1695,3 +1695,29 @@ async fn a_compartment_page_carries_its_own_token() {
     let second = page(&app, &format!("/Patient/pt-m1/*?_count=1&_sort=_id&ct={token}")).await;
     assert_eq!(by_mode(&second, "match"), vec!["pt-m1".to_owned()]);
 }
+
+#[tokio::test]
+async fn a_parameter_spelled_without_a_value_is_never_dropped() {
+    let app = seeded().await;
+    for uri in ["/Patient?nonesuch", "/Patient?_summary", "/Patient?_count", "/Patient?ct"] {
+        let reply = request(&app, "GET", uri, &[], &[]).await;
+        assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{uri} gave {}", reply.body);
+    }
+}
+
+#[tokio::test]
+async fn an_unknown_parameter_never_reaches_the_store() {
+    let app = seeded().await;
+    for uri in [
+        "/Patient?_filter=name%20eq%20Ann",
+        "/Patient?_query=byName",
+        "/Patient?name:nonesuch=Ann",
+        "/Patient?_has:Observation:patient:nonesuch=1",
+        "/Patient?nonesuch.name=Ann",
+    ] {
+        let reply = request(&app, "GET", uri, &[], &[]).await;
+        assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{uri} gave {}", reply.body);
+        let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
+        assert_eq!(value["issue"][0]["code"], "not-supported", "{uri}");
+    }
+}

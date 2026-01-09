@@ -2,16 +2,21 @@ pub fn pairs(raw: Option<&str>) -> Vec<(String, String)> {
     let Some(raw) = raw else { return Vec::new() };
     raw.split('&')
         .filter(|pair| !pair.is_empty())
-        .filter_map(|pair| pair.split_once('='))
+        .map(split)
         .map(|(name, value)| (decode(name), decode(value)))
         .collect()
 }
 
 pub fn param(raw: Option<&str>, wanted: &str) -> Option<String> {
     raw?.split('&')
-        .filter_map(|pair| pair.split_once('='))
+        .filter(|pair| !pair.is_empty())
+        .map(split)
         .find(|(name, _)| decode(name) == wanted)
         .map(|(_, value)| decode(value))
+}
+
+fn split(pair: &str) -> (&str, &str) {
+    pair.split_once('=').unwrap_or((pair, ""))
 }
 
 fn decode(text: &str) -> String {
@@ -73,6 +78,13 @@ mod tests {
     fn a_malformed_escape_is_kept_verbatim() {
         let params = pairs(Some("name=100%"));
         assert_eq!(params[0].1, "100%");
+    }
+
+    #[test]
+    fn a_fragment_without_a_value_keeps_its_name() {
+        let params = pairs(Some("nonesuch&_count=5"));
+        assert_eq!(params[0], ("nonesuch".to_owned(), String::new()));
+        assert_eq!(param(Some("_summary"), "_summary"), Some(String::new()));
     }
 
     #[test]
