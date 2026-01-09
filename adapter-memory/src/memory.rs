@@ -103,7 +103,7 @@ fn record(refs: &mut HashSet<String>, text: &str) {
     refs.insert(full);
 }
 
-fn at(target: Target, body: &Value) -> Vec<String> {
+fn at(target: &Target, body: &Value) -> Vec<String> {
     match target {
         Target::Path(paths) => paths
             .iter()
@@ -143,7 +143,7 @@ fn resolve(
         match chain.direction {
             ChainDirection::Forward => record(&mut refs, &reference_of(current)),
             ChainDirection::Reverse => {
-                for text in at(chain.target, &body) {
+                for text in at(&chain.target, &body) {
                     record(&mut refs, &text);
                 }
             }
@@ -151,7 +151,7 @@ fn resolve(
     }
     Ok(match chain.direction {
         ChainDirection::Forward => Resolved::Forward {
-            target: chain.target,
+            target: chain.target.clone(),
             refs,
         },
         ChainDirection::Reverse => Resolved::Reverse { refs },
@@ -163,7 +163,7 @@ fn holds(resolved: &Resolved, envelope: &ResourceEnvelope, body: &Value) -> bool
         Resolved::Direct(filter) => {
             filter.matches(envelope.id(), envelope.last_updated(), body)
         }
-        Resolved::Forward { target, refs } => at(*target, body)
+        Resolved::Forward { target, refs } => at(target, body)
             .iter()
             .any(|text| refs.contains(&normalized(text))),
         Resolved::Reverse { refs } => {
@@ -189,7 +189,7 @@ fn in_compartment(
     let root = format!("{}/{}", compartment.kind.as_str(), compartment.id.as_str());
     member.params.iter().any(|name| {
         fhir_core::search::lookup(Some(envelope.resource_type()), name)
-            .map(|def| at(def.target, body))
+            .map(|def| at(&def.target, body))
             .unwrap_or_default()
             .iter()
             .any(|text| {
@@ -322,8 +322,8 @@ fn pulled_in(
 fn order(matches: &mut [(ResourceEnvelope, Value)], keys: &[SortKey]) {
     matches.sort_by(|left, right| {
         for key in keys {
-            let a = fhir_core::search::sort_value(key.target, left.0.id(), left.0.last_updated(), &left.1);
-            let b = fhir_core::search::sort_value(key.target, right.0.id(), right.0.last_updated(), &right.1);
+            let a = fhir_core::search::sort_value(&key.target, left.0.id(), left.0.last_updated(), &left.1);
+            let b = fhir_core::search::sort_value(&key.target, right.0.id(), right.0.last_updated(), &right.1);
             let ordering = match key.direction {
                 SortDirection::Ascending => a.cmp(&b),
                 SortDirection::Descending => b.cmp(&a),

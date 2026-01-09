@@ -47,7 +47,7 @@ fn query(params: &[(&str, &str)]) -> SearchQuery {
         .iter()
         .map(|(name, value)| {
             let def = lookup(Some(resource_type), name).expect("parameter is registered");
-            Filter::new(name, def.target, vec![def.value(value).unwrap()])
+            Filter::new(name, def.target.clone(), vec![def.value(value).unwrap()])
         })
         .collect();
     SearchQuery {
@@ -556,7 +556,7 @@ fn coded_query(modifier: fhir_core::search::Modifier, url: &str) -> SearchQuery 
     let def = lookup(Some(resource_type), "code").unwrap();
     let filter = Filter {
         name: "code".to_owned(),
-        target: def.target,
+        target: def.target.clone(),
         values: vec![def.value_with(&modifier, url).unwrap()],
         modifier,
     };
@@ -604,7 +604,7 @@ fn by_id(values: &[&str]) -> SearchQuery {
     let values = values.iter().map(|value| def.value(value).unwrap()).collect();
     SearchQuery {
         types: vec![resource_type],
-        filters: vec![Filter::new("_id", def.target, values)],
+        filters: vec![Filter::new("_id", def.target.clone(), values)],
         ..SearchQuery::default()
     }
 }

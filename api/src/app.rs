@@ -1,5 +1,6 @@
 use axum::routing::{get, post};
 use axum::Router;
+use fhir_core::search::Registry;
 use fhir_core::{Error, FhirVersion};
 use fhir_store::ResourceStore;
 use std::net::SocketAddr;
@@ -18,6 +19,7 @@ pub struct AppState {
     pub store: Arc<dyn ResourceStore>,
     pub version: FhirVersion,
     pub dependencies: Arc<Vec<Dependency>>,
+    pub registry: Arc<Registry>,
 }
 
 #[derive(Clone)]
@@ -42,8 +44,13 @@ impl Service {
                 store,
                 version,
                 dependencies: Arc::new(dependencies),
+                registry: Arc::new(Registry::new()),
             },
         }
+    }
+
+    pub fn registry(&self) -> Arc<Registry> {
+        Arc::clone(&self.state.registry)
     }
 
     pub fn router(&self) -> Router<()> {

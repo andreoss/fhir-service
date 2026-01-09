@@ -1,5 +1,5 @@
 use fhir_core::search::{
-    lookup, references, Chain, ChainDirection, Criterion, Filter, Include, IncludeDirection,
+    Chain, ChainDirection, Criterion, Filter, Include, IncludeDirection, Registry,
     Modifier, SearchValue,
 };
 use fhir_core::{Error, ResourceEnvelope, ResourceId, ResourceType};
@@ -30,6 +30,7 @@ fn base_of(name: &str) -> &str {
 }
 
 pub fn parse_query(
+    registry: &Registry,
     base_type: Option<ResourceType>,
     raw: Option<&str>,
 ) -> Result<SearchQuery, Error> {
@@ -54,11 +55,11 @@ pub fn parse_query(
             "_list" => query.list = Some(list_id(&value)?),
             spelled if spelled == "_include" || spelled.starts_with("_include:") => query
                 .includes
-                .push(inclusion(&name, &value, IncludeDirection::Forward)?),
+                .push(inclusion(registry, &name, &value, IncludeDirection::Forward)?),
             spelled if spelled == "_revinclude" || spelled.starts_with("_revinclude:") => query
                 .includes
-                .push(inclusion(&name, &value, IncludeDirection::Reverse)?),
-            _ => match criterion(base_type, &name, &value)? {
+                .push(inclusion(registry, &name, &value, IncludeDirection::Reverse)?),
+            _ => match criterion(registry, base_type, &name, &value)? {
                 Criterion::Direct(found) => query.filters.push(found),
                 Criterion::Linked(chain) => query.chains.push(chain),
             },
@@ -78,11 +79,15 @@ pub struct SearchRequest {
 }
 
 impl SearchRequest {
-    pub fn parse(base_type: Option<ResourceType>, raw: Option<&str>) -> Result<SearchRequest, Error> {
-        let mut query = parse_query(base_type, raw)?;
+    pub fn parse(
+        registry: &Registry,
+        base_type: Option<ResourceType>,
+        raw: Option<&str>,
+    ) -> Result<SearchRequest, Error> {
+        let mut query = parse_query(registry, base_type, raw)?;
         let summary = summary_of(raw)?;
         rendering(raw)?;
-        query.sort = sort_of(base_type, raw)?;
+        query.sort = sort_of(registry, base_type, raw)?;
         query.total = match summary {
             Summary::Count => TotalMode::Accurate,
             _ => total_of(raw)?,
@@ -150,7 +155,11 @@ fn count_of(raw: Option<&str>) -> Result<usize, Error> {
     }
 }
 
-fn sort_of(base_type: Option<ResourceType>, raw: Option<&str>) -> Result<Vec<SortKey>, Error> {
+fn sort_of(
+    registry: &Registry,
+    base_type: Option<ResourceType>,
+    raw: Option<&str>,
+) -> Result<Vec<SortKey>, Error> {
     let Some(text) = param(raw, "_sort") else { return Ok(Vec::new()) };
     text.split(',')
         .filter(|part| !part.is_empty())
@@ -159,12 +168,12 @@ fn sort_of(base_type: Option<ResourceType>, raw: Option<&str>) -> Result<Vec<Sor
                 Some(rest) => (SortDirection::Descending, rest),
                 None => (SortDirection::Ascending, part),
             };
-            let def = lookup(base_type, name).filter(|def| def.sortable).ok_or_else(|| {
+            let def = registry.searchable(base_type, name)?.filter(|def| def.sortable).ok_or_else(|| {
                 Error::UnsupportedParameter(format!("_sort {name:?}"))
             })?;
             Ok(SortKey {
                 name: name.to_owned(),
-                target: def.target,
+                target: def.target.clone(),
                 direction,
             })
         })
@@ -290,12 +299,13 @@ fn list_id(raw: &str) -> Result<ResourceId, Error> {
 }
 
 fn filter(
+    registry: &Registry,
     base_type: Option<ResourceType>,
     name: &str,
     raw: &str,
 ) -> Result<Filter, Error> {
     let (base, modifier) = split_modifier(name)?;
-    let def = lookup(base_type, base)
+    let def = registry.searchable(base_type, base)?
         .ok_or_else(|| Error::UnsupportedParameter(format!("{name:?}")))?;
     let values = raw
         .split(',')
@@ -306,20 +316,19 @@ fn filter(
     }
     Ok(Filter {
         name: name.to_owned(),
-        target: def.target,
+        target: def.target.clone(),
         modifier,
         values,
     })
 }
 
-fn paths_of(def: &'static fhir_core::search::ParamDef) -> Vec<&'static str> {
-    match def.target {
-        fhir_core::search::Target::Path(paths) => paths.to_vec(),
-        _ => Vec::new(),
-    }
-}
 
-fn inclusion(name: &str, raw: &str, direction: IncludeDirection) -> Result<Include, Error> {
+fn inclusion(
+    registry: &Registry,
+    name: &str,
+    raw: &str,
+    direction: IncludeDirection,
+) -> Result<Include, Error> {
     let iterate = match name.split_once(':') {
         None => false,
         Some((_, "iterate")) | Some((_, "recurse")) => true,
@@ -353,14 +362,14 @@ fn inclusion(name: &str, raw: &str, direction: IncludeDirection) -> Result<Inclu
     if parts.next().is_some() {
         return Err(unsupported());
     }
-    let paths: Vec<&'static str> = if param == "*" {
-        references(source).into_iter().flat_map(paths_of).collect()
+    let paths: Vec<String> = if param == "*" {
+        registry.references(source).iter().flat_map(|def| def.paths()).collect()
     } else {
-        let def = lookup(Some(source), param).ok_or_else(unsupported)?;
+        let def = registry.searchable(Some(source), param)?.ok_or_else(unsupported)?;
         if def.value_type != fhir_core::search::ValueType::Reference {
             return Err(unsupported());
         }
-        paths_of(def)
+        def.paths()
     };
     if paths.is_empty() {
         return Err(unsupported());
@@ -376,29 +385,31 @@ fn inclusion(name: &str, raw: &str, direction: IncludeDirection) -> Result<Inclu
 }
 
 fn criterion(
+    registry: &Registry,
     base_type: Option<ResourceType>,
     name: &str,
     raw: &str,
 ) -> Result<Criterion, Error> {
     if let Some(rest) = name.strip_prefix("_has:") {
-        return reverse(name, rest, raw);
+        return reverse(registry, name, rest, raw);
     }
     match name.split_once('.') {
-        Some((head, tail)) => forward(base_type, name, head, tail, raw),
-        None => Ok(Criterion::Direct(filter(base_type, name, raw)?)),
+        Some((head, tail)) => forward(registry, base_type, name, head, tail, raw),
+        None => Ok(Criterion::Direct(filter(registry, base_type, name, raw)?)),
     }
 }
 
 fn link_of(
+    registry: &Registry,
     base_type: Option<ResourceType>,
     name: &str,
     spelling: &str,
-) -> Result<(&'static fhir_core::search::ParamDef, Option<ResourceType>), Error> {
+) -> Result<(std::sync::Arc<fhir_core::search::ParamDef>, Option<ResourceType>), Error> {
     let (param, wanted) = match spelling.split_once(':') {
         Some((param, text)) => (param, Some(text.parse::<ResourceType>()?)),
         None => (spelling, None),
     };
-    let def = lookup(base_type, param)
+    let def = registry.searchable(base_type, param)?
         .ok_or_else(|| Error::UnsupportedParameter(format!("{name:?}")))?;
     if def.value_type != fhir_core::search::ValueType::Reference {
         return Err(Error::UnsupportedParameter(format!(
@@ -409,13 +420,14 @@ fn link_of(
 }
 
 fn forward(
+    registry: &Registry,
     base_type: Option<ResourceType>,
     name: &str,
     head: &str,
     tail: &str,
     raw: &str,
 ) -> Result<Criterion, Error> {
-    let (def, wanted) = link_of(base_type, name, head)?;
+    let (def, wanted) = link_of(registry, base_type, name, head)?;
     let candidates: Vec<ResourceType> = match wanted {
         Some(one) => vec![one],
         None => def
@@ -427,7 +439,7 @@ fn forward(
     let mut types = Vec::new();
     let mut next: Option<Criterion> = None;
     for candidate in candidates {
-        match criterion(Some(candidate), tail, raw) {
+        match criterion(registry, Some(candidate), tail, raw) {
             Ok(found) => {
                 match &next {
                     None => next = Some(found),
@@ -447,7 +459,7 @@ fn forward(
     match next {
         Some(next) => Ok(Criterion::Linked(Chain {
             name: name.to_owned(),
-            target: def.target,
+            target: def.target.clone(),
             types,
             direction: ChainDirection::Forward,
             next: Box::new(next),
@@ -456,7 +468,12 @@ fn forward(
     }
 }
 
-fn reverse(name: &str, rest: &str, raw: &str) -> Result<Criterion, Error> {
+fn reverse(
+    registry: &Registry,
+    name: &str,
+    rest: &str,
+    raw: &str,
+) -> Result<Criterion, Error> {
     let mut parts = rest.splitn(3, ':');
     let spelled = (parts.next(), parts.next(), parts.next());
     let (source, link, remainder) = match spelled {
@@ -472,11 +489,11 @@ fn reverse(name: &str, rest: &str, raw: &str) -> Result<Criterion, Error> {
         }
     };
     let source_type: ResourceType = source.parse()?;
-    let (def, _) = link_of(Some(source_type), name, link)?;
-    let next = criterion(Some(source_type), remainder, raw)?;
+    let (def, _) = link_of(registry, Some(source_type), name, link)?;
+    let next = criterion(registry, Some(source_type), remainder, raw)?;
     Ok(Criterion::Linked(Chain {
         name: name.to_owned(),
-        target: def.target,
+        target: def.target.clone(),
         types: vec![source_type],
         direction: ChainDirection::Reverse,
         next: Box::new(next),
@@ -500,34 +517,34 @@ mod tests {
 
     #[test]
     fn a_typed_search_without_parameters_selects_the_type() {
-        let query = parse_query(patient(), None).unwrap();
+        let query = parse_query(&Registry::new(), patient(), None).unwrap();
         assert_eq!(query.types.len(), 1);
         assert!(query.is_unconditional());
     }
 
     #[test]
     fn control_parameters_carry_no_selection() {
-        let query = parse_query(patient(), Some("_format=json&_count=5&ct=ab")).unwrap();
+        let query = parse_query(&Registry::new(), patient(), Some("_format=json&_count=5&ct=ab")).unwrap();
         assert!(query.is_unconditional());
     }
 
     #[test]
     fn common_parameters_become_filters() {
-        let query = parse_query(patient(), Some("_id=pt-1&_tag=urn:t|a")).unwrap();
+        let query = parse_query(&Registry::new(), patient(), Some("_id=pt-1&_tag=urn:t|a")).unwrap();
         assert_eq!(query.filters.len(), 2);
         assert_eq!(query.filters[0].values.len(), 1);
     }
 
     #[test]
     fn a_comma_separated_value_is_a_set_of_alternatives() {
-        let query = parse_query(patient(), Some("_id=a,b,c")).unwrap();
+        let query = parse_query(&Registry::new(), patient(), Some("_id=a,b,c")).unwrap();
         assert_eq!(query.filters[0].values.len(), 3);
     }
 
     #[test]
     fn an_unimplemented_parameter_is_rejected() {
         for raw in ["nonesuch=1", "_include=Patient:link", "subject.name=Ann"] {
-            let error = parse_query(patient(), Some(raw)).unwrap_err();
+            let error = parse_query(&Registry::new(), patient(), Some(raw)).unwrap_err();
             assert!(matches!(error, Error::UnsupportedParameter(_)), "{raw} gave {error:?}");
         }
     }
@@ -535,45 +552,45 @@ mod tests {
     #[test]
     fn an_empty_value_and_a_full_text_search_are_unsupported() {
         for raw in ["_id=", "name=", "_text=fever", "_content=x", "_filter=name%20eq%20a"] {
-            let error = parse_query(patient(), Some(raw)).unwrap_err();
+            let error = parse_query(&Registry::new(), patient(), Some(raw)).unwrap_err();
             assert!(matches!(error, Error::UnsupportedParameter(_)), "{raw} gave {error:?}");
         }
         assert!(matches!(
-            SearchRequest::parse(patient(), Some("_sort=")).unwrap_err(),
+            SearchRequest::parse(&Registry::new(), patient(), Some("_sort=")).unwrap_err(),
             Error::UnsupportedParameter(_)
         ));
     }
 
     #[test]
     fn a_malformed_value_is_rejected() {
-        let error = parse_query(patient(), Some("_lastUpdated=whenever")).unwrap_err();
+        let error = parse_query(&Registry::new(), patient(), Some("_lastUpdated=whenever")).unwrap_err();
         assert!(matches!(error, Error::InvalidParameter(_)));
     }
 
     #[test]
     fn the_type_parameter_applies_to_a_search_across_every_type() {
-        let query = parse_query(None, Some("_type=Patient,Observation")).unwrap();
+        let query = parse_query(&Registry::new(), None, Some("_type=Patient,Observation")).unwrap();
         assert_eq!(query.types.len(), 2);
-        let scoped = parse_query(patient(), Some("_type=Observation")).unwrap_err();
+        let scoped = parse_query(&Registry::new(), patient(), Some("_type=Observation")).unwrap_err();
         assert!(matches!(scoped, Error::UnsupportedParameter(_)));
-        assert!(parse_query(None, Some("_type=Nonesuch")).is_err());
+        assert!(parse_query(&Registry::new(), None, Some("_type=Nonesuch")).is_err());
     }
 
     #[test]
     fn the_list_parameter_names_a_list_resource() {
-        let query = parse_query(patient(), Some("_list=ls-1")).unwrap();
+        let query = parse_query(&Registry::new(), patient(), Some("_list=ls-1")).unwrap();
         assert_eq!(query.list.map(|id| id.as_str().to_owned()), Some("ls-1".to_owned()));
         assert_eq!(
-            parse_query(patient(), Some("_list=List/ls-2")).unwrap().list.map(|id| id.as_str().to_owned()),
+            parse_query(&Registry::new(), patient(), Some("_list=List/ls-2")).unwrap().list.map(|id| id.as_str().to_owned()),
             Some("ls-2".to_owned())
         );
-        let current = parse_query(patient(), Some("_list=$current-problems")).unwrap_err();
+        let current = parse_query(&Registry::new(), patient(), Some("_list=$current-problems")).unwrap_err();
         assert!(matches!(current, Error::UnsupportedParameter(_)));
     }
 
     #[test]
     fn result_control_defaults_apply_when_nothing_is_asked_for() {
-        let request = SearchRequest::parse(patient(), None).unwrap();
+        let request = SearchRequest::parse(&Registry::new(), patient(), None).unwrap();
         assert_eq!(request.summary, Summary::Full);
         assert_eq!(request.query.count, DEFAULT_COUNT);
         assert_eq!(request.query.total, TotalMode::Accurate);
@@ -583,15 +600,15 @@ mod tests {
 
     #[test]
     fn count_is_capped_and_a_count_summary_drops_entries() {
-        assert_eq!(SearchRequest::parse(patient(), Some("_count=5000")).unwrap().query.count, MAX_COUNT);
-        let counted = SearchRequest::parse(patient(), Some("_summary=count&_total=none")).unwrap();
+        assert_eq!(SearchRequest::parse(&Registry::new(), patient(), Some("_count=5000")).unwrap().query.count, MAX_COUNT);
+        let counted = SearchRequest::parse(&Registry::new(), patient(), Some("_summary=count&_total=none")).unwrap();
         assert_eq!(counted.query.count, 0);
         assert_eq!(counted.query.total, TotalMode::Accurate);
     }
 
     #[test]
     fn a_sort_key_carries_its_direction() {
-        let request = SearchRequest::parse(patient(), Some("_sort=-_lastUpdated,_id")).unwrap();
+        let request = SearchRequest::parse(&Registry::new(), patient(), Some("_sort=-_lastUpdated,_id")).unwrap();
         assert_eq!(request.query.sort[0].direction, SortDirection::Descending);
         assert_eq!(request.query.sort[1].name, "_id");
         assert_eq!(request.query.sort[1].direction, SortDirection::Ascending);
@@ -599,13 +616,13 @@ mod tests {
 
     #[test]
     fn elements_are_split_on_commas() {
-        let request = SearchRequest::parse(patient(), Some("_elements=active,gender")).unwrap();
+        let request = SearchRequest::parse(&Registry::new(), patient(), Some("_elements=active,gender")).unwrap();
         assert_eq!(request.elements, vec!["active".to_owned(), "gender".to_owned()]);
     }
 
     #[test]
     fn a_narrative_summary_is_recognised() {
-        assert_eq!(SearchRequest::parse(patient(), Some("_summary=text")).unwrap().summary, Summary::Text);
-        assert_eq!(SearchRequest::parse(patient(), Some("_summary=data")).unwrap().summary, Summary::Full);
+        assert_eq!(SearchRequest::parse(&Registry::new(), patient(), Some("_summary=text")).unwrap().summary, Summary::Text);
+        assert_eq!(SearchRequest::parse(&Registry::new(), patient(), Some("_summary=data")).unwrap().summary, Summary::Full);
     }
 }

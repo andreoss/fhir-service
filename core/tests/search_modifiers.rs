@@ -19,7 +19,7 @@ fn filter(type_name: &str, name: &str, modifier: Modifier, raw: &str) -> Filter 
         .collect();
     Filter {
         name: name.to_owned(),
-        target: def.target,
+        target: def.target.clone(),
         modifier,
         values,
     }

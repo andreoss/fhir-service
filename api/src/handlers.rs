@@ -91,7 +91,7 @@ pub async fn create(
         let raw = condition
             .to_str()
             .map_err(|_| Error::InvalidEnvelope("if-none-exist is not ascii".to_owned()))?;
-        let query = require_condition(parse_query(Some(resource_type), Some(raw))?, "if-none-exist")?;
+        let query = require_condition(parse_query(&state.registry, Some(resource_type), Some(raw))?, "if-none-exist")?;
         if let Some(existing) = single_match(&state, &query).await? {
             return Ok(respond_updated(&existing, host_from(&headers)));
         }
@@ -111,7 +111,7 @@ pub async fn conditional_update(
     body: Bytes,
 ) -> Result<Response, AppError> {
     let resource_type = type_name.parse::<ResourceType>()?;
-    let selection = require_condition(parse_query(Some(resource_type), query.as_deref())?, "conditional update")?;
+    let selection = require_condition(parse_query(&state.registry, Some(resource_type), query.as_deref())?, "conditional update")?;
     let value: Value = serde_json::from_slice(&body).map_err(|error| Error::InvalidJson(error.to_string()))?;
     let expected = expected_version(&headers)?;
     match single_match(&state, &selection).await? {
@@ -164,7 +164,7 @@ pub async fn conditional_delete(
     RawQuery(query): RawQuery,
 ) -> Result<Response, AppError> {
     let resource_type = type_name.parse::<ResourceType>()?;
-    let selection = require_condition(parse_query(Some(resource_type), query.as_deref())?, "conditional delete")?;
+    let selection = require_condition(parse_query(&state.registry, Some(resource_type), query.as_deref())?, "conditional delete")?;
     match single_match(&state, &selection).await? {
         Some(existing) => remove(&state, existing.id(), hard_delete(query.as_deref())).await,
         None => Err(Error::NotFound.into()),
@@ -197,7 +197,7 @@ pub async fn conditional_patch(
     body: Bytes,
 ) -> Result<Response, AppError> {
     let resource_type = type_name.parse::<ResourceType>()?;
-    let selection = require_condition(parse_query(Some(resource_type), query.as_deref())?, "conditional patch")?;
+    let selection = require_condition(parse_query(&state.registry, Some(resource_type), query.as_deref())?, "conditional patch")?;
     match single_match(&state, &selection).await? {
         Some(existing) => patch_stored(&state, resource_type, &existing, &headers, &body).await,
         None => Err(Error::NotFound.into()),
@@ -555,7 +555,7 @@ pub async fn compartment_search(
             (Some(one), vec![one])
         }
     };
-    let mut request = SearchRequest::parse(base_type, query.as_deref())?;
+    let mut request = SearchRequest::parse(&state.registry, base_type, query.as_deref())?;
     request.query.types = types;
     request.query.compartment = Some(Compartment {
         kind: root_type,
@@ -625,7 +625,7 @@ async fn respond_search(
     query: Option<String>,
     headers: &HeaderMap,
 ) -> Result<Response, AppError> {
-    let request = SearchRequest::parse(base_type, query.as_deref())?;
+    let request = SearchRequest::parse(&state.registry, base_type, query.as_deref())?;
     respond_page(state, request, path, query, headers).await
 }
 

@@ -16,7 +16,10 @@ pub use include::{Include, IncludeDirection};
 pub use index::IndexKey;
 pub use modifier::Modifier;
 pub use path::select;
-pub use registry::{common, lookup, references, CompositeDef, ParamDef, SubDef, Target};
+pub use registry::{
+    common, lookup, references, CompositeDef, ParamDef, ParamStatus, RegisteredParam, Registry,
+    SubDef, Target,
+};
 pub use value::{Comparator, SearchValue, Token, TokenSystem, ValueType};
 
 use crate::{FhirInstant, ResourceId};
@@ -60,7 +63,7 @@ impl Filter {
     pub fn resolved(&self, values: &[SearchValue]) -> Filter {
         Filter {
             name: self.name.clone(),
-            target: self.target,
+            target: self.target.clone(),
             modifier: match self.modifier {
                 Modifier::In => Modifier::None,
                 Modifier::NotIn => Modifier::Not,
@@ -85,7 +88,7 @@ impl Filter {
     }
 
     fn absent(&self, body: &Value) -> bool {
-        match self.target {
+        match &self.target {
             Target::Id | Target::LastUpdated => false,
             Target::Path(paths) => paths
                 .iter()
@@ -116,7 +119,7 @@ impl Filter {
         last_updated: &FhirInstant,
         body: &Value,
     ) -> bool {
-        match self.target {
+        match &self.target {
             Target::Id => self
                 .modifier
                 .accepts(value, &Value::String(id.as_str().to_owned())),
@@ -173,7 +176,7 @@ impl Ord for SortValue {
 }
 
 pub fn sort_value(
-    target: Target,
+    target: &Target,
     id: &ResourceId,
     last_updated: &FhirInstant,
     body: &Value,
@@ -280,9 +283,9 @@ mod tests {
     #[test]
     fn a_negated_value_needs_every_element_to_fail() {
         let body = json!({"birthDate": ["1980-04-01", "1995-11-20"]});
-        let target = Target::Path(&["birthDate"]);
+        let target = Target::path(["birthDate"]);
         let ne = vec![SearchValue::parse(ValueType::Date, "ne1980-04-01").unwrap()];
-        assert!(!filter("birthdate", target, ne).matches(&id(), &updated(), &body));
+        assert!(!filter("birthdate", target.clone(), ne).matches(&id(), &updated(), &body));
         let other = vec![SearchValue::parse(ValueType::Date, "ne2020").unwrap()];
         assert!(filter("birthdate", target, other).matches(&id(), &updated(), &body));
     }
@@ -291,34 +294,34 @@ mod tests {
     fn a_composite_filter_needs_a_composite_value() {
         let def = lookup(Some("Observation".parse().unwrap()), "code-value-quantity").unwrap();
         let wrong = vec![SearchValue::parse(ValueType::Token, "x").unwrap()];
-        assert!(!filter(def.name, def.target, wrong).matches(&id(), &updated(), &json!({})));
+        assert!(!filter(&def.name, def.target.clone(), wrong).matches(&id(), &updated(), &json!({})));
     }
 
     #[test]
     fn sort_values_project_every_target() {
         let body = json!({"name": [{"family": "Ann"}], "active": true});
         assert_eq!(
-            sort_value(Target::Id, &id(), &updated(), &body),
+            sort_value(&Target::Id, &id(), &updated(), &body),
             SortValue::Text("r-1".to_owned())
         );
         assert_eq!(
-            sort_value(Target::LastUpdated, &id(), &updated(), &body),
+            sort_value(&Target::LastUpdated, &id(), &updated(), &body),
             SortValue::Instant(updated().key())
         );
         assert_eq!(
-            sort_value(Target::Path(&["name.family"]), &id(), &updated(), &body),
+            sort_value(&Target::path(["name.family"]), &id(), &updated(), &body),
             SortValue::Text("Ann".to_owned())
         );
         assert_eq!(
-            sort_value(Target::Path(&["name"]), &id(), &updated(), &body),
+            sort_value(&Target::path(["name"]), &id(), &updated(), &body),
             SortValue::Text("Ann".to_owned())
         );
         assert_eq!(
-            sort_value(Target::Path(&["missing"]), &id(), &updated(), &body),
+            sort_value(&Target::path(["missing"]), &id(), &updated(), &body),
             SortValue::Missing
         );
         assert_eq!(
-            sort_value(Target::Path(&["active"]), &id(), &updated(), &body),
+            sort_value(&Target::path(["active"]), &id(), &updated(), &body),
             SortValue::Text("true".to_owned())
         );
     }

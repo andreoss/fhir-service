@@ -10,7 +10,7 @@ pub enum IncludeDirection {
 pub struct Include {
     pub name: String,
     pub source: Option<ResourceType>,
-    pub paths: Vec<&'static str>,
+    pub paths: Vec<String>,
     pub target: Option<ResourceType>,
     pub direction: IncludeDirection,
     pub iterate: bool,
@@ -30,11 +30,11 @@ impl Include {
 mod tests {
     use super::*;
 
-    fn rule(source: Option<&str>, paths: Vec<&'static str>) -> Include {
+    fn rule(source: Option<&str>, paths: Vec<&str>) -> Include {
         Include {
             name: "_include".to_owned(),
             source: source.map(|text| text.parse().unwrap()),
-            paths,
+            paths: paths.into_iter().map(str::to_owned).collect(),
             target: None,
             direction: IncludeDirection::Forward,
             iterate: false,

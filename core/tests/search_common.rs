@@ -6,7 +6,7 @@ fn filter(name: &str, raw: &str) -> Filter {
     let def = lookup(None, name).expect("common parameter is registered");
     Filter::new(
         name,
-        def.target,
+        def.target.clone(),
         raw.split(',')
             .map(|part| SearchValue::parse(def.value_type, part).expect("value parses"))
             .collect(),
@@ -70,5 +70,5 @@ fn tag_and_security_match_system_and_code() {
 fn a_parameter_outside_the_registry_is_not_found() {
     assert!(lookup(None, "_nonesuch").is_none());
     assert_eq!(lookup(None, "_id").map(|def| def.value_type), Some(ValueType::Token));
-    assert!(matches!(lookup(None, "_lastUpdated").map(|def| def.target), Some(Target::LastUpdated)));
+    assert!(matches!(lookup(None, "_lastUpdated").map(|def| def.target.clone()), Some(Target::LastUpdated)));
 }

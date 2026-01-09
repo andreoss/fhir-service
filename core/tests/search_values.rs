@@ -7,7 +7,7 @@ fn filter(type_name: &str, name: &str, raw: &str) -> Filter {
     let def = lookup(Some(resource_type), name).expect("parameter is registered");
     Filter::new(
         name,
-        def.target,
+        def.target.clone(),
         raw.split(',')
             .map(|part| def.value(part).expect("value parses"))
             .collect(),

@@ -40,7 +40,7 @@ mod tests {
     fn direct() -> Criterion {
         Criterion::Direct(Filter::new(
             "name",
-            Target::Path(&["name"]),
+            Target::path(["name"]),
             vec![SearchValue::parse(ValueType::String, "Ann").unwrap()],
         ))
     }
@@ -49,7 +49,7 @@ mod tests {
         let def = lookup(Some("Observation".parse().unwrap()), "subject").unwrap();
         Chain {
             name: "subject.name".to_owned(),
-            target: def.target,
+            target: def.target.clone(),
             types: vec!["Patient".parse().unwrap()],
             direction: ChainDirection::Forward,
             next: Box::new(next),
