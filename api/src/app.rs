@@ -10,7 +10,8 @@ use tokio::net::TcpListener;
 use crate::handlers::{
     compartment_definition, compartment_definitions, compartment_search, conditional_delete,
     conditional_patch, conditional_update, create, delete_instance, health,
-    instance_history, method_not_allowed, not_found, parameter_reindex, parameter_status,
+    instance_history, method_not_allowed, not_found, parameter_refresh, parameter_reindex,
+    parameter_status,
     parameter_status_query,
     parameter_status_update, patch_instance, purge_history, read,
     search_system, search_type, system_history, type_history, update, vread,
@@ -51,6 +52,20 @@ impl Service {
         }
     }
 
+    pub async fn started(
+        store: Arc<dyn ResourceStore>,
+        version: FhirVersion,
+        dependencies: Vec<Dependency>,
+    ) -> Result<Service, Error> {
+        let service = Service::new(store, version, dependencies);
+        service.refresh().await?;
+        Ok(service)
+    }
+
+    pub async fn refresh(&self) -> Result<u64, Error> {
+        crate::parameter::refresh(&self.state).await
+    }
+
     pub fn registry(&self) -> Arc<Registry> {
         Arc::clone(&self.state.registry)
     }
@@ -64,6 +79,7 @@ impl Service {
                 get(parameter_status).post(parameter_status_query).put(parameter_status_update),
             )
             .route("/SearchParameter/$reindex", post(parameter_reindex))
+            .route("/SearchParameter/$refresh", post(parameter_refresh))
             .route("/CompartmentDefinition", get(compartment_definitions))
             .route("/CompartmentDefinition/{id}", get(compartment_definition))
             .route("/{type}/{id}/{target}", get(compartment_search))

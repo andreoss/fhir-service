@@ -662,6 +662,11 @@ pub async fn parameter_reindex(
     Ok(rendered(parameter::reindex(&state, wanted.as_deref()).await?))
 }
 
+pub async fn parameter_refresh(State(state): State<AppState>) -> Result<Response, AppError> {
+    parameter::refresh(&state).await?;
+    Ok(rendered(parameter::status_report(&state, None)?))
+}
+
 fn parameter_value(body: &Value, name: &str) -> Option<String> {
     body.get("parameter")?
         .as_array()?

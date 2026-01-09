@@ -2012,3 +2012,57 @@ async fn a_retired_parameter_loses_its_index_on_the_next_reindex() {
     let after = statuses(&app, "GET", "/SearchParameter/$status", &[]).await;
     assert_eq!(status_of(&after, "urn:p:risk-band").as_deref(), Some("disabled"));
 }
+
+fn instance(store: Arc<MemoryStore>) -> Service {
+    let store: Arc<dyn ResourceStore> = store;
+    Service::new(store, FhirVersion::R4, Vec::new())
+}
+
+async fn shared() -> Arc<MemoryStore> {
+    Arc::new(MemoryStore::with_clock(Arc::new(|| {
+        FhirInstant::parse("2026-09-06T04:00:00.000Z").unwrap()
+    })))
+}
+
+#[tokio::test]
+async fn a_second_instance_converges_on_a_refresh() {
+    let store = shared().await;
+    let first = instance(Arc::clone(&store));
+    let second = instance(Arc::clone(&store));
+    request(&first, "POST", "/Patient", &[], &banded("pt-c1", "high")).await;
+    let body = definition("sp-13", "risk-band", "Patient.extension.valueCode", "active");
+    request(&first, "POST", "/SearchParameter", &[], &body).await;
+    statuses(&first, "POST", "/SearchParameter/$reindex", &[]).await;
+    assert_eq!(found(&first, "/Patient?risk-band=high").await, vec!["pt-c1".to_owned()]);
+    assert!(!diagnostics(&second, "/Patient?risk-band=high").await.contains("is supported"));
+    statuses(&second, "POST", "/SearchParameter/$refresh", &[]).await;
+    assert_eq!(found(&second, "/Patient?risk-band=high").await, vec!["pt-c1".to_owned()]);
+    let again = statuses(&second, "POST", "/SearchParameter/$refresh", &[]).await;
+    assert_eq!(status_of(&again, "urn:p:risk-band").as_deref(), Some("searchable"));
+}
+
+#[tokio::test]
+async fn an_instance_started_over_a_loaded_store_answers_at_once() {
+    let store = shared().await;
+    let first = instance(Arc::clone(&store));
+    request(&first, "POST", "/Patient", &[], &banded("pt-c2", "high")).await;
+    let body = definition("sp-14", "risk-band", "Patient.extension.valueCode", "active");
+    request(&first, "POST", "/SearchParameter", &[], &body).await;
+    statuses(&first, "POST", "/SearchParameter/$reindex", &[]).await;
+    let handle: Arc<dyn ResourceStore> = store.clone();
+    let late = Service::started(handle, FhirVersion::R4, Vec::new()).await.unwrap();
+    assert_eq!(found(&late, "/Patient?risk-band=high").await, vec!["pt-c2".to_owned()]);
+}
+
+#[tokio::test]
+async fn a_withdrawn_definition_converges_too() {
+    let store = shared().await;
+    let first = instance(Arc::clone(&store));
+    let second = instance(Arc::clone(&store));
+    let body = definition("sp-15", "risk-band", "Patient.extension.valueCode", "active");
+    request(&first, "POST", "/SearchParameter", &[], &body).await;
+    statuses(&second, "POST", "/SearchParameter/$refresh", &[]).await;
+    request(&first, "DELETE", "/SearchParameter/sp-15", &[], &[]).await;
+    let listing = statuses(&second, "POST", "/SearchParameter/$refresh", &[]).await;
+    assert!(listing["parameter"].as_array().is_none_or(Vec::is_empty), "{listing}");
+}

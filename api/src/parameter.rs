@@ -104,6 +104,19 @@ pub fn status_report(state: &AppState, wanted: Option<&str>) -> Result<Vec<u8>, 
     Ok(serde_json::to_vec(&body).expect("status report is serializable"))
 }
 
+pub async fn refresh(state: &AppState) -> Result<u64, Error> {
+    let held = stored(state).await?;
+    let entries = held
+        .iter()
+        .map(|(_, spec)| {
+            let report = state.store.index_report(&spec.url);
+            entry_of(spec, report.as_ref())
+        })
+        .collect();
+    state.registry.replace(entries);
+    Ok(state.registry.version())
+}
+
 pub async fn reindex(state: &AppState, wanted: Option<&str>) -> Result<Vec<u8>, Error> {
     let held = stored(state).await?;
     let specs: Vec<ParameterSpec> = held
