@@ -654,6 +654,14 @@ pub async fn parameter_status_update(
     Ok(rendered(parameter::status_report(&state, Some(&url))?))
 }
 
+pub async fn parameter_reindex(
+    State(state): State<AppState>,
+    RawQuery(query): RawQuery,
+) -> Result<Response, AppError> {
+    let wanted = param(query.as_deref(), "url");
+    Ok(rendered(parameter::reindex(&state, wanted.as_deref()).await?))
+}
+
 fn parameter_value(body: &Value, name: &str) -> Option<String> {
     body.get("parameter")?
         .as_array()?

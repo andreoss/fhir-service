@@ -104,6 +104,59 @@ pub fn status_report(state: &AppState, wanted: Option<&str>) -> Result<Vec<u8>, 
     Ok(serde_json::to_vec(&body).expect("status report is serializable"))
 }
 
+pub async fn reindex(state: &AppState, wanted: Option<&str>) -> Result<Vec<u8>, Error> {
+    let held = stored(state).await?;
+    let specs: Vec<ParameterSpec> = held
+        .into_iter()
+        .map(|(_, spec)| spec)
+        .filter(|spec| wanted.is_none_or(|url| spec.url == url))
+        .collect();
+    if specs.is_empty() {
+        return match wanted {
+            Some(_) => Err(Error::NotFound),
+            None => Ok(report_of(&[])),
+        };
+    }
+    let (retired, live): (Vec<ParameterSpec>, Vec<ParameterSpec>) =
+        specs.into_iter().partition(|spec| spec.retired);
+    for spec in &retired {
+        state.store.drop_parameter(&spec.url).await?;
+        state.registry.register(entry_of(spec, None))?;
+    }
+    let reports = state.store.reindex(&live).await?;
+    for (spec, report) in live.iter().zip(reports.iter()) {
+        state.registry.register(entry_of(spec, Some(report)))?;
+    }
+    Ok(report_of(&reports))
+}
+
+fn report_of(reports: &[IndexReport]) -> Vec<u8> {
+    let rendered: Vec<Value> = reports
+        .iter()
+        .map(|report| {
+            let mut parts = vec![
+                json!({"name": "url", "valueUri": report.url}),
+                json!({"name": "indexed", "valueInteger": report.indexed}),
+                json!({"name": "values", "valueInteger": report.values}),
+                json!({"name": "overflow", "valueInteger": report.overflow}),
+                json!({"name": "failures", "valueInteger": report.failures.len()}),
+            ];
+            parts.extend(report.failures.iter().map(|failure| {
+                json!({
+                    "name": "failure",
+                    "part": [
+                        {"name": "resource", "valueString": failure.resource},
+                        {"name": "reason", "valueString": failure.reason}
+                    ]
+                })
+            }));
+            json!({"name": "reindexed", "part": parts})
+        })
+        .collect();
+    let body = json!({"resourceType": "Parameters", "parameter": rendered});
+    serde_json::to_vec(&body).expect("reindex report is serializable")
+}
+
 pub async fn set_status(state: &AppState, url: &str, wanted: ParamStatus) -> Result<(), Error> {
     let retired = match wanted {
         ParamStatus::Disabled | ParamStatus::PendingDisable => true,

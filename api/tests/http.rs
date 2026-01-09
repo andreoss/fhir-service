@@ -1949,3 +1949,66 @@ async fn a_parameter_is_disabled_and_enabled_through_the_status_endpoint() {
     let refused = request(&app, "PUT", "/SearchParameter/$status?url=urn:p:risk-band&status=nonesuch", &[], &[]).await;
     assert_eq!(refused.status, StatusCode::BAD_REQUEST);
 }
+
+fn banded(id: &str, code: &str) -> Vec<u8> {
+    format!(
+        r#"{{"resourceType":"Patient","id":"{id}","extension":[{{"url":"urn:x:band","valueCode":"{code}"}}]}}"#
+    )
+    .into_bytes()
+}
+
+fn part_of(entry: &serde_json::Value, name: &str) -> serde_json::Value {
+    entry["part"]
+        .as_array()
+        .and_then(|parts| parts.iter().find(|part| part["name"] == name).cloned())
+        .unwrap_or(serde_json::Value::Null)
+}
+
+#[tokio::test]
+async fn a_reindex_backfills_and_makes_a_parameter_searchable() {
+    let app = service();
+    request(&app, "POST", "/Patient", &[], &banded("pt-r1", "high")).await;
+    request(&app, "POST", "/Patient", &[], &banded("pt-r2", "low")).await;
+    request(&app, "POST", "/Patient", &[], br#"{"resourceType":"Patient","id":"pt-r3"}"#).await;
+    let body = definition("sp-10", "risk-band", "Patient.extension.valueCode", "active");
+    request(&app, "POST", "/SearchParameter", &[], &body).await;
+    assert!(diagnostics(&app, "/Patient?risk-band=high").await.contains("is supported"));
+    let report = statuses(&app, "POST", "/SearchParameter/$reindex", &[]).await;
+    let entry = &report["parameter"][0];
+    assert_eq!(part_of(entry, "indexed")["valueInteger"], 2);
+    assert_eq!(part_of(entry, "failures")["valueInteger"], 0);
+    assert_eq!(found(&app, "/Patient?risk-band=high").await, vec!["pt-r1".to_owned()]);
+    assert!(found(&app, "/Patient?risk-band=none").await.is_empty());
+    let listing = statuses(&app, "GET", "/SearchParameter/$status", &[]).await;
+    assert_eq!(status_of(&listing, "urn:p:risk-band").as_deref(), Some("searchable"));
+}
+
+#[tokio::test]
+async fn a_reindex_reports_the_resources_it_could_not_index() {
+    let app = service();
+    request(&app, "POST", "/Patient", &[], &banded("pt-r4", "1980-04-01")).await;
+    request(&app, "POST", "/Patient", &[], &banded("pt-r5", "whenever")).await;
+    let body = br#"{"resourceType":"SearchParameter","id":"sp-11","url":"urn:p:band-date","status":"active","code":"band-date","base":["Patient"],"type":"date","expression":"Patient.extension.valueCode"}"#;
+    request(&app, "POST", "/SearchParameter", &[], body).await;
+    let report = statuses(&app, "POST", "/SearchParameter/$reindex", &[]).await;
+    let entry = &report["parameter"][0];
+    assert_eq!(part_of(entry, "indexed")["valueInteger"], 1);
+    assert_eq!(part_of(entry, "failures")["valueInteger"], 1);
+    let failure = part_of(entry, "failure");
+    assert_eq!(part_of(&failure, "resource")["valueString"], "Patient/pt-r5");
+    assert_eq!(found(&app, "/Patient?band-date=1980-04-01").await, vec!["pt-r4".to_owned()]);
+}
+
+#[tokio::test]
+async fn a_retired_parameter_loses_its_index_on_the_next_reindex() {
+    let app = service();
+    request(&app, "POST", "/Patient", &[], &banded("pt-r6", "high")).await;
+    let body = definition("sp-12", "risk-band", "Patient.extension.valueCode", "active");
+    request(&app, "POST", "/SearchParameter", &[], &body).await;
+    statuses(&app, "POST", "/SearchParameter/$reindex", &[]).await;
+    let listing = statuses(&app, "PUT", "/SearchParameter/$status?url=urn:p:risk-band&status=disabled", &[]).await;
+    assert_eq!(status_of(&listing, "urn:p:risk-band").as_deref(), Some("pending-disable"));
+    statuses(&app, "POST", "/SearchParameter/$reindex", &[]).await;
+    let after = statuses(&app, "GET", "/SearchParameter/$status", &[]).await;
+    assert_eq!(status_of(&after, "urn:p:risk-band").as_deref(), Some("disabled"));
+}
