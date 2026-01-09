@@ -510,3 +510,127 @@ fn live_search_matches_typed_values_and_rejects_the_unsupported() {
     assert_eq!(malformed.status, 400);
     assert_eq!(issue_code(&malformed.body), "invalid");
 }
+
+fn modes(body: &str, mode: &str) -> Vec<String> {
+    let value: serde_json::Value = serde_json::from_str(body).expect("bundle must be json");
+    value["entry"]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter(|item| item["search"]["mode"] == mode)
+                .map(|item| item["resource"]["id"].as_str().unwrap_or_default().to_owned())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn seed_advanced(port: u16) {
+    let clinic = br#"{"resourceType":"Organization","id":"org-a1","name":"Mercy","active":true}"#;
+    let ann = br#"{"resourceType":"Patient","id":"pt-a1","gender":"female","name":[{"family":"Sorensen"}],"managingOrganization":{"reference":"Organization/org-a1"},"identifier":[{"type":{"coding":[{"system":"urn:t","code":"MR"}]},"system":"urn:mrn","value":"12345"}]}"#;
+    let bo = br#"{"resourceType":"Patient","id":"pt-a2","gender":"male","name":[{"family":"Okonkwo"}]}"#;
+    let warm = br#"{"resourceType":"Observation","id":"ob-a1","status":"final","code":{"text":"Body Temperature","coding":[{"system":"urn:s","code":"vital.temperature"}]},"subject":{"reference":"Patient/pt-a1"}}"#;
+    let survey = br#"{"resourceType":"Observation","id":"ob-a2","status":"registered","code":{"coding":[{"system":"urn:s","code":"survey"}]},"subject":{"reference":"Patient/pt-a2"}}"#;
+    let set = br#"{"resourceType":"ValueSet","id":"vs-a1","url":"http://x/vitals","status":"active","compose":{"include":[{"system":"urn:s","concept":[{"code":"vital.temperature"}]}]}}"#;
+    request(port, "POST", "/Organization", &[], clinic);
+    request(port, "POST", "/Patient", &[], ann);
+    request(port, "POST", "/Patient", &[], bo);
+    request(port, "POST", "/Observation", &[], warm);
+    request(port, "POST", "/Observation", &[], survey);
+    request(port, "POST", "/ValueSet", &[], set);
+}
+
+#[test]
+fn live_search_applies_every_modifier() {
+    let (child, port) = spawn_server();
+    seed_advanced(port);
+    let exact = request(port, "GET", "/Patient?family:exact=Okonkwo", &[], &[]);
+    let contains = request(port, "GET", "/Patient?family:contains=oren", &[], &[]);
+    let missing = request(port, "GET", "/Patient?identifier:missing=true", &[], &[]);
+    let not = request(port, "GET", "/Patient?gender:not=male", &[], &[]);
+    let text = request(port, "GET", "/Observation?code:text=temperature", &[], &[]);
+    let inside = request(port, "GET", "/Observation?code:in=http%3A%2F%2Fx%2Fvitals", &[], &[]);
+    let outside = request(port, "GET", "/Observation?code:not-in=http%3A%2F%2Fx%2Fvitals", &[], &[]);
+    let below = request(port, "GET", "/Observation?code:below=vital", &[], &[]);
+    let above = request(port, "GET", "/Observation?code:above=vital.temperature.core", &[], &[]);
+    let typed = request(port, "GET", "/Observation?subject:Patient=pt-a1", &[], &[]);
+    let identified = request(port, "GET", "/Patient?identifier:of-type=urn:t%7CMR%7C12345", &[], &[]);
+    let forbidden = request(port, "GET", "/Patient?gender:exact=male", &[], &[]);
+    stop(child);
+
+    assert_eq!(ids(&exact.body), vec!["pt-a2".to_owned()]);
+    assert_eq!(ids(&contains.body), vec!["pt-a1".to_owned()]);
+    assert_eq!(ids(&missing.body), vec!["pt-a2".to_owned()]);
+    assert_eq!(ids(&not.body), vec!["pt-a1".to_owned()]);
+    assert_eq!(ids(&text.body), vec!["ob-a1".to_owned()]);
+    assert_eq!(ids(&inside.body), vec!["ob-a1".to_owned()]);
+    assert_eq!(ids(&outside.body), vec!["ob-a2".to_owned()]);
+    assert_eq!(ids(&below.body), vec!["ob-a1".to_owned()]);
+    assert_eq!(ids(&above.body), vec!["ob-a1".to_owned()]);
+    assert_eq!(ids(&typed.body), vec!["ob-a1".to_owned()]);
+    assert_eq!(ids(&identified.body), vec!["pt-a1".to_owned()]);
+    assert_eq!(forbidden.status, 400);
+    assert_eq!(issue_code(&forbidden.body), "not-supported");
+}
+
+#[test]
+fn live_search_chains_includes_and_compartments() {
+    let (child, port) = spawn_server();
+    seed_advanced(port);
+    let chained = request(port, "GET", "/Observation?patient.gender=female", &[], &[]);
+    let deep = request(port, "GET", "/Observation?patient.organization.name=Mercy", &[], &[]);
+    let reverse = request(port, "GET", "/Patient?_has:Observation:patient:status=final", &[], &[]);
+    let included = request(port, "GET", "/Observation?_id=ob-a1&_include=Observation:subject", &[], &[]);
+    let iterated = request(
+        port,
+        "GET",
+        "/Observation?_id=ob-a1&_include=Observation:subject&_include:iterate=Patient:organization",
+        &[],
+        &[],
+    );
+    let reverse_include = request(port, "GET", "/Patient?_id=pt-a1&_revinclude=Observation:patient", &[], &[]);
+    let compartment = request(port, "GET", "/Patient/pt-a1/Observation", &[], &[]);
+    let wildcard = request(port, "GET", "/Patient/pt-a1/*", &[], &[]);
+    let definitions = request(port, "GET", "/CompartmentDefinition", &[], &[]);
+    let one = request(port, "GET", "/CompartmentDefinition/Patient", &[], &[]);
+    let outside = request(port, "GET", "/Patient/pt-a1/Organization", &[], &[]);
+    stop(child);
+
+    assert_eq!(ids(&chained.body), vec!["ob-a1".to_owned()]);
+    assert_eq!(ids(&deep.body), vec!["ob-a1".to_owned()]);
+    assert_eq!(ids(&reverse.body), vec!["pt-a1".to_owned()]);
+    assert_eq!(modes(&included.body, "include"), vec!["pt-a1".to_owned()]);
+    let mut iterated_ids = modes(&iterated.body, "include");
+    iterated_ids.sort();
+    assert_eq!(iterated_ids, vec!["org-a1".to_owned(), "pt-a1".to_owned()]);
+    assert_eq!(modes(&reverse_include.body, "include"), vec!["ob-a1".to_owned()]);
+    assert_eq!(modes(&compartment.body, "match"), vec!["ob-a1".to_owned()]);
+    let mut gathered = modes(&wildcard.body, "match");
+    gathered.sort();
+    assert_eq!(gathered, vec!["ob-a1".to_owned(), "pt-a1".to_owned()]);
+    assert_eq!(definitions.status, 200);
+    assert_eq!(one.status, 200);
+    assert_eq!(outside.status, 400);
+    assert_eq!(issue_code(&outside.body), "not-supported");
+}
+
+#[test]
+fn live_continuation_tokens_are_opaque_and_scoped() {
+    let (child, port) = spawn_server();
+    seed_advanced(port);
+    let first = request(port, "GET", "/Patient?_count=1&_sort=_id", &[], &[]);
+    let token = next_token(&first.body);
+    let second = request(port, "GET", &format!("/Patient?_count=1&_sort=_id&ct={token}"), &[], &[]);
+    let elsewhere = request(port, "GET", &format!("/Patient?_count=1&_sort=-_id&ct={token}"), &[], &[]);
+    let edited = format!("{}{}", &token[..token.len() - 1], if token.ends_with('0') { '1' } else { '0' });
+    let tampered = request(port, "GET", &format!("/Patient?_count=1&_sort=_id&ct={edited}"), &[], &[]);
+    stop(child);
+
+    assert_eq!(token.len(), 32);
+    assert_eq!(ids(&first.body), vec!["pt-a1".to_owned()]);
+    assert_eq!(ids(&second.body), vec!["pt-a2".to_owned()]);
+    assert_eq!(elsewhere.status, 400);
+    assert_eq!(issue_code(&elsewhere.body), "invalid");
+    assert_eq!(tampered.status, 400);
+    assert_eq!(issue_code(&tampered.body), "invalid");
+}
