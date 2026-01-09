@@ -23,6 +23,12 @@ const CONTROL: [&str; 9] = [
     "ct",
 ];
 
+const UNSUPPORTED: [&str; 4] = ["_text", "_content", "_filter", "_query"];
+
+fn base_of(name: &str) -> &str {
+    name.split_once(':').map(|(base, _)| base).unwrap_or(name)
+}
+
 pub fn parse_query(
     base_type: Option<ResourceType>,
     raw: Option<&str>,
@@ -32,6 +38,14 @@ pub fn parse_query(
         ..SearchQuery::default()
     };
     for (name, value) in pairs(raw) {
+        if value.is_empty() {
+            return Err(Error::UnsupportedParameter(format!(
+                "{name:?} with an empty value"
+            )));
+        }
+        if UNSUPPORTED.contains(&base_of(&name)) {
+            return Err(Error::UnsupportedParameter(format!("{name:?}")));
+        }
         if CONTROL.contains(&name.as_str()) {
             continue;
         }
@@ -516,6 +530,18 @@ mod tests {
             let error = parse_query(patient(), Some(raw)).unwrap_err();
             assert!(matches!(error, Error::UnsupportedParameter(_)), "{raw} gave {error:?}");
         }
+    }
+
+    #[test]
+    fn an_empty_value_and_a_full_text_search_are_unsupported() {
+        for raw in ["_id=", "name=", "_text=fever", "_content=x", "_filter=name%20eq%20a"] {
+            let error = parse_query(patient(), Some(raw)).unwrap_err();
+            assert!(matches!(error, Error::UnsupportedParameter(_)), "{raw} gave {error:?}");
+        }
+        assert!(matches!(
+            SearchRequest::parse(patient(), Some("_sort=")).unwrap_err(),
+            Error::UnsupportedParameter(_)
+        ));
     }
 
     #[test]

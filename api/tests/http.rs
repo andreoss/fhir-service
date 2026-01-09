@@ -1796,3 +1796,25 @@ async fn a_token_longer_than_the_index_key_matches_exactly() {
     let miss = format!("/Patient?identifier=urn:mrn|{value}-b");
     assert!(found(&app, &miss).await.is_empty());
 }
+
+#[tokio::test]
+async fn a_full_text_parameter_is_reported_unsupported() {
+    let app = seeded().await;
+    for uri in ["/Patient?_text=fever", "/Patient?_content=fever", "/Patient?_text:exact=fever"] {
+        let reply = request(&app, "GET", uri, &[], &[]).await;
+        assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{uri} gave {}", reply.body);
+        let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
+        assert_eq!(value["issue"][0]["code"], "not-supported", "{uri}");
+    }
+}
+
+#[tokio::test]
+async fn an_empty_value_is_reported_unsupported() {
+    let app = seeded().await;
+    for uri in ["/Patient?_id=", "/Patient?name=", "/Patient?_sort=", "/Patient?_count=", "/Patient?_tag="] {
+        let reply = request(&app, "GET", uri, &[], &[]).await;
+        assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{uri} gave {}", reply.body);
+        let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
+        assert_eq!(value["issue"][0]["code"], "not-supported", "{uri}");
+    }
+}
