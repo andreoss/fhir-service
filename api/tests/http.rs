@@ -2066,3 +2066,44 @@ async fn a_withdrawn_definition_converges_too() {
     let listing = statuses(&second, "POST", "/SearchParameter/$refresh", &[]).await;
     assert!(listing["parameter"].as_array().is_none_or(Vec::is_empty), "{listing}");
 }
+
+#[tokio::test]
+async fn concurrent_definition_updates_never_lose_one() {
+    let app = service();
+    let body = definition("sp-16", "risk-band", "Patient.extension.valueCode", "active");
+    request(&app, "POST", "/SearchParameter", &[], &body).await;
+    let first = definition("sp-16", "risk-alpha", "Patient.extension.valueCode", "active");
+    let second = definition("sp-16", "risk-beta", "Patient.extension.valueCode", "active");
+    let etag = &[("if-match", "W/\"1\"")];
+    let (left, right) = tokio::join!(
+        request(&app, "PUT", "/SearchParameter/sp-16", etag, &first),
+        request(&app, "PUT", "/SearchParameter/sp-16", etag, &second),
+    );
+    let outcomes = [left.status, right.status];
+    assert!(outcomes.contains(&StatusCode::OK), "{outcomes:?}");
+    assert!(outcomes.contains(&StatusCode::CONFLICT), "{outcomes:?}");
+    let (won, lost) = match left.status {
+        StatusCode::OK => ("risk-alpha", "risk-beta"),
+        _ => ("risk-beta", "risk-alpha"),
+    };
+    assert!(diagnostics(&app, &format!("/Patient?{won}=x")).await.contains("is supported"));
+    assert!(!diagnostics(&app, &format!("/Patient?{lost}=x")).await.contains("is supported"));
+    let listing = statuses(&app, "GET", "/SearchParameter/$status", &[]).await;
+    assert_eq!(listing["parameter"].as_array().map(Vec::len), Some(1));
+    let stored = request(&app, "GET", "/SearchParameter/sp-16", &[], &[]).await;
+    assert!(stored.body.contains(won), "{}", stored.body);
+}
+
+#[tokio::test]
+async fn a_stale_definition_update_changes_nothing() {
+    let app = service();
+    let body = definition("sp-17", "risk-band", "Patient.extension.valueCode", "active");
+    request(&app, "POST", "/SearchParameter", &[], &body).await;
+    let next = definition("sp-17", "risk-band", "Patient.extension.valueString", "active");
+    request(&app, "PUT", "/SearchParameter/sp-17", &[], &next).await;
+    let stale = definition("sp-17", "risk-stale", "Patient.extension.valueCode", "active");
+    let reply = request(&app, "PUT", "/SearchParameter/sp-17", &[("if-match", "W/\"1\"")], &stale).await;
+    assert_eq!(reply.status, StatusCode::CONFLICT, "{}", reply.body);
+    assert!(!diagnostics(&app, "/Patient?risk-stale=x").await.contains("is supported"));
+    assert!(diagnostics(&app, "/Patient?risk-band=x").await.contains("is supported"));
+}

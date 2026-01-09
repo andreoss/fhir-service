@@ -459,6 +459,31 @@ struct Inner {
     version: u64,
 }
 
+fn accepted(inner: &Inner, entry: &RegisteredParam) -> Result<(), Error> {
+    for resource_type in &entry.base {
+        if lookup(Some(*resource_type), &entry.def.name).is_some() {
+            return Err(Error::Duplicate(format!(
+                "{} already implements {:?}",
+                resource_type.as_str(),
+                entry.def.name
+            )));
+        }
+        let clash = inner.custom.iter().any(|held| {
+            held.url != entry.url
+                && held.def.name == entry.def.name
+                && held.base.contains(resource_type)
+        });
+        if clash {
+            return Err(Error::Duplicate(format!(
+                "{:?} is already registered for {}",
+                entry.def.name,
+                resource_type.as_str()
+            )));
+        }
+    }
+    Ok(())
+}
+
 #[derive(Default)]
 pub struct Registry {
     inner: RwLock<Inner>,
@@ -514,31 +539,19 @@ impl Registry {
             .inner
             .write()
             .map_err(|_| Error::Internal("registry lock poisoned".to_owned()))?;
-        for resource_type in &entry.base {
-            if lookup(Some(*resource_type), &entry.def.name).is_some() {
-                return Err(Error::Duplicate(format!(
-                    "{} already implements {:?}",
-                    resource_type.as_str(),
-                    entry.def.name
-                )));
-            }
-            let clash = inner.custom.iter().any(|held| {
-                held.url != entry.url
-                    && held.def.name == entry.def.name
-                    && held.base.contains(resource_type)
-            });
-            if clash {
-                return Err(Error::Duplicate(format!(
-                    "{:?} is already registered for {}",
-                    entry.def.name,
-                    resource_type.as_str()
-                )));
-            }
-        }
+        accepted(&inner, &entry)?;
         inner.custom.retain(|held| held.url != entry.url);
         inner.custom.push(entry);
         inner.version += 1;
         Ok(())
+    }
+
+    pub fn accepts(&self, entry: &RegisteredParam) -> Result<(), Error> {
+        let inner = self
+            .inner
+            .read()
+            .map_err(|_| Error::Internal("registry lock poisoned".to_owned()))?;
+        accepted(&inner, entry)
     }
 
     pub fn remove(&self, url: &str) -> bool {

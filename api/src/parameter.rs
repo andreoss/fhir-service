@@ -27,6 +27,10 @@ pub fn entry_of(spec: &ParameterSpec, report: Option<&IndexReport>) -> Registere
     }
 }
 
+pub fn accepts(state: &AppState, spec: &ParameterSpec) -> Result<(), Error> {
+    state.registry.accepts(&entry_of(spec, None))
+}
+
 pub async fn install(state: &AppState, spec: &ParameterSpec) -> Result<(), Error> {
     state.registry.register(entry_of(spec, None))?;
     match state.store.index_parameter(spec).await {
@@ -45,19 +49,6 @@ pub async fn uninstall(state: &AppState, url: &str) -> Result<(), Error> {
     state.registry.remove(url);
     state.store.drop_parameter(url).await
 }
-
-pub async fn restore(state: &AppState, url: &str, stored: Option<&serde_json::Value>) {
-    match stored.and_then(|body| ParameterSpec::parse(body).ok()) {
-        Some(spec) => {
-            let report = state.store.index_report(&spec.url);
-            let _ = state.registry.register(entry_of(&spec, report.as_ref()));
-        }
-        None => {
-            let _ = uninstall(state, url).await;
-        }
-    }
-}
-
 pub async fn stored(state: &AppState) -> Result<Vec<(ResourceEnvelope, ParameterSpec)>, Error> {
     let kind: ResourceType = SEARCH_PARAMETER.parse()?;
     let page = state.store.search(&SearchQuery::of_type(kind)).await?;

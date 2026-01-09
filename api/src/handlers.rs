@@ -102,14 +102,11 @@ pub async fn create(
     let envelope = write_envelope(state.version, resource_type, value.clone(), &id)?;
     if resource_type.as_str() == SEARCH_PARAMETER {
         let spec = ParameterSpec::parse(&value)?;
+        let _guard = state.parameters.lock().await;
+        parameter::accepts(&state, &spec)?;
+        let stored = state.store.create(envelope).await?;
         parameter::install(&state, &spec).await?;
-        return match state.store.create(envelope).await {
-            Ok(stored) => Ok(respond_created(&stored, host_from(&headers))),
-            Err(error) => {
-                parameter::restore(&state, &spec.url, None).await;
-                Err(error.into())
-            }
-        };
+        return Ok(respond_created(&stored, host_from(&headers)));
     }
     let stored = state.store.create(envelope).await?;
     Ok(respond_created(&stored, host_from(&headers)))
@@ -168,25 +165,21 @@ async fn replace_parameter(
     headers: &HeaderMap,
 ) -> Result<Response, AppError> {
     let spec = ParameterSpec::parse(value)?;
+    let _guard = state.parameters.lock().await;
+    parameter::accepts(state, &spec)?;
     let previous = state.store.read(id).await.ok();
-    let held = previous
+    let stored = state.store.update(envelope, expected.as_ref()).await?;
+    let replaced = previous
         .as_ref()
-        .and_then(|found| serde_json::from_slice::<Value>(found.raw()).ok());
-    let replaced = held.as_ref().and_then(|body| ParameterSpec::parse(body).ok());
-    if let Some(replaced) = &replaced {
+        .and_then(|found| serde_json::from_slice::<Value>(found.raw()).ok())
+        .and_then(|body| ParameterSpec::parse(&body).ok());
+    if let Some(replaced) = replaced {
         if replaced.url != spec.url {
             parameter::uninstall(state, &replaced.url).await?;
         }
     }
     parameter::install(state, &spec).await?;
-    match state.store.update(envelope, expected.as_ref()).await {
-        Ok(stored) => Ok(respond_updated(&stored, host_from(headers))),
-        Err(error) => {
-            let _ = parameter::uninstall(state, &spec.url).await;
-            parameter::restore(state, &spec.url, held.as_ref()).await;
-            Err(error.into())
-        }
-    }
+    Ok(respond_updated(&stored, host_from(headers)))
 }
 
 pub async fn delete_instance(

@@ -23,6 +23,7 @@ pub struct AppState {
     pub version: FhirVersion,
     pub dependencies: Arc<Vec<Dependency>>,
     pub registry: Arc<Registry>,
+    pub parameters: Arc<tokio::sync::Mutex<()>>,
 }
 
 #[derive(Clone)]
@@ -48,6 +49,7 @@ impl Service {
                 version,
                 dependencies: Arc::new(dependencies),
                 registry: Arc::new(Registry::new()),
+                parameters: Arc::new(tokio::sync::Mutex::new(())),
             },
         }
     }
