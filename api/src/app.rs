@@ -7,7 +7,8 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 
 use crate::handlers::{
-    conditional_delete, conditional_patch, conditional_update, create, delete_instance, health,
+    compartment_definition, compartment_definitions, compartment_search, conditional_delete,
+    conditional_patch, conditional_update, create, delete_instance, health,
     instance_history, method_not_allowed, not_found, patch_instance, purge_history, read,
     search_system, search_type, system_history, type_history, update, vread,
 };
@@ -49,6 +50,9 @@ impl Service {
         Router::new()
             .route("/", get(search_system))
             .route("/health", get(health))
+            .route("/CompartmentDefinition", get(compartment_definitions))
+            .route("/CompartmentDefinition/{id}", get(compartment_definition))
+            .route("/{type}/{id}/{target}", get(compartment_search))
             .route("/{type}/{id}", get(read).put(update).delete(delete_instance).patch(patch_instance))
             .route("/_history", get(system_history))
             .route("/{type}/_history", get(type_history))

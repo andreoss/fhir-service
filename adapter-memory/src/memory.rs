@@ -1,5 +1,7 @@
 use async_trait::async_trait;
-use fhir_core::search::{ChainDirection, Criterion, Filter, Include, IncludeDirection, Target};
+use fhir_core::search::{
+    ChainDirection, Compartment, Criterion, Filter, Include, IncludeDirection, Target,
+};
 use fhir_core::{Error, FhirInstant, ResourceEnvelope, ResourceId, VersionId};
 use fhir_store::{
     HistoryOrder, HistoryPage, HistoryQuery, HistoryScope, ResourceStore, SearchPage, SearchQuery,
@@ -160,6 +162,33 @@ fn holds(resolved: &Resolved, envelope: &ResourceEnvelope, body: &Value) -> bool
             refs.contains(&reference_of(envelope)) || refs.contains(envelope.id().as_str())
         }
     }
+}
+
+fn in_compartment(
+    compartment: &Compartment,
+    envelope: &ResourceEnvelope,
+    body: &Value,
+) -> bool {
+    let Some(def) = fhir_core::search::compartment::definition(compartment.kind.as_str()) else {
+        return false;
+    };
+    let Some(member) = def.member(envelope.resource_type()) else {
+        return false;
+    };
+    if member.params.is_empty() {
+        return envelope.resource_type() == compartment.kind && envelope.id() == &compartment.id;
+    }
+    let root = format!("{}/{}", compartment.kind.as_str(), compartment.id.as_str());
+    member.params.iter().any(|name| {
+        fhir_core::search::lookup(Some(envelope.resource_type()), name)
+            .map(|def| at(def.target, body))
+            .unwrap_or_default()
+            .iter()
+            .any(|text| {
+                let found = normalized(text);
+                found == root || found == compartment.id.as_str()
+            })
+    })
 }
 
 const INCLUDE_ROUNDS: usize = 5;
@@ -406,6 +435,11 @@ impl ResourceStore for MemoryStore {
                 }
             }
             let body = body_of(current)?;
+            if let Some(compartment) = &query.compartment {
+                if !in_compartment(compartment, current, &body) {
+                    continue;
+                }
+            }
             let kept = filters
                 .iter()
                 .all(|filter| filter.matches(current.id(), current.last_updated(), &body))

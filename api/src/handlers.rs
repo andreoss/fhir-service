@@ -6,6 +6,7 @@ use axum::response::{IntoResponse, Response};
 use fhir_core::{
     Error, FhirInstant, Patch, ResourceEnvelope, ResourceId, ResourceType, VersionId, WeakEtag,
 };
+use fhir_core::search::Compartment;
 use fhir_store::{HistoryScope, SearchQuery};
 use serde_json::Value;
 use uuid::Uuid;
@@ -13,6 +14,7 @@ use uuid::Uuid;
 use crate::app::AppState;
 use crate::history::{history_bundle, HistoryRequest};
 use crate::query::param;
+use crate::compartment::{definition_json, definitions_bundle};
 use crate::search::{parse_query, search_bundle, SearchRequest};
 
 const FHIR_JSON: &str = "application/fhir+json";
@@ -523,6 +525,77 @@ pub async fn search_system(
     respond_search(&state, None, String::new(), query, &headers).await
 }
 
+pub async fn compartment_search(
+    State(state): State<AppState>,
+    Path((kind, id, target)): Path<(String, String, String)>,
+    RawQuery(query): RawQuery,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    let root_type = kind.parse::<ResourceType>()?;
+    let def = fhir_core::search::compartment::definition(root_type.as_str())
+        .ok_or_else(|| Error::UnsupportedParameter(format!("compartment {kind:?}")))?;
+    let root = ResourceId::parse(&id)?;
+    let (base_type, types) = match target.as_str() {
+        "*" => (
+            None,
+            def.types()
+                .iter()
+                .map(|name| name.parse::<ResourceType>())
+                .collect::<Result<Vec<ResourceType>, Error>>()?,
+        ),
+        name => {
+            let one = name.parse::<ResourceType>()?;
+            if def.member(one).is_none() {
+                return Err(Error::UnsupportedParameter(format!(
+                    "{name:?} is not gathered by compartment {kind:?}"
+                ))
+                .into());
+            }
+            (Some(one), vec![one])
+        }
+    };
+    let mut request = SearchRequest::parse(base_type, query.as_deref())?;
+    request.query.types = types;
+    request.query.compartment = Some(Compartment {
+        kind: root_type,
+        id: root,
+    });
+    let path = format!("/{}/{}/{}", root_type.as_str(), id, target);
+    respond_page(&state, request, path, query, &headers).await
+}
+
+pub async fn compartment_definitions(
+    RawQuery(query): RawQuery,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    let base = format!("http://{}", host_from(&headers));
+    let self_url = match query.as_deref() {
+        Some(raw) if !raw.is_empty() => format!("{base}/CompartmentDefinition?{raw}"),
+        _ => format!("{base}/CompartmentDefinition"),
+    };
+    Ok(rendered(definitions_bundle(&base, &self_url)))
+}
+
+pub async fn compartment_definition(
+    Path(code): Path<String>,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    let base = format!("http://{}", host_from(&headers));
+    let def = fhir_core::search::compartment::definition(&code).ok_or(Error::NotFound)?;
+    let body = serde_json::to_vec(&definition_json(def, &base))
+        .map_err(|error| Error::Internal(error.to_string()))?;
+    Ok(rendered(body))
+}
+
+fn rendered(body: Vec<u8>) -> Response {
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, FHIR_JSON), (header::CACHE_CONTROL, "no-store")],
+        body,
+    )
+        .into_response()
+}
+
 async fn respond_search(
     state: &AppState,
     base_type: Option<ResourceType>,
@@ -531,6 +604,16 @@ async fn respond_search(
     headers: &HeaderMap,
 ) -> Result<Response, AppError> {
     let request = SearchRequest::parse(base_type, query.as_deref())?;
+    respond_page(state, request, path, query, headers).await
+}
+
+async fn respond_page(
+    state: &AppState,
+    request: SearchRequest,
+    path: String,
+    query: Option<String>,
+    headers: &HeaderMap,
+) -> Result<Response, AppError> {
     let page = state.store.search(&request.query).await?;
     let base = format!("http://{}", host_from(headers));
     let self_url = match query.as_deref() {

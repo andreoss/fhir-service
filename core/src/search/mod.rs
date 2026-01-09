@@ -1,5 +1,6 @@
 
 pub mod chain;
+pub mod compartment;
 pub mod include;
 pub mod modifier;
 pub mod path;
@@ -7,6 +8,7 @@ pub mod registry;
 pub mod value;
 
 pub use chain::{Chain, ChainDirection, Criterion};
+pub use compartment::{Compartment, CompartmentDef, Membership};
 pub use include::{Include, IncludeDirection};
 pub use modifier::Modifier;
 pub use path::select;

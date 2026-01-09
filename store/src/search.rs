@@ -1,4 +1,4 @@
-use fhir_core::search::{Chain, Filter, Include};
+use fhir_core::search::{Chain, Compartment, Filter, Include};
 use fhir_core::{ResourceEnvelope, ResourceId, ResourceType};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,6 +28,7 @@ pub struct SearchQuery {
     pub chains: Vec<Chain>,
     pub includes: Vec<Include>,
     pub list: Option<ResourceId>,
+    pub compartment: Option<Compartment>,
     pub sort: Vec<SortKey>,
     pub offset: usize,
     pub count: usize,
@@ -42,6 +43,7 @@ impl Default for SearchQuery {
             chains: Vec::new(),
             includes: Vec::new(),
             list: None,
+            compartment: None,
             sort: Vec::new(),
             offset: 0,
             count: usize::MAX,
@@ -59,7 +61,10 @@ impl SearchQuery {
     }
 
     pub fn is_unconditional(&self) -> bool {
-        self.filters.is_empty() && self.chains.is_empty() && self.list.is_none()
+        self.filters.is_empty()
+            && self.chains.is_empty()
+            && self.list.is_none()
+            && self.compartment.is_none()
     }
 }
 

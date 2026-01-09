@@ -307,7 +307,7 @@ async fn malformed_id_path_returns_outcome_400() {
 #[tokio::test]
 async fn unknown_route_returns_outcome_404() {
     let app = service();
-    let reply = request(&app, "GET", "/not/a/route", &[], &[]).await;
+    let reply = request(&app, "GET", "/not/a/route/at/all", &[], &[]).await;
     assert_eq!(reply.status, StatusCode::NOT_FOUND);
     let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
     assert_eq!(value["issue"][0]["code"], "not-found");
@@ -1573,4 +1573,64 @@ async fn an_include_the_server_cannot_follow_is_rejected() {
         let reply = request(&app, "GET", uri, &[], &[]).await;
         assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{uri} gave {}", reply.body);
     }
+}
+
+#[tokio::test]
+async fn a_compartment_search_returns_what_belongs_to_the_resource() {
+    let app = qualified().await;
+    let value = page(&app, "/Patient/pt-m1/Observation").await;
+    assert_eq!(by_mode(&value, "match"), vec!["ob-m1".to_owned()]);
+    assert_eq!(value["total"], 1);
+    let empty = page(&app, "/Patient/pt-m2/Observation").await;
+    assert_eq!(empty["total"], 0);
+}
+
+#[tokio::test]
+async fn a_compartment_search_narrows_further_by_query() {
+    let app = qualified().await;
+    let value = page(&app, "/Patient/pt-m1/Observation?status=final").await;
+    assert_eq!(by_mode(&value, "match"), vec!["ob-m1".to_owned()]);
+    let none = page(&app, "/Patient/pt-m1/Observation?status=cancelled").await;
+    assert_eq!(none["total"], 0);
+}
+
+#[tokio::test]
+async fn a_wildcard_compartment_gathers_every_type_it_covers() {
+    let app = qualified().await;
+    let value = page(&app, "/Patient/pt-m1/*").await;
+    let mut ids = by_mode(&value, "match");
+    ids.sort();
+    assert_eq!(ids, vec!["ob-m1".to_owned(), "pt-m1".to_owned()]);
+}
+
+#[tokio::test]
+async fn an_organization_compartment_gathers_by_its_own_references() {
+    let app = qualified().await;
+    let value = page(&app, "/Organization/org-m1/Patient").await;
+    assert_eq!(by_mode(&value, "match"), vec!["pt-m1".to_owned()]);
+}
+
+#[tokio::test]
+async fn a_compartment_the_server_does_not_define_is_rejected() {
+    let app = qualified().await;
+    for uri in ["/Observation/ob-m1/Patient", "/Patient/pt-m1/Organization"] {
+        let reply = request(&app, "GET", uri, &[], &[]).await;
+        assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{uri} gave {}", reply.body);
+        let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
+        assert_eq!(value["issue"][0]["code"], "not-supported");
+    }
+}
+
+#[tokio::test]
+async fn the_compartment_definitions_are_served() {
+    let app = qualified().await;
+    let listing = page(&app, "/CompartmentDefinition").await;
+    assert_eq!(listing["type"], "searchset");
+    assert!(listing["total"].as_u64().is_some_and(|total| total >= 4));
+    let one = page(&app, "/CompartmentDefinition/Patient").await;
+    assert_eq!(one["resourceType"], "CompartmentDefinition");
+    assert_eq!(one["code"], "Patient");
+    assert_eq!(one["search"], true);
+    let missing = request(&app, "GET", "/CompartmentDefinition/Nonesuch", &[], &[]).await;
+    assert_eq!(missing.status, StatusCode::NOT_FOUND);
 }
