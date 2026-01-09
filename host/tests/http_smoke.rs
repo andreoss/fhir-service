@@ -634,3 +634,100 @@ fn live_continuation_tokens_are_opaque_and_scoped() {
     assert_eq!(tampered.status, 400);
     assert_eq!(issue_code(&tampered.body), "invalid");
 }
+
+fn live_definition(id: &str, code: &str) -> Vec<u8> {
+    format!(
+        r#"{{"resourceType":"SearchParameter","id":"{id}","url":"urn:p:{code}","status":"active","code":"{code}","base":["Patient"],"type":"token","expression":"Patient.extension.valueCode"}}"#
+    )
+    .into_bytes()
+}
+
+fn live_banded(id: &str, code: &str) -> Vec<u8> {
+    format!(
+        r#"{{"resourceType":"Patient","id":"{id}","extension":[{{"url":"urn:x:band","valueCode":"{code}"}}]}}"#
+    )
+    .into_bytes()
+}
+
+fn live_status(body: &str, url: &str) -> String {
+    let value: serde_json::Value = serde_json::from_str(body).expect("parameters must be json");
+    value["parameter"]
+        .as_array()
+        .and_then(|entries| {
+            entries.iter().find_map(|entry| {
+                let parts = entry["part"].as_array()?;
+                let read = |name: &str| {
+                    parts
+                        .iter()
+                        .find(|part| part["name"] == name)
+                        .and_then(|part| part["valueCode"].as_str().or_else(|| part["valueUri"].as_str()))
+                        .map(str::to_owned)
+                };
+                (read("url").as_deref() == Some(url)).then(|| read("status"))?
+            })
+        })
+        .unwrap_or_default()
+}
+
+#[test]
+fn live_custom_parameters_register_reindex_and_answer() {
+    let (child, port) = spawn_server();
+    request(port, "POST", "/Patient", &[], &live_banded("pt-x1", "high"));
+    request(port, "POST", "/Patient", &[], &live_banded("pt-x2", "low"));
+    let created = request(port, "POST", "/SearchParameter", &[], &live_definition("sp-x1", "risk-band"));
+    let awaiting = request(port, "GET", "/Patient?risk-band=high", &[], &[]);
+    let supported = request(port, "GET", "/SearchParameter/$status", &[], &[]);
+    let reindexed = request(port, "POST", "/SearchParameter/$reindex", &[], &[]);
+    let searchable = request(port, "GET", "/SearchParameter/$status", &[], &[]);
+    let found = request(port, "GET", "/Patient?risk-band=high", &[], &[]);
+    let disabled = request(port, "PUT", "/SearchParameter/$status?url=urn:p:risk-band&status=disabled", &[], &[]);
+    let refused = request(port, "GET", "/Patient?risk-band=high", &[], &[]);
+    let unknown = request(port, "GET", "/Patient?nonesuch", &[], &[]);
+    let empty = request(port, "GET", "/Patient?_id=", &[], &[]);
+    stop(child);
+
+    assert_eq!(created.status, 201, "{}", created.body);
+    assert_eq!(awaiting.status, 400);
+    assert_eq!(issue_code(&awaiting.body), "not-supported");
+    assert_eq!(live_status(&supported.body, "urn:p:risk-band"), "supported");
+    assert_eq!(reindexed.status, 200, "{}", reindexed.body);
+    assert_eq!(live_status(&searchable.body, "urn:p:risk-band"), "searchable");
+    assert_eq!(found.status, 200, "{}", found.body);
+    assert_eq!(ids(&found.body), vec!["pt-x1".to_owned()]);
+    assert_eq!(live_status(&disabled.body, "urn:p:risk-band"), "pending-disable");
+    assert_eq!(refused.status, 400);
+    assert_eq!(unknown.status, 400);
+    assert_eq!(empty.status, 400);
+    assert_eq!(issue_code(&empty.body), "not-supported");
+}
+
+#[test]
+fn live_search_is_confined_to_the_granted_scope() {
+    let (child, port) = spawn_server();
+    let patient = br#"{"resourceType":"Patient","id":"pt-g1","active":true}"#;
+    let other = br#"{"resourceType":"Patient","id":"pt-g2","active":true}"#;
+    let mine = br#"{"resourceType":"Observation","id":"ob-g1","status":"final","subject":{"reference":"Patient/pt-g1"}}"#;
+    let theirs = br#"{"resourceType":"Observation","id":"ob-g2","status":"final","subject":{"reference":"Patient/pt-g2"}}"#;
+    request(port, "POST", "/Patient", &[], patient);
+    request(port, "POST", "/Patient", &[], other);
+    request(port, "POST", "/Observation", &[], mine);
+    request(port, "POST", "/Observation", &[], theirs);
+    let scope = [("X-Scope", "compartment=Patient/pt-g1")];
+    let confined = request(port, "GET", "/Observation", &scope, &[]);
+    let refused = request(port, "GET", "/Observation", &[("X-Scope", "types=Patient")], &[]);
+    let long = "u".repeat(600);
+    let tagged = format!(
+        r#"{{"resourceType":"Patient","id":"pt-g3","identifier":[{{"system":"urn:mrn","value":"{long}-a"}}]}}"#
+    );
+    request(port, "POST", "/Patient", &[], tagged.as_bytes());
+    let exact = request(port, "GET", &format!("/Patient?identifier=urn:mrn|{long}-a"), &[], &[]);
+    let miss = request(port, "GET", &format!("/Patient?identifier=urn:mrn|{long}-b"), &[], &[]);
+    stop(child);
+
+    assert_eq!(confined.status, 200, "{}", confined.body);
+    assert_eq!(ids(&confined.body), vec!["ob-g1".to_owned()]);
+    assert_eq!(refused.status, 403);
+    assert_eq!(issue_code(&refused.body), "forbidden");
+    assert_eq!(ids(&exact.body), vec!["pt-g3".to_owned()]);
+    assert_eq!(total(&miss.body), serde_json::json!(0));
+}

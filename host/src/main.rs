@@ -28,7 +28,7 @@ async fn run() -> Result<(), Error> {
         name: "store",
         check: store_dependency,
     }];
-    let service = Service::new(store, config.version, dependencies);
+    let service = Service::started(store, config.version, dependencies).await?;
     eprintln!("serving {config}");
     let bound = service.bind(config.bind).await?;
     println!("listening on {}", bound.local_addr()?);
