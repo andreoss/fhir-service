@@ -559,6 +559,7 @@ fn coded_query(modifier: fhir_core::search::Modifier, url: &str) -> SearchQuery 
         target: def.target.clone(),
         values: vec![def.value_with(&modifier, url).unwrap()],
         modifier,
+        index: None,
     };
     SearchQuery {
         types: vec![resource_type],

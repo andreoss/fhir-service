@@ -21,6 +21,7 @@ fn filter(type_name: &str, name: &str, modifier: Modifier, raw: &str) -> Filter 
         name: name.to_owned(),
         target: def.target.clone(),
         modifier,
+        index: None,
         values,
     }
 }

@@ -1818,3 +1818,76 @@ async fn an_empty_value_is_reported_unsupported() {
         assert_eq!(value["issue"][0]["code"], "not-supported", "{uri}");
     }
 }
+
+fn definition(id: &str, code: &str, expression: &str, status: &str) -> Vec<u8> {
+    format!(
+        r#"{{"resourceType":"SearchParameter","id":"{id}","url":"urn:p:{code}","status":"{status}","code":"{code}","base":["Patient"],"type":"token","expression":"{expression}"}}"#
+    )
+    .into_bytes()
+}
+
+async fn diagnostics(app: &Service, uri: &str) -> String {
+    let reply = request(app, "GET", uri, &[], &[]).await;
+    assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{uri} gave {}", reply.body);
+    let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
+    value["issue"][0]["diagnostics"].as_str().unwrap_or_default().to_owned()
+}
+
+#[tokio::test]
+async fn a_definition_registers_a_custom_parameter() {
+    let app = service();
+    assert!(!diagnostics(&app, "/Patient?risk-band=high").await.contains("is supported"));
+    let body = definition("sp-1", "risk-band", "Patient.extension.valueCode", "active");
+    let reply = request(&app, "POST", "/SearchParameter", &[], &body).await;
+    assert_eq!(reply.status, StatusCode::CREATED, "{}", reply.body);
+    assert!(diagnostics(&app, "/Patient?risk-band=high").await.contains("is supported"));
+}
+
+#[tokio::test]
+async fn a_malformed_definition_registers_nothing() {
+    let app = service();
+    let body = br#"{"resourceType":"SearchParameter","id":"sp-2","url":"urn:p:bad","status":"active","code":"bad","base":["Patient"],"type":"token"}"#;
+    let reply = request(&app, "POST", "/SearchParameter", &[], body).await;
+    assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{}", reply.body);
+    assert!(!diagnostics(&app, "/Patient?bad=1").await.contains("is supported"));
+    let read = request(&app, "GET", "/SearchParameter/sp-2", &[], &[]).await;
+    assert_eq!(read.status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn a_rejected_definition_leaves_the_registry_untouched() {
+    let app = service();
+    let first = definition("sp-3", "risk-band", "Patient.extension.valueCode", "active");
+    request(&app, "POST", "/SearchParameter", &[], &first).await;
+    let clash = br#"{"resourceType":"SearchParameter","id":"sp-4","url":"urn:p:other","status":"active","code":"risk-band","base":["Patient"],"type":"token","expression":"Patient.extension.valueString"}"#;
+    let reply = request(&app, "POST", "/SearchParameter", &[], clash).await;
+    assert_eq!(reply.status, StatusCode::CONFLICT, "{}", reply.body);
+    let duplicate = definition("sp-3", "other-band", "Patient.extension.valueCode", "active");
+    let again = request(&app, "POST", "/SearchParameter", &[], &duplicate).await;
+    assert_eq!(again.status, StatusCode::CONFLICT, "{}", again.body);
+    assert!(!diagnostics(&app, "/Patient?other-band=1").await.contains("is supported"));
+    let read = request(&app, "GET", "/SearchParameter/sp-4", &[], &[]).await;
+    assert_eq!(read.status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn deleting_a_definition_withdraws_the_parameter() {
+    let app = service();
+    let body = definition("sp-5", "risk-band", "Patient.extension.valueCode", "active");
+    request(&app, "POST", "/SearchParameter", &[], &body).await;
+    let reply = request(&app, "DELETE", "/SearchParameter/sp-5", &[], &[]).await;
+    assert_eq!(reply.status, StatusCode::NO_CONTENT, "{}", reply.body);
+    assert!(!diagnostics(&app, "/Patient?risk-band=high").await.contains("is supported"));
+}
+
+#[tokio::test]
+async fn a_replaced_definition_replaces_the_registration() {
+    let app = service();
+    let body = definition("sp-6", "risk-band", "Patient.extension.valueCode", "active");
+    request(&app, "POST", "/SearchParameter", &[], &body).await;
+    let changed = definition("sp-6", "risk-level", "Patient.extension.valueCode", "active");
+    let reply = request(&app, "PUT", "/SearchParameter/sp-6", &[], &changed).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert!(diagnostics(&app, "/Patient?risk-level=high").await.contains("is supported"));
+    assert!(!diagnostics(&app, "/Patient?risk-band=high").await.contains("is supported"));
+}

@@ -3,9 +3,11 @@ use fhir_core::search::{
     ChainDirection, Compartment, Criterion, Filter, Grant, Include, IncludeDirection, Modifier,
     Target, TokenSystem,
 };
+use fhir_core::search::{IndexKey, ParameterSpec, SearchValue};
 use fhir_core::{Error, FhirInstant, ResourceEnvelope, ResourceId, VersionId};
 use fhir_store::{
-    HistoryOrder, HistoryPage, HistoryQuery, HistoryScope, Plan, PlanCache, PlanKey, PlanStat,
+    HistoryOrder, HistoryPage, HistoryQuery, HistoryScope, IndexFailure, IndexReport, Plan,
+    PlanCache, PlanKey, PlanStat,
     ResourceStore, SearchPage, SearchQuery, SortDirection, SortKey, TotalMode,
 };
 use serde_json::Value;
@@ -352,10 +354,62 @@ fn fallback_instant() -> FhirInstant {
     FhirInstant::parse("1970-01-01T00:00:00+00:00").expect("epoch instant is valid")
 }
 
+struct ParamIndex {
+    entries: HashMap<ResourceId, Vec<Value>>,
+    report: IndexReport,
+}
+
+type IndexMap = HashMap<String, ParamIndex>;
+
+fn extracted(spec: &ParameterSpec, body: &Value) -> Result<Vec<Value>, String> {
+    let mut found = Vec::new();
+    for path in spec.def.paths() {
+        for element in fhir_core::search::select(body, &path) {
+            match element {
+                Value::Array(items) => found.extend(items.iter().cloned()),
+                Value::Null => {}
+                other => found.push(other.clone()),
+            }
+        }
+    }
+    for element in &found {
+        if let Some(text) = scalar_text(element) {
+            SearchValue::parse(spec.def.value_type, &text).map_err(|error| error.to_string())?;
+        }
+    }
+    Ok(found)
+}
+
+fn scalar_text(element: &Value) -> Option<String> {
+    match element {
+        Value::String(text) => Some(text.clone()),
+        Value::Number(number) => Some(number.to_string()),
+        Value::Bool(flag) => Some(flag.to_string()),
+        Value::Array(_) | Value::Object(_) | Value::Null => None,
+    }
+}
+
+fn indexed(indexes: &IndexMap, url: &str, id: &ResourceId) -> Vec<Value> {
+    indexes
+        .get(url)
+        .and_then(|index| index.entries.get(id))
+        .cloned()
+        .unwrap_or_default()
+}
+
+fn overflowing(elements: &[Value]) -> usize {
+    elements
+        .iter()
+        .filter_map(scalar_text)
+        .filter(|text| IndexKey::of(text).overflows())
+        .count()
+}
+
 pub struct MemoryStore {
     inner: RwLock<StoreMap>,
     clock: Clock,
     plans: PlanCache,
+    indexes: RwLock<IndexMap>,
 }
 
 impl MemoryStore {
@@ -364,6 +418,7 @@ impl MemoryStore {
             inner: RwLock::new(HashMap::new()),
             clock,
             plans: PlanCache::new(),
+            indexes: RwLock::new(HashMap::new()),
         }
     }
 
@@ -467,6 +522,10 @@ impl ResourceStore for MemoryStore {
             .inner
             .read()
             .map_err(|_| Error::Internal("store lock poisoned".to_owned()))?;
+        let indexes = self
+            .indexes
+            .read()
+            .map_err(|_| Error::Internal("index lock poisoned".to_owned()))?;
         let key = PlanKey::of(query);
         let plan = self.plans.chosen(&key, proposed(query));
         let members = match &query.list {
@@ -517,10 +576,10 @@ impl ResourceStore for MemoryStore {
                     continue;
                 }
             }
-            let kept = filters
-                .iter()
-                .all(|filter| filter.matches(current.id(), current.last_updated(), &body))
-                && chains.iter().all(|chain| holds(chain, current, &body));
+            let kept = filters.iter().all(|filter| match &filter.index {
+                Some(url) => filter.matches_indexed(&indexed(&indexes, url, current.id())),
+                None => filter.matches(current.id(), current.last_updated(), &body),
+            }) && chains.iter().all(|chain| holds(chain, current, &body));
             if kept {
                 matches.push((current.clone(), body));
             }
@@ -544,6 +603,80 @@ impl ResourceStore for MemoryStore {
             total,
             offset: query.offset,
         })
+    }
+
+    async fn index_parameter(&self, spec: &ParameterSpec) -> Result<IndexReport, Error> {
+        let mut indexes = self
+            .indexes
+            .write()
+            .map_err(|_| Error::Internal("index lock poisoned".to_owned()))?;
+        let report = IndexReport::empty(&spec.url);
+        indexes.insert(
+            spec.url.clone(),
+            ParamIndex {
+                entries: HashMap::new(),
+                report: report.clone(),
+            },
+        );
+        Ok(report)
+    }
+
+    async fn drop_parameter(&self, url: &str) -> Result<(), Error> {
+        let mut indexes = self
+            .indexes
+            .write()
+            .map_err(|_| Error::Internal("index lock poisoned".to_owned()))?;
+        indexes.remove(url);
+        Ok(())
+    }
+
+    async fn reindex(&self, specs: &[ParameterSpec]) -> Result<Vec<IndexReport>, Error> {
+        let guard = self
+            .inner
+            .read()
+            .map_err(|_| Error::Internal("store lock poisoned".to_owned()))?;
+        let mut indexes = self
+            .indexes
+            .write()
+            .map_err(|_| Error::Internal("index lock poisoned".to_owned()))?;
+        let mut reports = Vec::new();
+        for spec in specs {
+            let mut index = ParamIndex {
+                entries: HashMap::new(),
+                report: IndexReport::empty(&spec.url),
+            };
+            for versions in guard.values() {
+                let Some(current) = versions.last() else { continue };
+                if current.is_deleted() || !spec.base.contains(&current.resource_type()) {
+                    continue;
+                }
+                let body = body_of(current)?;
+                match extracted(spec, &body) {
+                    Ok(elements) if elements.is_empty() => {}
+                    Ok(elements) => {
+                        index.report.indexed += 1;
+                        index.report.values += elements.len();
+                        index.report.overflow += overflowing(&elements);
+                        index.entries.insert(current.id().clone(), elements);
+                    }
+                    Err(reason) => index.report.failures.push(IndexFailure {
+                        resource: reference_of(current),
+                        reason,
+                    }),
+                }
+            }
+            index.report.backfilled = true;
+            reports.push(index.report.clone());
+            indexes.insert(spec.url.clone(), index);
+        }
+        Ok(reports)
+    }
+
+    fn index_report(&self, url: &str) -> Option<IndexReport> {
+        self.indexes
+            .read()
+            .ok()
+            .and_then(|indexes| indexes.get(url).map(|index| index.report.clone()))
     }
 
     async fn history(

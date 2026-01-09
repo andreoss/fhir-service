@@ -319,6 +319,7 @@ fn filter(
         target: def.target.clone(),
         modifier,
         values,
+        index: def.url.clone(),
     })
 }
 

@@ -5,6 +5,7 @@ pub mod grant;
 pub mod include;
 pub mod index;
 pub mod modifier;
+pub mod parameter;
 pub mod path;
 pub mod registry;
 pub mod value;
@@ -15,6 +16,7 @@ pub use grant::Grant;
 pub use include::{Include, IncludeDirection};
 pub use index::IndexKey;
 pub use modifier::Modifier;
+pub use parameter::ParameterSpec;
 pub use path::select;
 pub use registry::{
     common, lookup, references, CompositeDef, ParamDef, ParamStatus, RegisteredParam, Registry,
@@ -31,6 +33,7 @@ pub struct Filter {
     pub target: Target,
     pub modifier: Modifier,
     pub values: Vec<SearchValue>,
+    pub index: Option<String>,
 }
 
 impl Filter {
@@ -40,7 +43,30 @@ impl Filter {
             target,
             modifier: Modifier::None,
             values,
+            index: None,
         }
+    }
+
+    pub fn matches_indexed(&self, elements: &[Value]) -> bool {
+        match &self.modifier {
+            Modifier::Missing => {
+                let wanted = matches!(self.values.first(), Some(SearchValue::Missing(true)));
+                elements.iter().all(Value::is_null) == wanted
+            }
+            modifier if modifier.is_exclusive() => !self
+                .values
+                .iter()
+                .any(|value| self.indexed_hit(value, elements)),
+            _ => self.values.iter().any(|value| {
+                self.indexed_hit(value, elements) != value.is_negated()
+            }),
+        }
+    }
+
+    fn indexed_hit(&self, value: &SearchValue, elements: &[Value]) -> bool {
+        elements
+            .iter()
+            .any(|element| self.modifier.accepts(value, element))
     }
 
     pub fn matches(&self, id: &ResourceId, last_updated: &FhirInstant, body: &Value) -> bool {
@@ -70,6 +96,7 @@ impl Filter {
                 ref other => other.clone(),
             },
             values: values.to_vec(),
+            index: self.index.clone(),
         }
     }
 

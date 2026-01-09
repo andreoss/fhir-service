@@ -1,7 +1,9 @@
 use async_trait::async_trait;
+use fhir_core::search::ParameterSpec;
 use fhir_core::{Error, ResourceEnvelope, ResourceId, VersionId};
 
 use crate::history::{HistoryPage, HistoryQuery, HistoryScope};
+use crate::parameter::{IndexReport};
 use crate::search::{SearchPage, SearchQuery};
 
 pub type SearchParam = (String, String);
@@ -35,6 +37,32 @@ pub trait ResourceStore: Send + Sync {
         scope: &HistoryScope,
         query: &HistoryQuery,
     ) -> Result<HistoryPage, Error>;
+
+    async fn index_parameter(&self, spec: &ParameterSpec) -> Result<IndexReport, Error> {
+        let _ = spec;
+        Err(Error::UnsupportedParameter(
+            "this store holds no parameter index".to_owned(),
+        ))
+    }
+
+    async fn drop_parameter(&self, url: &str) -> Result<(), Error> {
+        let _ = url;
+        Err(Error::UnsupportedParameter(
+            "this store holds no parameter index".to_owned(),
+        ))
+    }
+
+    async fn reindex(&self, specs: &[ParameterSpec]) -> Result<Vec<IndexReport>, Error> {
+        let _ = specs;
+        Err(Error::UnsupportedParameter(
+            "this store holds no parameter index".to_owned(),
+        ))
+    }
+
+    fn index_report(&self, url: &str) -> Option<IndexReport> {
+        let _ = url;
+        None
+    }
 
     fn health(&self) -> Result<(), Error>;
 }

@@ -6,7 +6,7 @@ use axum::response::{IntoResponse, Response};
 use fhir_core::{
     Error, FhirInstant, Patch, ResourceEnvelope, ResourceId, ResourceType, VersionId, WeakEtag,
 };
-use fhir_core::search::{Compartment, Grant};
+use fhir_core::search::{Compartment, Grant, ParameterSpec};
 use fhir_store::{HistoryScope, SearchQuery};
 use serde_json::Value;
 use uuid::Uuid;
@@ -15,6 +15,7 @@ use crate::app::AppState;
 use crate::history::{history_bundle, HistoryRequest};
 use crate::query::param;
 use crate::compartment::{definition_json, definitions_bundle};
+use crate::parameter::{self, SEARCH_PARAMETER};
 use crate::search::{parse_query, search_bundle, SearchRequest};
 
 const FHIR_JSON: &str = "application/fhir+json";
@@ -98,7 +99,18 @@ pub async fn create(
     }
     let value: Value = serde_json::from_slice(&body).map_err(|error| Error::InvalidJson(error.to_string()))?;
     let id = body_id(&value)?;
-    let envelope = write_envelope(state.version, resource_type, value, &id)?;
+    let envelope = write_envelope(state.version, resource_type, value.clone(), &id)?;
+    if resource_type.as_str() == SEARCH_PARAMETER {
+        let spec = ParameterSpec::parse(&value)?;
+        parameter::install(&state, &spec).await?;
+        return match state.store.create(envelope).await {
+            Ok(stored) => Ok(respond_created(&stored, host_from(&headers))),
+            Err(error) => {
+                parameter::restore(&state, &spec.url, None).await;
+                Err(error.into())
+            }
+        };
+    }
     let stored = state.store.create(envelope).await?;
     Ok(respond_created(&stored, host_from(&headers)))
 }
@@ -139,9 +151,42 @@ pub async fn update(
     let id = id_text.parse::<ResourceId>()?;
     let expected = expected_version(&headers)?;
     let value: Value = serde_json::from_slice(&body).map_err(|error| Error::InvalidJson(error.to_string()))?;
-    let envelope = write_envelope(state.version, resource_type, value, &id)?;
+    let envelope = write_envelope(state.version, resource_type, value.clone(), &id)?;
+    if resource_type.as_str() == SEARCH_PARAMETER {
+        return replace_parameter(&state, &id, &value, envelope, expected, &headers).await;
+    }
     let stored = state.store.update(envelope, expected.as_ref()).await?;
     Ok(respond_updated(&stored, host_from(&headers)))
+}
+
+async fn replace_parameter(
+    state: &AppState,
+    id: &ResourceId,
+    value: &Value,
+    envelope: ResourceEnvelope,
+    expected: Option<VersionId>,
+    headers: &HeaderMap,
+) -> Result<Response, AppError> {
+    let spec = ParameterSpec::parse(value)?;
+    let previous = state.store.read(id).await.ok();
+    let held = previous
+        .as_ref()
+        .and_then(|found| serde_json::from_slice::<Value>(found.raw()).ok());
+    let replaced = held.as_ref().and_then(|body| ParameterSpec::parse(body).ok());
+    if let Some(replaced) = &replaced {
+        if replaced.url != spec.url {
+            parameter::uninstall(state, &replaced.url).await?;
+        }
+    }
+    parameter::install(state, &spec).await?;
+    match state.store.update(envelope, expected.as_ref()).await {
+        Ok(stored) => Ok(respond_updated(&stored, host_from(headers))),
+        Err(error) => {
+            let _ = parameter::uninstall(state, &spec.url).await;
+            parameter::restore(state, &spec.url, held.as_ref()).await;
+            Err(error.into())
+        }
+    }
 }
 
 pub async fn delete_instance(
@@ -155,7 +200,15 @@ pub async fn delete_instance(
     if current.resource_type() != resource_type {
         return Err(Error::NotFound.into());
     }
-    remove(&state, &id, hard_delete(query.as_deref())).await
+    let removed = remove(&state, &id, hard_delete(query.as_deref())).await?;
+    if resource_type.as_str() == SEARCH_PARAMETER {
+        if let Ok(body) = serde_json::from_slice::<Value>(current.raw()) {
+            if let Ok(spec) = ParameterSpec::parse(&body) {
+                parameter::uninstall(&state, &spec.url).await?;
+            }
+        }
+    }
+    Ok(removed)
 }
 
 pub async fn conditional_delete(
