@@ -1891,3 +1891,61 @@ async fn a_replaced_definition_replaces_the_registration() {
     assert!(diagnostics(&app, "/Patient?risk-level=high").await.contains("is supported"));
     assert!(!diagnostics(&app, "/Patient?risk-band=high").await.contains("is supported"));
 }
+
+async fn statuses(app: &Service, method: &str, uri: &str, body: &[u8]) -> serde_json::Value {
+    let reply = request(app, method, uri, &[], body).await;
+    assert_eq!(reply.status, StatusCode::OK, "{uri} gave {}", reply.body);
+    serde_json::from_str(&reply.body).unwrap()
+}
+
+fn status_of(value: &serde_json::Value, url: &str) -> Option<String> {
+    value["parameter"].as_array()?.iter().find_map(|entry| {
+        let parts = entry["part"].as_array()?;
+        let found = |name: &str| {
+            parts
+                .iter()
+                .find(|part| part["name"] == name)
+                .and_then(|part| part["valueCode"].as_str().or_else(|| part["valueUri"].as_str()))
+                .map(str::to_owned)
+        };
+        (found("url").as_deref() == Some(url)).then(|| found("status"))?
+    })
+}
+
+#[tokio::test]
+async fn the_status_endpoint_reports_index_readiness() {
+    let app = service();
+    let body = definition("sp-7", "risk-band", "Patient.extension.valueCode", "active");
+    request(&app, "POST", "/SearchParameter", &[], &body).await;
+    let listing = statuses(&app, "GET", "/SearchParameter/$status", &[]).await;
+    assert_eq!(listing["resourceType"], "Parameters");
+    assert_eq!(status_of(&listing, "urn:p:risk-band").as_deref(), Some("supported"));
+    let one = statuses(&app, "GET", "/SearchParameter/$status?url=urn:p:risk-band", &[]).await;
+    assert_eq!(one["parameter"].as_array().map(Vec::len), Some(1));
+    let missing = request(&app, "GET", "/SearchParameter/$status?url=urn:p:nonesuch", &[], &[]).await;
+    assert_eq!(missing.status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn the_status_endpoint_answers_a_posted_query() {
+    let app = service();
+    let body = definition("sp-8", "risk-band", "Patient.extension.valueCode", "active");
+    request(&app, "POST", "/SearchParameter", &[], &body).await;
+    let query = br#"{"resourceType":"Parameters","parameter":[{"name":"url","valueUri":"urn:p:risk-band"}]}"#;
+    let listing = statuses(&app, "POST", "/SearchParameter/$status", query).await;
+    assert_eq!(status_of(&listing, "urn:p:risk-band").as_deref(), Some("supported"));
+}
+
+#[tokio::test]
+async fn a_parameter_is_disabled_and_enabled_through_the_status_endpoint() {
+    let app = service();
+    let body = definition("sp-9", "risk-band", "Patient.extension.valueCode", "active");
+    request(&app, "POST", "/SearchParameter", &[], &body).await;
+    let disabled = statuses(&app, "PUT", "/SearchParameter/$status?url=urn:p:risk-band&status=disabled", &[]).await;
+    assert_eq!(status_of(&disabled, "urn:p:risk-band").as_deref(), Some("disabled"));
+    assert!(diagnostics(&app, "/Patient?risk-band=high").await.contains("disabled"));
+    let enabled = statuses(&app, "PUT", "/SearchParameter/$status?url=urn:p:risk-band&status=supported", &[]).await;
+    assert_eq!(status_of(&enabled, "urn:p:risk-band").as_deref(), Some("supported"));
+    let refused = request(&app, "PUT", "/SearchParameter/$status?url=urn:p:risk-band&status=nonesuch", &[], &[]).await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST);
+}

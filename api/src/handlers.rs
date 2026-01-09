@@ -618,6 +618,56 @@ pub async fn compartment_search(
     respond_page(&state, request, path, query, &headers).await
 }
 
+pub async fn parameter_status(
+    State(state): State<AppState>,
+    RawQuery(query): RawQuery,
+) -> Result<Response, AppError> {
+    let wanted = param(query.as_deref(), "url");
+    Ok(rendered(parameter::status_report(&state, wanted.as_deref())?))
+}
+
+pub async fn parameter_status_query(
+    State(state): State<AppState>,
+    body: Bytes,
+) -> Result<Response, AppError> {
+    let wanted = match body.is_empty() {
+        true => None,
+        false => {
+            let value: Value = serde_json::from_slice(&body)
+                .map_err(|error| Error::InvalidJson(error.to_string()))?;
+            parameter_value(&value, "url")
+        }
+    };
+    Ok(rendered(parameter::status_report(&state, wanted.as_deref())?))
+}
+
+pub async fn parameter_status_update(
+    State(state): State<AppState>,
+    RawQuery(query): RawQuery,
+) -> Result<Response, AppError> {
+    let url = param(query.as_deref(), "url")
+        .ok_or_else(|| Error::InvalidParameter("status needs a url".to_owned()))?;
+    let wanted = param(query.as_deref(), "status")
+        .ok_or_else(|| Error::InvalidParameter("status needs a status".to_owned()))?
+        .parse::<fhir_core::search::ParamStatus>()?;
+    parameter::set_status(&state, &url, wanted).await?;
+    Ok(rendered(parameter::status_report(&state, Some(&url))?))
+}
+
+fn parameter_value(body: &Value, name: &str) -> Option<String> {
+    body.get("parameter")?
+        .as_array()?
+        .iter()
+        .find(|entry| entry["name"] == name)
+        .and_then(|entry| {
+            entry["valueUri"]
+                .as_str()
+                .or_else(|| entry["valueString"].as_str())
+                .or_else(|| entry["valueCode"].as_str())
+        })
+        .map(str::to_owned)
+}
+
 pub async fn compartment_definitions(
     RawQuery(query): RawQuery,
     headers: HeaderMap,
