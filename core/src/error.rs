@@ -22,6 +22,7 @@ pub enum Error {
     InvalidPatch(String),
     InvalidParameter(String),
     UnsupportedParameter(String),
+    Forbidden(String),
 }
 
 impl Error {
@@ -84,6 +85,9 @@ impl Error {
                 IssueCode::NotSupported,
                 format!("unsupported parameter: {message}"),
             ),
+            Error::Forbidden(message) => {
+                OperationOutcome::error(IssueCode::Forbidden, format!("out of scope: {message}"))
+            }
         }
     }
 }
@@ -110,6 +114,7 @@ impl fmt::Display for Error {
             Error::InvalidPatch(message) => write!(f, "invalid patch: {message}"),
             Error::InvalidParameter(message) => write!(f, "invalid parameter: {message}"),
             Error::UnsupportedParameter(message) => write!(f, "unsupported parameter: {message}"),
+            Error::Forbidden(message) => write!(f, "out of scope: {message}"),
         }
     }
 }

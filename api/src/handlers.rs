@@ -6,7 +6,7 @@ use axum::response::{IntoResponse, Response};
 use fhir_core::{
     Error, FhirInstant, Patch, ResourceEnvelope, ResourceId, ResourceType, VersionId, WeakEtag,
 };
-use fhir_core::search::Compartment;
+use fhir_core::search::{Compartment, Grant};
 use fhir_store::{HistoryScope, SearchQuery};
 use serde_json::Value;
 use uuid::Uuid;
@@ -20,6 +20,7 @@ use crate::search::{parse_query, search_bundle, SearchRequest};
 const FHIR_JSON: &str = "application/fhir+json";
 const IF_NONE_EXIST: &str = "if-none-exist";
 const HARD_DELETE: &str = "_hardDelete";
+const SCOPE: &str = "x-scope";
 const PLACEHOLDER_VERSION: &str = "0";
 const PLACEHOLDER_INSTANT: &str = "1970-01-01T00:00:00Z";
 
@@ -596,6 +597,27 @@ fn rendered(body: Vec<u8>) -> Response {
         .into_response()
 }
 
+fn grant_of(headers: &HeaderMap) -> Result<Option<Grant>, Error> {
+    match headers.get(SCOPE) {
+        None => Ok(None),
+        Some(value) => {
+            let raw = value
+                .to_str()
+                .map_err(|_| Error::InvalidParameter("scope is not ascii".to_owned()))?;
+            Ok(Some(Grant::parse(raw)?))
+        }
+    }
+}
+
+fn confine(query: &mut SearchQuery, grant: Option<Grant>) -> Result<(), Error> {
+    let Some(grant) = grant else { return Ok(()) };
+    if let Some(refused) = query.types.iter().find(|kind| !grant.admits(**kind)) {
+        return Err(Error::Forbidden(format!("type {:?}", refused.as_str())));
+    }
+    query.grant = Some(grant);
+    Ok(())
+}
+
 async fn respond_search(
     state: &AppState,
     base_type: Option<ResourceType>,
@@ -609,11 +631,12 @@ async fn respond_search(
 
 async fn respond_page(
     state: &AppState,
-    request: SearchRequest,
+    mut request: SearchRequest,
     path: String,
     query: Option<String>,
     headers: &HeaderMap,
 ) -> Result<Response, AppError> {
+    confine(&mut request.query, grant_of(headers)?)?;
     let page = state.store.search(&request.query).await?;
     let base = format!("http://{}", host_from(headers));
     let self_url = match query.as_deref() {

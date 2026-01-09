@@ -1721,3 +1721,64 @@ async fn an_unknown_parameter_never_reaches_the_store() {
         assert_eq!(value["issue"][0]["code"], "not-supported", "{uri}");
     }
 }
+
+async fn granted() -> Service {
+    let app = service();
+    request(&app, "POST", "/Patient", &[], br#"{"resourceType":"Patient","id":"pt-g1","active":true}"#).await;
+    request(&app, "POST", "/Patient", &[], br#"{"resourceType":"Patient","id":"pt-g2","active":true}"#).await;
+    let mine = br#"{"resourceType":"Observation","id":"ob-g1","status":"final","subject":{"reference":"Patient/pt-g1"}}"#;
+    let other = br#"{"resourceType":"Observation","id":"ob-g2","status":"final","subject":{"reference":"Patient/pt-g2"}}"#;
+    request(&app, "POST", "/Observation", &[], mine).await;
+    request(&app, "POST", "/Observation", &[], other).await;
+    app
+}
+
+async fn scoped(app: &Service, uri: &str, grant: &str) -> serde_json::Value {
+    let reply = request(app, "GET", uri, &[("x-scope", grant)], &[]).await;
+    assert_eq!(reply.status, StatusCode::OK, "{uri} gave {}", reply.body);
+    bundle(&reply)
+}
+
+#[tokio::test]
+async fn a_grant_confines_matches_to_its_compartment() {
+    let app = granted().await;
+    let value = scoped(&app, "/Observation", "compartment=Patient/pt-g1").await;
+    assert_eq!(by_mode(&value, "match"), vec!["ob-g1".to_owned()]);
+    assert_eq!(value["total"], 1);
+    let outside = scoped(&app, "/Observation?patient=pt-g2", "compartment=Patient/pt-g1").await;
+    assert_eq!(outside["total"], 0);
+}
+
+#[tokio::test]
+async fn a_grant_confines_the_resources_an_include_pulls_in() {
+    let app = granted().await;
+    let value = scoped(&app, "/Observation?_include=Observation:subject", "types=Observation").await;
+    assert!(by_mode(&value, "include").is_empty(), "{value}");
+    let allowed = scoped(&app, "/Observation?_include=Observation:subject", "types=Observation,Patient;compartment=Patient/pt-g1").await;
+    assert_eq!(by_mode(&allowed, "include"), vec!["pt-g1".to_owned()]);
+}
+
+#[tokio::test]
+async fn a_grant_confines_what_a_chain_can_reach() {
+    let app = granted().await;
+    let value = scoped(&app, "/Patient?_has:Observation:patient:_id=ob-g2", "compartment=Patient/pt-g1").await;
+    assert_eq!(value["total"], 0);
+    let own = scoped(&app, "/Patient?_has:Observation:patient:_id=ob-g1", "compartment=Patient/pt-g1").await;
+    assert_eq!(by_mode(&own, "match"), vec!["pt-g1".to_owned()]);
+}
+
+#[tokio::test]
+async fn a_type_outside_the_grant_is_refused() {
+    let app = granted().await;
+    let reply = request(&app, "GET", "/Observation", &[("x-scope", "types=Patient")], &[]).await;
+    assert_eq!(reply.status, StatusCode::FORBIDDEN, "{}", reply.body);
+    let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
+    assert_eq!(value["issue"][0]["code"], "forbidden");
+}
+
+#[tokio::test]
+async fn a_malformed_grant_is_rejected() {
+    let app = granted().await;
+    let reply = request(&app, "GET", "/Patient", &[("x-scope", "nonesuch=1")], &[]).await;
+    assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{}", reply.body);
+}

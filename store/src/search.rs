@@ -1,4 +1,4 @@
-use fhir_core::search::{Chain, Compartment, Filter, Include};
+use fhir_core::search::{Chain, Compartment, Filter, Grant, Include};
 use fhir_core::{ResourceEnvelope, ResourceId, ResourceType};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,6 +29,7 @@ pub struct SearchQuery {
     pub includes: Vec<Include>,
     pub list: Option<ResourceId>,
     pub compartment: Option<Compartment>,
+    pub grant: Option<Grant>,
     pub sort: Vec<SortKey>,
     pub offset: usize,
     pub count: usize,
@@ -44,6 +45,7 @@ impl Default for SearchQuery {
             includes: Vec::new(),
             list: None,
             compartment: None,
+            grant: None,
             sort: Vec::new(),
             offset: 0,
             count: usize::MAX,

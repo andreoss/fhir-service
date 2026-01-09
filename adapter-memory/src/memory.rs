@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use fhir_core::search::{
-    ChainDirection, Compartment, Criterion, Filter, Include, IncludeDirection, Target,
+    ChainDirection, Compartment, Criterion, Filter, Grant, Include, IncludeDirection, Target,
 };
 use fhir_core::{Error, FhirInstant, ResourceEnvelope, ResourceId, VersionId};
 use fhir_store::{
@@ -113,12 +113,16 @@ fn at(target: Target, body: &Value) -> Vec<String> {
     }
 }
 
-fn resolve(guard: &StoreMap, criterion: &Criterion) -> Result<Resolved, Error> {
+fn resolve(
+    guard: &StoreMap,
+    criterion: &Criterion,
+    grant: Option<&Grant>,
+) -> Result<Resolved, Error> {
     let chain = match criterion {
         Criterion::Direct(filter) => return Ok(Resolved::Direct(expanded(guard, filter)?)),
         Criterion::Linked(chain) => chain,
     };
-    let inner = resolve(guard, &chain.next)?;
+    let inner = resolve(guard, &chain.next, grant)?;
     let mut refs = HashSet::new();
     for versions in guard.values() {
         let Some(current) = versions.last() else { continue };
@@ -129,6 +133,9 @@ fn resolve(guard: &StoreMap, criterion: &Criterion) -> Result<Resolved, Error> {
             continue;
         }
         let body = body_of(current)?;
+        if !admitted(grant, current, &body) {
+            continue;
+        }
         if !holds(&inner, current, &body) {
             continue;
         }
@@ -191,6 +198,18 @@ fn in_compartment(
     })
 }
 
+fn admitted(grant: Option<&Grant>, envelope: &ResourceEnvelope, body: &Value) -> bool {
+    let Some(grant) = grant else { return true };
+    if !grant.admits(envelope.resource_type()) {
+        return false;
+    }
+    grant.is_open()
+        || grant
+            .compartments
+            .iter()
+            .any(|compartment| in_compartment(compartment, envelope, body))
+}
+
 const INCLUDE_ROUNDS: usize = 5;
 
 fn every_reference(body: &Value, out: &mut Vec<String>) {
@@ -236,6 +255,7 @@ fn pulled_in(
     guard: &StoreMap,
     entries: &[ResourceEnvelope],
     rules: &[Include],
+    grant: Option<&Grant>,
 ) -> Result<Vec<ResourceEnvelope>, Error> {
     let mut seen: HashSet<String> = entries.iter().map(reference_of).collect();
     let mut included: Vec<ResourceEnvelope> = Vec::new();
@@ -254,6 +274,9 @@ fn pulled_in(
                         for text in linked(rule, &body) {
                             let Some(target) = stored(guard, &text) else { continue };
                             if rule.target.is_some_and(|kind| kind != target.resource_type()) {
+                                continue;
+                            }
+                            if !admitted(grant, target, &body_of(target)?) {
                                 continue;
                             }
                             if seen.insert(reference_of(target)) {
@@ -275,6 +298,9 @@ fn pulled_in(
                             continue;
                         }
                         let body = body_of(current)?;
+                        if !admitted(grant, current, &body) {
+                            continue;
+                        }
                         let hit = linked(rule, &body)
                             .iter()
                             .any(|text| wanted.contains(&normalized(text)));
@@ -415,10 +441,11 @@ impl ResourceStore for MemoryStore {
             .iter()
             .map(|filter| expanded(&guard, filter))
             .collect::<Result<Vec<Filter>, Error>>()?;
+        let grant = query.grant.as_ref();
         let chains = query
             .chains
             .iter()
-            .map(|chain| resolve(&guard, &Criterion::Linked(chain.clone())))
+            .map(|chain| resolve(&guard, &Criterion::Linked(chain.clone()), grant))
             .collect::<Result<Vec<Resolved>, Error>>()?;
         let mut matches: Vec<(ResourceEnvelope, Value)> = Vec::new();
         for versions in guard.values() {
@@ -435,6 +462,9 @@ impl ResourceStore for MemoryStore {
                 }
             }
             let body = body_of(current)?;
+            if !admitted(grant, current, &body) {
+                continue;
+            }
             if let Some(compartment) = &query.compartment {
                 if !in_compartment(compartment, current, &body) {
                     continue;
@@ -459,7 +489,7 @@ impl ResourceStore for MemoryStore {
             .take(query.count)
             .map(|(envelope, _)| envelope)
             .collect();
-        let included = pulled_in(&guard, &entries, &query.includes)?;
+        let included = pulled_in(&guard, &entries, &query.includes, grant)?;
         Ok(SearchPage {
             entries,
             included,
