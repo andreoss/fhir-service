@@ -597,3 +597,61 @@ async fn an_unknown_code_set_is_an_invalid_parameter() {
         .unwrap_err();
     assert!(matches!(error, Error::InvalidParameter(_)));
 }
+
+fn by_id(values: &[&str]) -> SearchQuery {
+    let resource_type: fhir_core::ResourceType = "Patient".parse().unwrap();
+    let def = lookup(Some(resource_type), "_id").unwrap();
+    let values = values.iter().map(|value| def.value(value).unwrap()).collect();
+    SearchQuery {
+        types: vec![resource_type],
+        filters: vec![Filter::new("_id", def.target, values)],
+        ..SearchQuery::default()
+    }
+}
+
+#[tokio::test]
+async fn a_repeated_query_reuses_one_cached_plan() {
+    let store = store();
+    for name in ["pt-p1", "pt-p2"] {
+        store.create(envelope(FhirVersion::R4, name, true)).await.unwrap();
+    }
+    let query = by_id(&["pt-p1"]);
+    for _ in 0..3 {
+        assert_eq!(store.search(&query).await.unwrap().entries.len(), 1);
+    }
+    let plans = store.plans();
+    assert_eq!(plans.len(), 1);
+    assert_eq!(plans[0].uses, 3);
+    assert!(plans[0].indexed);
+    assert!(!plans[0].disabled);
+}
+
+#[tokio::test]
+async fn a_plan_that_regresses_is_disabled_and_results_stay_right() {
+    let store = store();
+    let mut names = Vec::new();
+    for index in 0..40 {
+        let name = format!("pt-q{index}");
+        store.create(envelope(FhirVersion::R4, &name, true)).await.unwrap();
+        names.push(name);
+    }
+    assert_eq!(store.search(&by_id(&["pt-q0"])).await.unwrap().entries.len(), 1);
+    let wide: Vec<&str> = names.iter().map(String::as_str).collect();
+    assert_eq!(store.search(&by_id(&wide)).await.unwrap().entries.len(), 40);
+    assert!(store.plans()[0].disabled);
+    let page = store.search(&by_id(&["pt-q7"])).await.unwrap();
+    assert_eq!(page.entries.len(), 1);
+    assert_eq!(page.entries[0].id().as_str(), "pt-q7");
+}
+
+#[tokio::test]
+async fn a_repeated_filter_is_simplified_away() {
+    let store = store();
+    store.create(envelope(FhirVersion::R4, "pt-s9", true)).await.unwrap();
+    let one = by_id(&["pt-s9"]);
+    let mut twice = one.clone();
+    twice.filters.push(twice.filters[0].clone());
+    assert_eq!(twice.simplified().filters.len(), 1);
+    assert_eq!(store.search(&twice).await.unwrap().entries.len(), 1);
+    assert_eq!(store.plans().len(), 1);
+}

@@ -1,11 +1,12 @@
 use async_trait::async_trait;
 use fhir_core::search::{
-    ChainDirection, Compartment, Criterion, Filter, Grant, Include, IncludeDirection, Target,
+    ChainDirection, Compartment, Criterion, Filter, Grant, Include, IncludeDirection, Modifier,
+    Target, TokenSystem,
 };
 use fhir_core::{Error, FhirInstant, ResourceEnvelope, ResourceId, VersionId};
 use fhir_store::{
-    HistoryOrder, HistoryPage, HistoryQuery, HistoryScope, ResourceStore, SearchPage, SearchQuery,
-    SortDirection, SortKey, TotalMode,
+    HistoryOrder, HistoryPage, HistoryQuery, HistoryScope, Plan, PlanCache, PlanKey, PlanStat,
+    ResourceStore, SearchPage, SearchQuery, SortDirection, SortKey, TotalMode,
 };
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -354,6 +355,7 @@ fn fallback_instant() -> FhirInstant {
 pub struct MemoryStore {
     inner: RwLock<StoreMap>,
     clock: Clock,
+    plans: PlanCache,
 }
 
 impl MemoryStore {
@@ -361,8 +363,40 @@ impl MemoryStore {
         MemoryStore {
             inner: RwLock::new(HashMap::new()),
             clock,
+            plans: PlanCache::new(),
         }
     }
+
+    pub fn plans(&self) -> Vec<PlanStat> {
+        self.plans.stats()
+    }
+}
+
+fn proposed(query: &SearchQuery) -> Plan {
+    match indexed_ids(query) {
+        Some(_) => Plan::Indexed {
+            parameter: "_id".to_owned(),
+        },
+        None => Plan::Scan,
+    }
+}
+
+fn indexed_ids(query: &SearchQuery) -> Option<Vec<ResourceId>> {
+    let filter = query
+        .filters
+        .iter()
+        .find(|filter| filter.target == Target::Id && filter.modifier == Modifier::None)?;
+    let mut ids = Vec::new();
+    for value in &filter.values {
+        let code = match value {
+            fhir_core::SearchValue::Token(token) if token.system == TokenSystem::Any => {
+                token.code.clone()?
+            }
+            _ => return None,
+        };
+        ids.push(ResourceId::parse(&code).ok()?);
+    }
+    (!ids.is_empty()).then_some(ids)
 }
 
 impl Default for MemoryStore {
@@ -428,10 +462,13 @@ impl ResourceStore for MemoryStore {
     }
 
     async fn search(&self, query: &SearchQuery) -> Result<SearchPage, Error> {
+        let query = &query.simplified();
         let guard = self
             .inner
             .read()
             .map_err(|_| Error::Internal("store lock poisoned".to_owned()))?;
+        let key = PlanKey::of(query);
+        let plan = self.plans.chosen(&key, proposed(query));
         let members = match &query.list {
             Some(id) => Some(list_members(&guard, id)?),
             None => None,
@@ -447,8 +484,18 @@ impl ResourceStore for MemoryStore {
             .iter()
             .map(|chain| resolve(&guard, &Criterion::Linked(chain.clone()), grant))
             .collect::<Result<Vec<Resolved>, Error>>()?;
+        let candidates: Vec<&Vec<ResourceEnvelope>> = match &plan {
+            Plan::Indexed { .. } => indexed_ids(query)
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|id| guard.get(id))
+                .collect(),
+            Plan::Scan => guard.values().collect(),
+        };
+        let mut examined: u64 = 0;
         let mut matches: Vec<(ResourceEnvelope, Value)> = Vec::new();
-        for versions in guard.values() {
+        for versions in candidates {
+            examined += 1;
             let Some(current) = versions.last() else { continue };
             if current.is_deleted() {
                 continue;
@@ -478,6 +525,7 @@ impl ResourceStore for MemoryStore {
                 matches.push((current.clone(), body));
             }
         }
+        self.plans.observed(&key, examined);
         order(&mut matches, &query.sort);
         let total = match query.total {
             TotalMode::None => None,

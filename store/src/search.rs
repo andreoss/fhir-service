@@ -62,12 +62,31 @@ impl SearchQuery {
         }
     }
 
+    pub fn simplified(&self) -> SearchQuery {
+        let mut simplified = self.clone();
+        simplified.filters = deduplicated(&self.filters);
+        simplified.chains = deduplicated(&self.chains);
+        simplified.includes = deduplicated(&self.includes);
+        simplified.sort = deduplicated(&self.sort);
+        simplified
+    }
+
     pub fn is_unconditional(&self) -> bool {
         self.filters.is_empty()
             && self.chains.is_empty()
             && self.list.is_none()
             && self.compartment.is_none()
     }
+}
+
+fn deduplicated<T: Clone + PartialEq>(items: &[T]) -> Vec<T> {
+    let mut kept: Vec<T> = Vec::with_capacity(items.len());
+    for item in items {
+        if !kept.contains(item) {
+            kept.push(item.clone());
+        }
+    }
+    kept
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
