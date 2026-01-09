@@ -1634,3 +1634,62 @@ async fn the_compartment_definitions_are_served() {
     let missing = request(&app, "GET", "/CompartmentDefinition/Nonesuch", &[], &[]).await;
     assert_eq!(missing.status, StatusCode::NOT_FOUND);
 }
+
+async fn next_token(app: &Service, uri: &str) -> String {
+    let value = page(app, uri).await;
+    let next = link(&value, "next");
+    assert!(next.contains("ct="), "next was {next}");
+    next.rsplit("ct=").next().unwrap().to_owned()
+}
+
+#[tokio::test]
+async fn a_continuation_token_is_opaque_and_carries_no_offset() {
+    let app = qualified().await;
+    let token = next_token(&app, "/Patient?_count=1&_sort=_id").await;
+    assert_eq!(token.len(), 32);
+    assert!(token.chars().all(|found| found.is_ascii_hexdigit()));
+    assert!(!token.contains('1') || token != "1");
+}
+
+#[tokio::test]
+async fn a_continuation_token_belongs_to_one_query_only() {
+    let app = qualified().await;
+    let token = next_token(&app, "/Patient?_count=1&_sort=_id").await;
+    let same = page(&app, &format!("/Patient?_count=1&_sort=_id&ct={token}")).await;
+    assert_eq!(by_mode(&same, "match"), vec!["pt-m2".to_owned()]);
+    let other = request(
+        &app,
+        "GET",
+        &format!("/Patient?_count=1&_sort=-_id&ct={token}"),
+        &[],
+        &[],
+    )
+    .await;
+    assert_eq!(other.status, StatusCode::BAD_REQUEST);
+    let value: serde_json::Value = serde_json::from_str(&other.body).unwrap();
+    assert_eq!(value["issue"][0]["code"], "invalid");
+}
+
+#[tokio::test]
+async fn an_edited_continuation_token_is_refused() {
+    let app = qualified().await;
+    let token = next_token(&app, "/Patient?_count=1&_sort=_id").await;
+    let edited = format!("{}0", &token[..token.len() - 1]);
+    let reply = request(
+        &app,
+        "GET",
+        &format!("/Patient?_count=1&_sort=_id&ct={edited}"),
+        &[],
+        &[],
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn a_compartment_page_carries_its_own_token() {
+    let app = qualified().await;
+    let token = next_token(&app, "/Patient/pt-m1/*?_count=1&_sort=_id").await;
+    let second = page(&app, &format!("/Patient/pt-m1/*?_count=1&_sort=_id&ct={token}")).await;
+    assert_eq!(by_mode(&second, "match"), vec!["pt-m1".to_owned()]);
+}

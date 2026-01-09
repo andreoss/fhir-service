@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use crate::history::Summary;
 use crate::query::{pairs, param};
-use crate::token::{decode, encode, with_token};
+use crate::token::{decode, encode, scope, scope_of, with_token};
 
 const CONTROL: [&str; 9] = [
     "_hardDelete",
@@ -78,7 +78,7 @@ impl SearchRequest {
             _ => count_of(raw)?,
         };
         query.offset = match param(raw, "ct") {
-            Some(text) => decode(&text)?,
+            Some(text) => decode(&text, &scope(raw))?,
             None => 0,
         };
         let elements = param(raw, "_elements")
@@ -169,7 +169,7 @@ pub fn search_bundle(
     if page.total.is_some_and(|total| consumed < total) && !page.entries.is_empty() {
         links.push(serde_json::json!({
             "relation": "next",
-            "url": with_token(self_url, &encode(consumed)),
+            "url": with_token(self_url, &encode(consumed, &scope_of(self_url))),
         }));
     }
     let mut bundle = Map::new();

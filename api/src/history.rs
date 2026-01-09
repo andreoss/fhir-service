@@ -4,7 +4,7 @@ use serde_json::{Map, Value};
 use uuid::Uuid;
 
 use crate::query::param;
-use crate::token::{decode, encode, with_token};
+use crate::token::{decode, encode, scope, scope_of, with_token};
 
 const DEFAULT_COUNT: usize = 20;
 const MAX_COUNT: usize = 100;
@@ -51,7 +51,7 @@ impl HistoryRequest {
             _ => requested,
         };
         let offset = match param(raw, "ct") {
-            Some(text) => decode(&text)?,
+            Some(text) => decode(&text, &scope(raw))?,
             None => 0,
         };
         Ok(HistoryRequest {
@@ -74,7 +74,7 @@ pub fn history_bundle(base: &str, self_url: &str, page: &HistoryPage, summary: S
     if consumed < page.total && !page.entries.is_empty() {
         links.push(serde_json::json!({
             "relation": "next",
-            "url": with_token(self_url, &encode(consumed)),
+            "url": with_token(self_url, &encode(consumed, &scope_of(self_url))),
         }));
     }
     let mut bundle = Map::new();
