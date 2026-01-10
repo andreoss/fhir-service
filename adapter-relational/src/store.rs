@@ -17,6 +17,8 @@ use std::collections::HashMap;
 use crate::throttle::{Admission, Throttle};
 use std::sync::{Arc, RwLock};
 
+const POOL_SIZE: u32 = 16;
+
 const INDEX_TABLES: [&str; 8] = [
     "index_token",
     "index_text",
@@ -71,6 +73,24 @@ impl RelationalStore {
             policy: Policy::default(),
             throttle: Throttle::default(),
         }
+    }
+
+    pub async fn connect(url: &str, namespace: Namespace) -> Result<RelationalStore, Error> {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(POOL_SIZE)
+            .acquire_timeout(std::time::Duration::from_secs(10))
+            .connect(url)
+            .await
+            .map_err(|error| Error::Config(format!("the store is not reachable: {error}")))?;
+        Ok(RelationalStore::new(pool, namespace))
+    }
+
+    pub fn connect_later(url: &str, namespace: Namespace) -> RelationalStore {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(POOL_SIZE)
+            .connect_lazy(url)
+            .unwrap_or_else(|_| sqlx::PgPool::connect_lazy("postgres://").expect("a lazy pool"));
+        RelationalStore::new(pool, namespace)
     }
 
     pub fn with_clock(self, clock: Clock) -> RelationalStore {

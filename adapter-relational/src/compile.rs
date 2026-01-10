@@ -710,3 +710,234 @@ fn table_of(value_type: ValueType) -> Result<&'static str, Error> {
 pub fn table_for(filter: &Filter) -> Option<&'static str> {
     table_of(value_type_of(filter)).ok()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::namespace::Namespace;
+    use fhir_core::search::{lookup, ParamDef, SearchValue};
+    use fhir_core::ResourceType;
+    use std::sync::Arc;
+
+    fn store() -> RelationalStore {
+        RelationalStore::connect_later("postgres://", Namespace::default())
+    }
+
+    fn kind(name: &str) -> ResourceType {
+        name.parse().expect("a known type")
+    }
+
+    fn def(resource_type: &str, name: &str) -> Arc<ParamDef> {
+        lookup(Some(kind(resource_type)), name).expect("a built-in parameter")
+    }
+
+    fn built(resource_type: &str, name: &str, modifier: Modifier, raw: &str) -> Filter {
+        let def = def(resource_type, name);
+        let values = raw
+            .split(',')
+            .map(|part| def.value_with(&modifier, part).expect("a valid value"))
+            .collect();
+        Filter {
+            modifier,
+            ..Filter::new(name, def.target.clone(), values)
+        }
+    }
+
+    fn sql(filter: &Filter) -> (String, usize) {
+        let store = store();
+        let mut compiler = Compiler::new(&store);
+        let text = compiler.filter(filter, "r").expect("the filter compiles");
+        (text, compiler.binds().len())
+    }
+
+    #[tokio::test]
+    async fn a_coded_value_selects_on_the_code_and_its_system() {
+        let (text, binds) = sql(&built("Observation", "code", Modifier::None, "urn:s|c1"));
+        assert!(text.contains("index_token"), "{text}");
+        assert!(text.contains(".system = $"), "{text}");
+        assert!(text.contains(".code = $"), "{text}");
+        assert!(text.contains("code_tail is not distinct from"), "{text}");
+        assert!(binds >= 5);
+    }
+
+    #[tokio::test]
+    async fn a_code_without_a_system_places_no_bound_on_the_system() {
+        let (text, _) = sql(&built("Observation", "code", Modifier::None, "c1"));
+        assert!(!text.contains(".system = $"), "{text}");
+        let (absent, _) = sql(&built("Observation", "code", Modifier::None, "|c1"));
+        assert!(absent.contains(".system is null"), "{absent}");
+    }
+
+    #[tokio::test]
+    async fn every_comparator_of_a_decimal_reaches_the_statement() {
+        for (raw, fragment) in [
+            ("4.5", "abs("),
+            ("gt4.5", "> $"),
+            ("lt4.5", "< $"),
+            ("ge4.5", ">= $"),
+            ("le4.5", "<= $"),
+            ("sa4.5", "> $"),
+            ("eb4.5", "< $"),
+            ("ap4.5", "abs("),
+        ] {
+            let (text, _) = sql(&built("Observation", "value-quantity", Modifier::None, raw));
+            assert!(text.contains(fragment), "{raw}: {text}");
+            assert!(text.contains("index_quantity"), "{raw}: {text}");
+        }
+    }
+
+    #[tokio::test]
+    async fn every_comparator_of_a_span_reaches_the_statement() {
+        for raw in ["1980", "gt1980", "lt1980", "ge1980", "le1980", "sa1980", "eb1980", "ap1980"] {
+            let (text, binds) = sql(&built("Patient", "birthdate", Modifier::None, raw));
+            assert!(text.contains("index_date"), "{raw}: {text}");
+            assert!(binds >= 4, "{raw}: {binds}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_qualifier_chooses_the_projection_it_reads() {
+        for (resource_type, name, modifier, slot) in [
+            ("Patient", "name", Modifier::Exact, PLAIN),
+            ("Patient", "name", Modifier::Contains, PLAIN),
+            ("Observation", "code", Modifier::Text, NARRATIVE),
+            ("Observation", "code", Modifier::Below, WORDS),
+            ("Observation", "code", Modifier::Above, WORDS),
+        ] {
+            let filter = built(resource_type, name, modifier.clone(), "Stone");
+            let store = store();
+            let mut compiler = Compiler::new(&store);
+            let text = compiler.filter(&filter, "r").expect("the filter compiles");
+            assert!(text.contains("index_text"), "{modifier:?}: {text}");
+            assert!(
+                compiler.binds().contains(&Bind::Text(slot.to_owned())),
+                "{modifier:?} should read {slot}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_hierarchy_qualifier_walks_the_value_in_one_direction() {
+        let (below, _) = sql(&built("Observation", "code", Modifier::Below, "a.b"));
+        assert!(below.contains("starts_with(x1.value, $"), "{below}");
+        let (above, _) = sql(&built("Observation", "code", Modifier::Above, "a.b"));
+        assert!(above.contains("starts_with($"), "{above}");
+    }
+
+    #[tokio::test]
+    async fn a_typed_pointer_selects_on_the_type_the_pointer_names() {
+        let filter = built(
+            "Observation",
+            "subject",
+            Modifier::Type(kind("Patient")),
+            "p1",
+        );
+        let (text, _) = sql(&filter);
+        assert!(text.contains("index_reference"), "{text}");
+        assert!(text.contains(".ref_type = $"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn an_absent_value_is_asked_for_as_the_lack_of_one() {
+        let (missing, _) = sql(&built("Patient", "name", Modifier::Missing, "true"));
+        assert!(missing.starts_with("not exists"), "{missing}");
+        let (present, _) = sql(&built("Patient", "name", Modifier::Missing, "false"));
+        assert!(present.starts_with("exists"), "{present}");
+    }
+
+    #[tokio::test]
+    async fn an_exclusive_qualifier_refuses_every_alternative_at_once() {
+        let (text, _) = sql(&built("Observation", "code", Modifier::Not, "c1,c2"));
+        assert!(text.starts_with("not ("), "{text}");
+        assert_eq!(text.matches("exists").count(), 2, "{text}");
+    }
+
+    #[tokio::test]
+    async fn selecting_on_identity_needs_no_index_at_all() {
+        let (text, _) = sql(&built("Patient", "_id", Modifier::None, "p1"));
+        assert!(text.contains("r.resource_id = $"), "{text}");
+        assert!(!text.contains("exists"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn selecting_on_the_write_time_reads_the_row_it_is_stored_on() {
+        let (text, _) = sql(&built("Patient", "_lastUpdated", Modifier::None, "gt2020"));
+        assert!(text.contains("r.updated_secs"), "{text}");
+        assert!(!text.contains("index_date"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn a_pointer_written_with_a_type_is_matched_whole() {
+        let (full, _) = sql(&built("Observation", "subject", Modifier::None, "Patient/p1"));
+        assert!(full.contains(".ref_full = $"), "{full}");
+        assert!(!full.contains(".ref_id = $"), "{full}");
+        let (bare, _) = sql(&built("Observation", "subject", Modifier::None, "p1"));
+        assert!(bare.contains(".ref_id = $"), "{bare}");
+    }
+
+    #[tokio::test]
+    async fn a_grant_confines_the_types_and_the_compartments_it_names() {
+        let store = store();
+        let mut compiler = Compiler::new(&store);
+        let grant = Grant {
+            types: vec![kind("Observation")],
+            compartments: vec![Compartment {
+                kind: kind("Patient"),
+                id: fhir_core::ResourceId::parse("p1").unwrap(),
+            }],
+        };
+        let text = compiler.grant(&grant, "r").expect("the grant compiles");
+        assert!(text.contains("r.resource_type = any($"), "{text}");
+        assert!(text.contains("index_reference"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn an_open_grant_places_no_bound_on_the_compartment() {
+        let store = store();
+        let mut compiler = Compiler::new(&store);
+        let grant = Grant {
+            types: vec![kind("Patient")],
+            compartments: Vec::new(),
+        };
+        let text = compiler.grant(&grant, "r").expect("the grant compiles");
+        assert!(!text.contains("index_reference"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn an_unknown_compartment_admits_nothing() {
+        let store = store();
+        let mut compiler = Compiler::new(&store);
+        let compartment = Compartment {
+            kind: kind("Observation"),
+            id: fhir_core::ResourceId::parse("o1").unwrap(),
+        };
+        let text = compiler.compartment(&compartment, "r");
+        assert_eq!(text, "false", "{text}");
+    }
+
+    #[tokio::test]
+    async fn a_composite_pairs_its_components_on_one_element() {
+        let (text, _) = sql(&built(
+            "Observation",
+            "code-value-quantity",
+            Modifier::None,
+            "urn:s|c1$4.5",
+        ));
+        assert!(text.contains("index_token"), "{text}");
+        assert!(text.contains("index_quantity"), "{text}");
+        assert!(text.contains(".ordinal = "), "{text}");
+    }
+
+    #[tokio::test]
+    async fn a_value_of_the_wrong_shape_selects_nothing() {
+        let store = store();
+        let mut compiler = Compiler::new(&store);
+        let filter = Filter {
+            values: vec![SearchValue::Missing(true)],
+            ..Filter::new("code", def("Observation", "code").target.clone(), Vec::new())
+        };
+        let text = compiler.filter(&filter, "r").expect("the filter compiles");
+        assert!(text.contains("false"), "{text}");
+        assert_eq!(table_for(&filter), Some("index_token"));
+    }
+}

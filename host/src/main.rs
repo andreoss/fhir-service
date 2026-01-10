@@ -6,6 +6,9 @@ use std::sync::Arc;
 #[cfg(feature = "backend-memory")]
 use fhir_adapter_memory::MemoryStore;
 
+#[cfg(feature = "backend-relational")]
+use fhir_adapter_relational::{Namespace, RelationalStore};
+
 #[tokio::main]
 async fn main() {
     match run().await {
@@ -19,7 +22,7 @@ async fn main() {
 
 async fn run() -> Result<(), Error> {
     let config = fhir_host::Config::from_env()?;
-    let store = build_store(&config)?;
+    let store = build_store(&config).await?;
     let store_dependency = {
         let store = Arc::clone(&store);
         Arc::new(move || store.health().map_err(|error| error.to_string()))
@@ -35,7 +38,7 @@ async fn run() -> Result<(), Error> {
     bound.serve().await
 }
 
-fn build_store(config: &fhir_host::Config) -> Result<Arc<dyn ResourceStore>, Error> {
+async fn build_store(config: &fhir_host::Config) -> Result<Arc<dyn ResourceStore>, Error> {
     match config.backend {
         #[cfg(feature = "backend-memory")]
         fhir_host::Backend::Memory => Ok(Arc::new(MemoryStore::default())),
@@ -44,9 +47,15 @@ fn build_store(config: &fhir_host::Config) -> Result<Arc<dyn ResourceStore>, Err
             "memory backend is not enabled in this build; rebuild with --features backend-memory".to_owned(),
         )),
         #[cfg(feature = "backend-relational")]
-        fhir_host::Backend::Relational => Err(Error::Config(
-            "relational backend is not implemented yet".to_owned(),
-        )),
+        fhir_host::Backend::Relational => {
+            let namespace = match std::env::var(fhir_adapter_relational::ENV_NAMESPACE) {
+                Ok(name) => Namespace::parse(&name)?,
+                Err(_) => Namespace::default(),
+            };
+            let store = RelationalStore::connect(&config.database_url, namespace).await?;
+            store.migrate().await?;
+            Ok(Arc::new(store))
+        }
         #[cfg(not(feature = "backend-relational"))]
         fhir_host::Backend::Relational => Err(Error::Config(
             "relational backend is not enabled in this build; rebuild with --features backend-relational or set FHIR_BACKEND=memory".to_owned(),

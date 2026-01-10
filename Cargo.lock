@@ -339,10 +339,12 @@ name = "fhir-host"
 version = "0.1.0"
 dependencies = [
  "fhir-adapter-memory",
+ "fhir-adapter-relational",
  "fhir-api",
  "fhir-core",
  "fhir-store",
  "serde_json",
+ "sqlx",
  "tokio",
 ]
 

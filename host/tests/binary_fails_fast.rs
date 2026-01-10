@@ -12,14 +12,27 @@ fn invalid_backend_fails_fast_at_startup() {
 }
 
 #[test]
-fn unimplemented_backend_fails_fast_at_startup() {
+fn a_backend_that_cannot_be_reached_fails_fast_at_startup() {
     let output = Command::new(env!("CARGO_BIN_EXE_fhir-host"))
         .env("FHIR_BACKEND", "relational")
+        .env("FHIR_DATABASE_URL", "nowhere")
         .output()
         .expect("failed to spawn binary");
-    assert!(!output.status.success(), "unimplemented backend must exit non-zero");
+    assert!(!output.status.success(), "an unreachable store must exit non-zero");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("FHIR_BACKEND"), "stderr was: {stderr}");
+    assert!(stderr.contains("not reachable"), "stderr was: {stderr}");
+}
+
+#[test]
+fn an_invalid_schema_name_fails_fast_at_startup() {
+    let output = Command::new(env!("CARGO_BIN_EXE_fhir-host"))
+        .env("FHIR_BACKEND", "relational")
+        .env("FHIR_SCHEMA", "Not Valid")
+        .output()
+        .expect("failed to spawn binary");
+    assert!(!output.status.success(), "an invalid schema name must exit non-zero");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("schema name"), "stderr was: {stderr}");
 }
 
 #[test]
