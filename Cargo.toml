@@ -4,6 +4,7 @@ members = [
     "core",
     "store",
     "adapter-memory",
+    "adapter-relational",
     "api",
     "host",
 ]

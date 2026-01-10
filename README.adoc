@@ -2,6 +2,7 @@
 
 A FHIR server. Resources are stored with every version of
 themselves and answered over HTTP: read, write, history and search.
+One store contract, more than one engine behind it.
 
 == Build
 
@@ -9,6 +10,7 @@ themselves and answered over HTTP: read, write, history and search.
 ----
 cargo build --workspace
 cargo test --workspace
+docker compose up -d --wait
 cargo run --bin fhir-host
 ----
 
@@ -19,10 +21,15 @@ cargo run --bin fhir-host
 GET /Patient/1
 GET /Patient?name=Smith&_count=10&_sort=-_lastUpdated
 GET /Patient/1/_history
+POST /                      # transaction and batch bundles
 ----
 
 == Layout
 
-`core` the model and its rules, `store` the storage port, `adapter-memory`
-an in-process implementation of it, `api` the HTTP surface, `host` the
+`core` the model and its rules, `contract` the storage port and the suite
+every engine satisfies, `store` the query and index types, `adapter-memory`
+and `adapter-relational` the engines, `api` the HTTP surface, `host` the
 binary.
+
+`FHIR_BACKEND` chooses the engine; `FHIR_DATABASE_URL` points the relational
+one at its server.
