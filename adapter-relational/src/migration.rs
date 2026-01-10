@@ -132,6 +132,13 @@ const BODY_ENCODING: &str = "
 alter table resource add column if not exists body_encoding text not null default 'plain';
 ";
 
+const TUNING: &str = "
+create index if not exists index_reference_link
+    on index_reference (ref_id, param, surrogate_id);
+create index if not exists resource_live_key
+    on resource (resource_type, resource_id) where is_current and not is_deleted;
+";
+
 pub const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 1,
@@ -156,6 +163,12 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "packed bodies",
         required: true,
         statements: BODY_ENCODING,
+    },
+    Migration {
+        version: 5,
+        name: "index tuning",
+        required: false,
+        statements: TUNING,
     },
 ];
 

@@ -1,4 +1,5 @@
 use crate::extract::{rows_of, Rows};
+use crate::fault::{self, Policy};
 use crate::migration::Migrator;
 use crate::namespace::Namespace;
 use crate::row::{envelope_of, Record, COLUMNS};
@@ -13,6 +14,7 @@ use serde_json::Value;
 use sqlx::postgres::PgRow;
 use sqlx::{PgPool, Postgres, Row, Transaction};
 use std::collections::HashMap;
+use crate::throttle::{Admission, Throttle};
 use std::sync::{Arc, RwLock};
 
 const INDEX_TABLES: [&str; 8] = [
@@ -27,7 +29,7 @@ const INDEX_TABLES: [&str; 8] = [
 ];
 
 pub fn faulted(context: &str, error: sqlx::Error) -> Error {
-    Error::Internal(format!("{context}: {error}"))
+    fault::classified(context, error)
 }
 
 fn body_of(envelope: &ResourceEnvelope) -> Result<Value, Error> {
@@ -54,6 +56,8 @@ pub struct RelationalStore {
     clock: Clock,
     plans: PlanCache,
     custom: RwLock<HashMap<String, (ParameterSpec, IndexReport)>>,
+    policy: Policy,
+    throttle: Throttle,
 }
 
 impl RelationalStore {
@@ -64,11 +68,33 @@ impl RelationalStore {
             clock: system_clock(),
             plans: PlanCache::new(),
             custom: RwLock::new(HashMap::new()),
+            policy: Policy::default(),
+            throttle: Throttle::default(),
         }
     }
 
     pub fn with_clock(self, clock: Clock) -> RelationalStore {
         RelationalStore { clock, ..self }
+    }
+
+    pub fn with_policy(self, policy: Policy) -> RelationalStore {
+        RelationalStore { policy, ..self }
+    }
+
+    pub fn with_throttle(self, throttle: Throttle) -> RelationalStore {
+        RelationalStore { throttle, ..self }
+    }
+
+    pub fn policy(&self) -> &Policy {
+        &self.policy
+    }
+
+    pub fn throttle(&self) -> &Throttle {
+        &self.throttle
+    }
+
+    pub(crate) async fn admit(&self) -> Result<Admission, Error> {
+        self.throttle.admit().await
     }
 
     pub fn namespace(&self) -> &Namespace {
@@ -497,6 +523,7 @@ fn bind_count(
 #[async_trait]
 impl ResourceStore for RelationalStore {
     async fn create(&self, envelope: ResourceEnvelope) -> Result<ResourceEnvelope, Error> {
+        let _place = self.admit().await?;
         let mut transaction = self
             .pool
             .begin()
@@ -519,15 +546,15 @@ impl ResourceStore for RelationalStore {
     }
 
     async fn read(&self, id: &ResourceId) -> Result<ResourceEnvelope, Error> {
+        let _place = self.admit().await?;
         let statement = format!(
             "select {COLUMNS} from {} where resource_id = $1 and is_current",
             self.table("resource")
         );
-        let row = sqlx::query(&statement)
-            .bind(id.as_str())
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(|error| faulted("reading a resource", error))?;
+        let row = fault::retried(&self.policy, "reading a resource", || {
+            sqlx::query(&statement).bind(id.as_str()).fetch_optional(&self.pool)
+        })
+        .await?;
         match row {
             Some(row) => envelope_of(&row),
             None => Err(Error::NotFound),
@@ -535,16 +562,16 @@ impl ResourceStore for RelationalStore {
     }
 
     async fn vread(&self, id: &ResourceId, version: &VersionId) -> Result<ResourceEnvelope, Error> {
+        let _place = self.admit().await?;
         let statement = format!(
             "select {COLUMNS} from {} where resource_id = $1 and version_number = $2",
             self.table("resource")
         );
-        let row = sqlx::query(&statement)
-            .bind(id.as_str())
-            .bind(version_number(version)?)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(|error| faulted("reading a version", error))?;
+        let number = version_number(version)?;
+        let row = fault::retried(&self.policy, "reading a version", || {
+            sqlx::query(&statement).bind(id.as_str()).bind(number).fetch_optional(&self.pool)
+        })
+        .await?;
         match row {
             Some(row) => envelope_of(&row),
             None => Err(Error::NotFound),
@@ -556,6 +583,7 @@ impl ResourceStore for RelationalStore {
         envelope: ResourceEnvelope,
         expected_version: Option<&VersionId>,
     ) -> Result<ResourceEnvelope, Error> {
+        let _place = self.admit().await?;
         let mut transaction = self
             .pool
             .begin()
@@ -595,10 +623,12 @@ impl ResourceStore for RelationalStore {
     }
 
     async fn search(&self, query: &SearchQuery) -> Result<SearchPage, Error> {
+        let _place = self.admit().await?;
         crate::query::run(self, query).await
     }
 
     async fn delete(&self, id: &ResourceId) -> Result<ResourceEnvelope, Error> {
+        let _place = self.admit().await?;
         let mut transaction = self
             .pool
             .begin()
@@ -627,15 +657,15 @@ impl ResourceStore for RelationalStore {
     }
 
     async fn hard_delete(&self, id: &ResourceId) -> Result<(), Error> {
+        let _place = self.admit().await?;
         let statement = format!(
             "delete from {} where resource_id = $1",
             self.table("resource")
         );
-        let removed = sqlx::query(&statement)
-            .bind(id.as_str())
-            .execute(&self.pool)
-            .await
-            .map_err(|error| faulted("removing a resource", error))?;
+        let removed = fault::retried(&self.policy, "removing a resource", || {
+            sqlx::query(&statement).bind(id.as_str()).execute(&self.pool)
+        })
+        .await?;
         match removed.rows_affected() {
             0 => Err(Error::NotFound),
             _ => Ok(()),
@@ -643,6 +673,7 @@ impl ResourceStore for RelationalStore {
     }
 
     async fn purge_history(&self, id: &ResourceId) -> Result<usize, Error> {
+        let _place = self.admit().await?;
         let mut transaction = self
             .pool
             .begin()
@@ -672,6 +703,7 @@ impl ResourceStore for RelationalStore {
         scope: &HistoryScope,
         query: &HistoryQuery,
     ) -> Result<HistoryPage, Error> {
+        let _place = self.admit().await?;
         if let HistoryScope::Instance(resource_type, id) = scope {
             let statement = format!(
                 "select resource_type from {} where resource_id = $1
@@ -728,5 +760,31 @@ impl ResourceStore for RelationalStore {
             false => Ok(()),
             true => Err(Error::Internal("the store is not connected".to_owned())),
         }
+    }
+}
+
+const RECLAIMED: [&str; 9] = [
+    "resource",
+    "index_token",
+    "index_text",
+    "index_number",
+    "index_date",
+    "index_quantity",
+    "index_reference",
+    "index_uri",
+    "index_sort",
+];
+
+impl RelationalStore {
+    pub async fn defragment(&self) -> Result<usize, Error> {
+        let _place = self.admit().await?;
+        for table in RECLAIMED {
+            let statement = format!("vacuum (analyze) {}", self.table(table));
+            sqlx::raw_sql(&statement)
+                .execute(&self.pool)
+                .await
+                .map_err(|error| faulted("reclaiming space", error))?;
+        }
+        Ok(RECLAIMED.len())
     }
 }

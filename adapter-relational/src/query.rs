@@ -298,10 +298,10 @@ async fn fetch(
     statement: &str,
     binds: &[Bind],
 ) -> Result<Vec<ResourceEnvelope>, Error> {
-    let rows: Vec<PgRow> = apply(statement, binds)
-        .fetch_all(store.pool())
-        .await
-        .map_err(|error| faulted("running a search", error))?;
+    let rows: Vec<PgRow> = crate::fault::retried(store.policy(), "running a search", || {
+        apply(statement, binds).fetch_all(store.pool())
+    })
+    .await?;
     rows.iter().map(envelope_of).collect()
 }
 
@@ -482,10 +482,11 @@ pub async fn run(store: &RelationalStore, query: &SearchQuery) -> Result<SearchP
     let total = match query.total {
         TotalMode::None => None,
         TotalMode::Accurate => {
-            let found: i64 = apply(&counting, &selected.binds)
-                .fetch_one(store.pool())
-                .await
-                .map_err(|error| faulted("counting matches", error))?
+            let row = crate::fault::retried(store.policy(), "counting matches", || {
+                apply(&counting, &selected.binds).fetch_one(store.pool())
+            })
+            .await?;
+            let found: i64 = row
                 .try_get("total")
                 .map_err(|error| faulted("counting matches", error))?;
             Some(found.max(0) as usize)

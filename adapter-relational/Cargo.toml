@@ -10,7 +10,7 @@ serde_json = "1"
 fhir-core = { path = "../core" }
 fhir-store = { path = "../store" }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"] }
-tokio = { version = "1", features = ["macros", "rt"] }
+tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
 
 [dev-dependencies]
 fhir-store-contract = { path = "../contract" }
