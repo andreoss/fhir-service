@@ -1,4 +1,5 @@
 
 pub mod memory;
 
-pub use memory::{system_clock, Clock, MemoryStore};
+pub use fhir_store::{system_clock, Clock};
+pub use memory::MemoryStore;

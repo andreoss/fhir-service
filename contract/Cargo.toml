@@ -1,9 +1,8 @@
 [package]
-name = "fhir-store"
+name = "fhir-store-contract"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-async-trait = "0.1"
 fhir-core = { path = "../core" }
-time = { version = "0.3", features = ["formatting"] }
+fhir-store = { path = "../store" }

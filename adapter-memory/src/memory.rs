@@ -4,15 +4,16 @@ use fhir_core::search::{
     Target, TokenSystem,
 };
 use fhir_core::search::{IndexKey, ParameterSpec, SearchValue};
-use fhir_core::{Error, FhirInstant, ResourceEnvelope, ResourceId, VersionId};
+use fhir_core::{Error, ResourceEnvelope, ResourceId, VersionId};
 use fhir_store::{
+    system_clock, Clock,
     HistoryOrder, HistoryPage, HistoryQuery, HistoryScope, IndexFailure, IndexReport, Plan,
     PlanCache, PlanKey, PlanStat,
     ResourceStore, SearchPage, SearchQuery, SortDirection, SortKey, TotalMode,
 };
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, RwLock};
+use std::sync::RwLock;
 
 type StoreMap = HashMap<ResourceId, Vec<ResourceEnvelope>>;
 
@@ -337,21 +338,6 @@ fn order(matches: &mut [(ResourceEnvelope, Value)], keys: &[SortKey]) {
         left.0.id().as_str().cmp(right.0.id().as_str())
 
     });
-}
-pub type Clock = Arc<dyn Fn() -> FhirInstant + Send + Sync>;
-
-pub fn system_clock() -> Clock {
-    Arc::new(|| {
-        time::OffsetDateTime::now_utc()
-            .format(&time::format_description::well_known::Rfc3339)
-            .ok()
-            .and_then(|text| FhirInstant::parse(&text).ok())
-            .unwrap_or_else(fallback_instant)
-    })
-}
-
-fn fallback_instant() -> FhirInstant {
-    FhirInstant::parse("1970-01-01T00:00:00+00:00").expect("epoch instant is valid")
 }
 
 struct ParamIndex {

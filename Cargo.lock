@@ -276,8 +276,8 @@ dependencies = [
  "async-trait",
  "fhir-core",
  "fhir-store",
+ "fhir-store-contract",
  "serde_json",
- "time",
  "tokio",
 ]
 
@@ -334,6 +334,15 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "fhir-core",
+ "time",
+]
+
+[[package]]
+name = "fhir-store-contract"
+version = "0.1.0"
+dependencies = [
+ "fhir-core",
+ "fhir-store",
 ]
 
 [[package]]

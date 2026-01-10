@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "core",
     "store",
+    "contract",
     "adapter-memory",
     "adapter-relational",
     "api",

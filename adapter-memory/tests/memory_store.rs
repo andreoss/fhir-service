@@ -656,3 +656,12 @@ async fn a_repeated_filter_is_simplified_away() {
     assert_eq!(store.search(&twice).await.unwrap().entries.len(), 1);
     assert_eq!(store.plans().len(), 1);
 }
+
+#[tokio::test]
+async fn the_shared_contract_holds_over_this_adapter() {
+    fhir_store_contract::lifecycle(&store()).await;
+    fhir_store_contract::versioning(&store()).await;
+    fhir_store_contract::removal(&store()).await;
+    fhir_store_contract::record(&store()).await;
+    fhir_store_contract::readiness(&store()).await;
+}
