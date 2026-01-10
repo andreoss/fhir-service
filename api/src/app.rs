@@ -73,8 +73,34 @@ impl Service {
     }
 
     pub fn router(&self) -> Router<()> {
-        Router::new()
-            .route("/", get(search_system))
+        routes().with_state(self.state.clone())
+    }
+
+    pub async fn bind(&self, addr: SocketAddr) -> Result<Bound, Error> {
+        let listener = TcpListener::bind(addr)
+            .await
+            .map_err(|error| Error::Internal(format!("cannot bind {addr}: {error}")))?;
+        Ok(Bound {
+            listener,
+            router: self.router(),
+        })
+    }
+
+    pub async fn serve(&self, addr: SocketAddr) -> Result<(), Error> {
+        self.bind(addr).await?.serve().await
+    }
+}
+
+pub(crate) fn over(state: &AppState, store: Arc<dyn ResourceStore>) -> Router<()> {
+    routes().with_state(AppState {
+        store,
+        ..state.clone()
+    })
+}
+
+fn routes() -> Router<AppState> {
+    Router::new()
+            .route("/", get(search_system).post(crate::bundle::process))
             .route("/health", get(health))
             .route(
                 "/SearchParameter/$status",
@@ -94,22 +120,6 @@ impl Service {
             .route("/{type}/{id}/$purge-history", post(purge_history))
             .fallback(not_found)
             .method_not_allowed_fallback(method_not_allowed)
-            .with_state(self.state.clone())
-    }
-
-    pub async fn bind(&self, addr: SocketAddr) -> Result<Bound, Error> {
-        let listener = TcpListener::bind(addr)
-            .await
-            .map_err(|error| Error::Internal(format!("cannot bind {addr}: {error}")))?;
-        Ok(Bound {
-            listener,
-            router: self.router(),
-        })
-    }
-
-    pub async fn serve(&self, addr: SocketAddr) -> Result<(), Error> {
-        self.bind(addr).await?.serve().await
-    }
 }
 
 pub struct Bound {
