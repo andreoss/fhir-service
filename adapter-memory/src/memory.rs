@@ -9,11 +9,12 @@ use fhir_store::{
     system_clock, Clock,
     HistoryOrder, HistoryPage, HistoryQuery, HistoryScope, IndexFailure, IndexReport, Plan,
     PlanCache, PlanKey, PlanStat,
-    ResourceStore, SearchPage, SearchQuery, SortDirection, SortKey, TotalMode,
+    ResourceStore, SearchPage, SearchQuery, SortDirection, SortKey, StoreScope, TotalMode,
 };
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
+use tokio::sync::{Mutex, OwnedMutexGuard};
 
 type StoreMap = HashMap<ResourceId, Vec<ResourceEnvelope>>;
 
@@ -340,6 +341,7 @@ fn order(matches: &mut [(ResourceEnvelope, Value)], keys: &[SortKey]) {
     });
 }
 
+#[derive(Clone)]
 struct ParamIndex {
     entries: HashMap<ResourceId, Vec<Value>>,
     report: IndexReport,
@@ -392,24 +394,46 @@ fn overflowing(elements: &[Value]) -> usize {
 }
 
 pub struct MemoryStore {
-    inner: RwLock<StoreMap>,
+    inner: Arc<RwLock<StoreMap>>,
     clock: Clock,
-    plans: PlanCache,
-    indexes: RwLock<IndexMap>,
+    plans: Arc<PlanCache>,
+    indexes: Arc<RwLock<IndexMap>>,
+    gate: Arc<Mutex<()>>,
+    scoped: bool,
 }
 
 impl MemoryStore {
     pub fn with_clock(clock: Clock) -> MemoryStore {
         MemoryStore {
-            inner: RwLock::new(HashMap::new()),
+            inner: Arc::new(RwLock::new(HashMap::new())),
             clock,
-            plans: PlanCache::new(),
-            indexes: RwLock::new(HashMap::new()),
+            plans: Arc::new(PlanCache::new()),
+            indexes: Arc::new(RwLock::new(HashMap::new())),
+            gate: Arc::new(Mutex::new(())),
+            scoped: false,
         }
     }
 
     pub fn plans(&self) -> Vec<PlanStat> {
         self.plans.stats()
+    }
+
+    async fn hold(&self) -> Option<tokio::sync::MutexGuard<'_, ()>> {
+        match self.scoped {
+            true => None,
+            false => Some(self.gate.lock().await),
+        }
+    }
+
+    fn sharing(&self, scoped: bool) -> MemoryStore {
+        MemoryStore {
+            inner: Arc::clone(&self.inner),
+            clock: Arc::clone(&self.clock),
+            plans: Arc::clone(&self.plans),
+            indexes: Arc::clone(&self.indexes),
+            gate: Arc::clone(&self.gate),
+            scoped,
+        }
     }
 }
 
@@ -463,6 +487,7 @@ fn next_version(current: &VersionId) -> Result<VersionId, Error> {
 #[async_trait]
 impl ResourceStore for MemoryStore {
     async fn create(&self, envelope: ResourceEnvelope) -> Result<ResourceEnvelope, Error> {
+        let _hold = self.hold().await;
         let mut guard = self
             .inner
             .write()
@@ -714,6 +739,28 @@ impl ResourceStore for MemoryStore {
         })
     }
 
+    async fn begin(&self) -> Result<Arc<dyn StoreScope>, Error> {
+        let hold = Arc::clone(&self.gate).lock_owned().await;
+        let resources = self
+            .inner
+            .read()
+            .map_err(|_| Error::Internal("store lock poisoned".to_owned()))?
+            .clone();
+        let indexes = self
+            .indexes
+            .read()
+            .map_err(|_| Error::Internal("index lock poisoned".to_owned()))?
+            .clone();
+        Ok(Arc::new(MemoryScope {
+            store: Arc::new(self.sharing(true)),
+            state: std::sync::Mutex::new(Some(Undo {
+                resources,
+                indexes,
+                hold,
+            })),
+        }))
+    }
+
     fn health(&self) -> Result<(), Error> {
         match self.inner.read() {
             Ok(_) => Ok(()),
@@ -726,6 +773,7 @@ impl ResourceStore for MemoryStore {
         envelope: ResourceEnvelope,
         expected_version: Option<&VersionId>,
     ) -> Result<ResourceEnvelope, Error> {
+        let _hold = self.hold().await;
         let mut guard = self
             .inner
             .write()
@@ -759,6 +807,7 @@ impl ResourceStore for MemoryStore {
     }
 
     async fn delete(&self, id: &ResourceId) -> Result<ResourceEnvelope, Error> {
+        let _hold = self.hold().await;
         let mut guard = self
             .inner
             .write()
@@ -780,6 +829,7 @@ impl ResourceStore for MemoryStore {
     }
 
     async fn hard_delete(&self, id: &ResourceId) -> Result<(), Error> {
+        let _hold = self.hold().await;
         let mut guard = self
             .inner
             .write()
@@ -791,6 +841,7 @@ impl ResourceStore for MemoryStore {
     }
 
     async fn purge_history(&self, id: &ResourceId) -> Result<usize, Error> {
+        let _hold = self.hold().await;
         let mut guard = self
             .inner
             .write()
@@ -801,5 +852,64 @@ impl ResourceStore for MemoryStore {
             *versions = vec![current];
         }
         Ok(purged)
+    }
+}
+
+pub struct MemoryScope {
+    store: Arc<MemoryStore>,
+    state: std::sync::Mutex<Option<Undo>>,
+}
+
+struct Undo {
+    resources: StoreMap,
+    indexes: IndexMap,
+    hold: OwnedMutexGuard<()>,
+}
+
+impl MemoryScope {
+    fn settle(&self, restore: bool) -> Result<(), Error> {
+        let taken = self
+            .state
+            .lock()
+            .map_err(|_| Error::Internal("scope lock poisoned".to_owned()))?
+            .take();
+        let Some(undo) = taken else {
+            return Ok(());
+        };
+        if restore {
+            *self
+                .store
+                .inner
+                .write()
+                .map_err(|_| Error::Internal("store lock poisoned".to_owned()))? = undo.resources;
+            *self
+                .store
+                .indexes
+                .write()
+                .map_err(|_| Error::Internal("index lock poisoned".to_owned()))? = undo.indexes;
+        }
+        drop(undo.hold);
+        Ok(())
+    }
+}
+
+impl Drop for MemoryScope {
+    fn drop(&mut self) {
+        let _ = self.settle(true);
+    }
+}
+
+#[async_trait]
+impl StoreScope for MemoryScope {
+    fn store(&self) -> Arc<dyn ResourceStore> {
+        Arc::clone(&self.store) as Arc<dyn ResourceStore>
+    }
+
+    async fn commit(&self) -> Result<(), Error> {
+        self.settle(false)
+    }
+
+    async fn rollback(&self) -> Result<(), Error> {
+        self.settle(true)
     }
 }

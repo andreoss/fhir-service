@@ -664,6 +664,8 @@ async fn the_shared_contract_holds_over_this_adapter() {
     fhir_store_contract::removal(&store()).await;
     fhir_store_contract::record(&store()).await;
     fhir_store_contract::readiness(&store()).await;
+    fhir_store_contract::atomicity(&store()).await;
+    fhir_store_contract::scoped_search(&store()).await;
 }
 
 #[tokio::test]

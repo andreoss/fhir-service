@@ -140,3 +140,52 @@ pub async fn record(store: &dyn ResourceStore) {
 pub async fn readiness(store: &dyn ResourceStore) {
     store.health().expect("a fresh store is healthy");
 }
+
+pub async fn atomicity(store: &dyn ResourceStore) {
+    let scope = store.begin().await.expect("the store opens a scope");
+    let scoped = scope.store();
+    scoped.create(patient("f1", "Stone", true)).await.unwrap();
+    scoped.create(patient("f2", "Rivers", true)).await.unwrap();
+    assert_eq!(scoped.read(&id("f1")).await.unwrap().version_id().as_str(), "1");
+    scope.rollback().await.unwrap();
+    assert_not_found(store.read(&id("f1")).await);
+    assert_not_found(store.read(&id("f2")).await);
+
+    let scope = store.begin().await.unwrap();
+    let scoped = scope.store();
+    scoped.create(patient("f3", "Stone", true)).await.unwrap();
+    scoped.update(patient("f3", "Rivers", true), None).await.unwrap();
+    scope.commit().await.unwrap();
+    assert_eq!(store.read(&id("f3")).await.unwrap().version_id().as_str(), "2");
+
+    let scope = store.begin().await.unwrap();
+    let scoped = scope.store();
+    scoped.delete(&id("f3")).await.unwrap();
+    assert!(scoped.read(&id("f3")).await.unwrap().is_deleted());
+    scope.rollback().await.unwrap();
+    assert!(!store.read(&id("f3")).await.unwrap().is_deleted());
+    assert_eq!(
+        store
+            .history(&HistoryScope::Instance("Patient".parse().unwrap(), id("f3")), &HistoryQuery::default())
+            .await
+            .unwrap()
+            .total,
+        2
+    );
+    store.hard_delete(&id("f3")).await.unwrap();
+}
+
+pub async fn scoped_search(store: &dyn ResourceStore) {
+    let by_name = |value: &str| fhir_store::SearchQuery {
+        filters: vec![crate::search::filter("Patient", "family", value)],
+        ..fhir_store::SearchQuery::of_type("Patient".parse().expect("a known type"))
+    };
+
+    let scope = store.begin().await.expect("the store opens a scope");
+    let scoped = scope.store();
+    scoped.create(patient("g1", "Stone", true)).await.unwrap();
+    let inside = scoped.search(&by_name("Stone")).await.unwrap();
+    assert_eq!(inside.entries.len(), 1);
+    scope.rollback().await.unwrap();
+    assert!(store.search(&by_name("Stone")).await.unwrap().entries.is_empty());
+}

@@ -3,6 +3,8 @@ use fhir_core::search::ParameterSpec;
 use fhir_core::{Error, ResourceEnvelope, ResourceId, VersionId};
 
 use crate::history::{HistoryPage, HistoryQuery, HistoryScope};
+use crate::scope::StoreScope;
+use std::sync::Arc;
 use crate::parameter::{IndexReport};
 use crate::search::{SearchPage, SearchQuery};
 
@@ -62,6 +64,10 @@ pub trait ResourceStore: Send + Sync {
     fn index_report(&self, url: &str) -> Option<IndexReport> {
         let _ = url;
         None
+    }
+
+    async fn begin(&self) -> Result<Arc<dyn StoreScope>, Error> {
+        Err(Error::Internal("this store has no atomic scope".to_owned()))
     }
 
     fn health(&self) -> Result<(), Error>;
