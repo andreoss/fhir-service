@@ -1,7 +1,7 @@
 use crate::extract::{rows_of, Rows};
 use crate::migration::Migrator;
 use crate::namespace::Namespace;
-use crate::row::{envelope_of, surrogate_of, COLUMNS};
+use crate::row::{envelope_of, Record, COLUMNS};
 use async_trait::async_trait;
 use fhir_core::search::{for_type, ParamDef, ParameterSpec};
 use fhir_core::{Error, ResourceEnvelope, ResourceId, VersionId};
@@ -46,10 +46,7 @@ fn next_version(current: &VersionId) -> Result<VersionId, Error> {
     VersionId::parse(&(number + 1).to_string())
 }
 
-struct Current {
-    surrogate: i64,
-    envelope: ResourceEnvelope,
-}
+type Current = Record;
 
 pub struct RelationalStore {
     pool: PgPool,
@@ -149,14 +146,7 @@ impl RelationalStore {
             .fetch_optional(&mut **transaction)
             .await
             .map_err(|error| faulted("reading the current version", error))?;
-        found
-            .map(|row| {
-                Ok(Current {
-                    surrogate: surrogate_of(&row)?,
-                    envelope: envelope_of(&row)?,
-                })
-            })
-            .transpose()
+        found.map(|row| Record::of(&row)).transpose()
     }
 
     async fn clear_index(
@@ -194,10 +184,11 @@ impl RelationalStore {
             self.clear_index(transaction, previous.surrogate).await?;
         }
         let key = envelope.last_updated().key();
+        let (packed, encoding) = crate::body::encoded(envelope.raw());
         let statement = format!(
             "insert into {} (resource_type, resource_id, version_number, spec_version,
-                             last_updated, updated_secs, updated_nanos, is_deleted, is_current, body)
-             values ($1, $2, $3, $4, $5, $6, $7, $8, true, $9)
+                             last_updated, updated_secs, updated_nanos, is_deleted, is_current, body, body_encoding)
+             values ($1, $2, $3, $4, $5, $6, $7, $8, true, $9, $10)
              returning surrogate_id",
             self.table("resource")
         );
@@ -210,11 +201,11 @@ impl RelationalStore {
             .bind(key.seconds())
             .bind(key.nanos() as i32)
             .bind(envelope.is_deleted())
-            .bind(crate::body::encoded(envelope.raw()))
+            .bind(packed).bind(encoding.as_str())
             .fetch_one(&mut **transaction)
             .await
             .map_err(|error| faulted("writing a version", error))?;
-        let surrogate: i64 = surrogate_of(&row)?;
+        let surrogate: i64 = row.try_get("surrogate_id").map_err(|error| faulted("writing a version", error))?;
         if !envelope.is_deleted() {
             let body = body_of(envelope)?;
             let rows = rows_of(envelope, &body, &self.defs(envelope));
@@ -574,22 +565,25 @@ impl ResourceStore for RelationalStore {
             return Err(Error::NotFound);
         };
         if let Some(expected) = expected_version {
-            if current.envelope.version_id() != expected {
+            if &current.version != expected {
                 return Err(Error::VersionConflict);
             }
         }
-        if current.envelope.resource_type() != envelope.resource_type() {
+        if current.resource_type != envelope.resource_type() {
             return Err(Error::InvalidEnvelope(format!(
                 "resource type mismatch: expected {:?} found {:?}",
-                current.envelope.resource_type().as_str(),
+                current.resource_type.as_str(),
                 envelope.resource_type().as_str()
             )));
         }
-        if !current.envelope.is_deleted() && envelope.content_eq(&current.envelope) {
-            return Ok(current.envelope);
+        if !current.deleted {
+            let held = current.envelope()?;
+            if envelope.content_eq(&held) {
+                return Ok(held);
+            }
         }
         let stored = envelope.stored_with(
-            next_version(current.envelope.version_id())?,
+            next_version(&current.version)?,
             (self.clock)(),
         )?;
         self.append(&mut transaction, Some(&current), &stored).await?;
@@ -614,14 +608,14 @@ impl ResourceStore for RelationalStore {
             .current_in(&mut transaction, id, true)
             .await?
             .ok_or(Error::NotFound)?;
-        if current.envelope.is_deleted() {
+        if current.deleted {
             return Err(Error::Deleted);
         }
         let marker = ResourceEnvelope::deleted_marker(
-            current.envelope.version(),
-            current.envelope.resource_type(),
+            current.spec,
+            current.resource_type,
             id.clone(),
-            next_version(current.envelope.version_id())?,
+            next_version(&current.version)?,
             (self.clock)(),
         );
         self.append(&mut transaction, Some(&current), &marker).await?;

@@ -128,6 +128,10 @@ create table if not exists index_sort (
 create unique index if not exists index_sort_key on index_sort (surrogate_id, param);
 ";
 
+const BODY_ENCODING: &str = "
+alter table resource add column if not exists body_encoding text not null default 'plain';
+";
+
 pub const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 1,
@@ -146,6 +150,12 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "index tables",
         required: true,
         statements: INDEX_TABLES,
+    },
+    Migration {
+        version: 4,
+        name: "packed bodies",
+        required: true,
+        statements: BODY_ENCODING,
     },
 ];
 
