@@ -11,6 +11,8 @@ pub const RIGHT: &str = "right";
 pub const PLAIN: &str = "plain";
 pub const WORDS: &str = "words";
 pub const NARRATIVE: &str = "narrative";
+pub const PRESENCE: &str = "presence";
+pub const OF_TYPE: &str = "of_type";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TokenRow {
@@ -266,6 +268,24 @@ fn narratives_of(element: &Value, out: &mut Vec<String>) {
     }
 }
 
+type Qualified = (String, Vec<(Option<String>, String)>);
+
+fn qualified(element: &Value, out: &mut Vec<Qualified>) {
+    match element {
+        Value::Array(items) => items.iter().for_each(|item| qualified(item, out)),
+        Value::Object(map) => {
+            if let Some(value) = map.get("value").and_then(Value::as_str) {
+                let mut kinds = Vec::new();
+                if let Some(found) = map.get("type") {
+                    tokens_of(found, &mut kinds);
+                }
+                out.push((value.to_owned(), kinds));
+            }
+        }
+        Value::String(_) | Value::Bool(_) | Value::Number(_) | Value::Null => {}
+    }
+}
+
 fn split_reference(text: &str) -> (String, Option<String>) {
     let mut parts = text.rsplit('/');
     let id = parts.next().unwrap_or_default().to_owned();
@@ -404,6 +424,41 @@ impl Sink<'_> {
         if let Some(found) = element.get("identifier") {
             self.typed(ValueType::Token, IDENTIFIER, ordinal, found);
         }
+        self.rows.texts.push(TextRow {
+            param: param.clone(),
+            slot: PRESENCE.to_owned(),
+            ordinal,
+            value: String::new(),
+            folded: String::new(),
+        });
+    }
+
+    fn qualifiers(&mut self, element: &Value, next: &mut i32) {
+        let param = self.param.clone();
+        let mut found = Vec::new();
+        qualified(element, &mut found);
+        for (value, kinds) in found {
+            let ordinal = *next;
+            *next += 1;
+            self.rows.texts.push(TextRow {
+                param: param.clone(),
+                slot: OF_TYPE.to_owned(),
+                ordinal,
+                folded: value.to_lowercase(),
+                value,
+            });
+            for (system, code) in kinds {
+                let key = IndexKey::of(&code);
+                self.rows.tokens.push(TokenRow {
+                    param: param.clone(),
+                    slot: OF_TYPE.to_owned(),
+                    ordinal,
+                    system,
+                    code: key.key().to_owned(),
+                    code_tail: key.overflow().map(str::to_owned),
+                });
+            }
+        }
     }
 
     fn component(&mut self, sub: &SubDef, slot: &str, ordinal: i32, element: &Value) {
@@ -427,9 +482,11 @@ pub fn rows_of(envelope: &ResourceEnvelope, body: &Value, defs: &[Arc<ParamDef>]
             Target::Path(paths) => {
                 let elements: Vec<&Value> =
                     paths.iter().flat_map(|path| select(body, path)).collect();
+                let mut qualifier = 0;
                 for (ordinal, element) in elements.iter().enumerate() {
                     sink.typed(def.value_type, MAIN, ordinal as i32, element);
                     sink.projections(ordinal as i32, element);
+                    sink.qualifiers(element, &mut qualifier);
                 }
             }
             Target::Composite(composite) => {
@@ -441,6 +498,13 @@ pub fn rows_of(envelope: &ResourceEnvelope, body: &Value, defs: &[Arc<ParamDef>]
                 for (ordinal, element) in elements.iter().enumerate() {
                     sink.component(&composite.left, LEFT, ordinal as i32, element);
                     sink.component(&composite.right, RIGHT, ordinal as i32, element);
+                    sink.rows.texts.push(TextRow {
+                        param: sink.param.clone(),
+                        slot: PRESENCE.to_owned(),
+                        ordinal: ordinal as i32,
+                        value: String::new(),
+                        folded: String::new(),
+                    });
                 }
             }
         }

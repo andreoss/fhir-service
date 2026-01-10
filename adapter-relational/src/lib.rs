@@ -1,4 +1,5 @@
 
+pub(crate) mod compile;
 pub mod body;
 pub mod extract;
 pub mod migration;

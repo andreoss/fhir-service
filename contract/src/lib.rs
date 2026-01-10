@@ -1,5 +1,6 @@
 
 pub mod fixture;
+pub mod search;
 
 use fhir_core::Error;
 use fhir_store::{HistoryOrder, HistoryQuery, HistoryScope, ResourceStore};

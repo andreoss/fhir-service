@@ -1,0 +1,446 @@
+use fhir_core::search::{
+    lookup, Chain, ChainDirection, Compartment, Criterion, Filter, Grant, Include,
+    IncludeDirection, Modifier, SearchValue,
+};
+use fhir_core::{ResourceEnvelope, ResourceType};
+use fhir_store::{SearchQuery, SortDirection, SortKey, TotalMode};
+
+use crate::fixture::{envelope, id, observation, patient};
+
+fn kind(name: &str) -> ResourceType {
+    name.parse().expect("a known resource type")
+}
+
+pub fn filter(resource_type: &str, name: &str, raw: &str) -> Filter {
+    let def = lookup(Some(kind(resource_type)), name).expect("a built-in parameter");
+    let values = raw
+        .split(',')
+        .map(|part| def.value(part).expect("a valid value"))
+        .collect();
+    Filter::new(name, def.target.clone(), values)
+}
+
+pub fn qualified(resource_type: &str, name: &str, modifier: Modifier, raw: &str) -> Filter {
+    let def = lookup(Some(kind(resource_type)), name).expect("a built-in parameter");
+    let values = raw
+        .split(',')
+        .map(|part| def.value_with(&modifier, part).expect("a valid value"))
+        .collect();
+    Filter {
+        modifier,
+        ..Filter::new(name, def.target.clone(), values)
+    }
+}
+
+fn query(resource_type: &str, filters: Vec<Filter>) -> SearchQuery {
+    SearchQuery {
+        filters,
+        ..SearchQuery::of_type(kind(resource_type))
+    }
+}
+
+fn ids(page: &fhir_store::SearchPage) -> Vec<String> {
+    page.entries
+        .iter()
+        .map(|entry| entry.id().as_str().to_owned())
+        .collect()
+}
+
+fn included(page: &fhir_store::SearchPage) -> Vec<String> {
+    let mut found: Vec<String> = page
+        .included
+        .iter()
+        .map(|entry| entry.id().as_str().to_owned())
+        .collect();
+    found.sort();
+    found
+}
+
+fn list(id: &str, entries: &[&str]) -> ResourceEnvelope {
+    let items: Vec<String> = entries
+        .iter()
+        .map(|reference| format!(r#"{{"item":{{"reference":"{reference}"}}}}"#))
+        .collect();
+    envelope(
+        "List",
+        id,
+        &format!(
+            r#""status":"current","mode":"working","entry":[{}]"#,
+            items.join(",")
+        ),
+    )
+}
+
+fn code_set(id: &str, url: &str, codes: &[&str]) -> ResourceEnvelope {
+    let concepts: Vec<String> = codes
+        .iter()
+        .map(|code| format!(r#"{{"code":"{code}"}}"#))
+        .collect();
+    envelope(
+        "ValueSet",
+        id,
+        &format!(
+            r#""url":"{url}","status":"active","compose":{{"include":[{{"system":"urn:s","concept":[{}]}}]}}"#,
+            concepts.join(",")
+        ),
+    )
+}
+
+async fn seeded(store: &dyn fhir_store::ResourceStore) {
+    store.create(patient("p1", "Stone", true)).await.unwrap();
+    store.create(patient("p2", "Rivers", false)).await.unwrap();
+    store.create(patient("p3", "Stonewall", true)).await.unwrap();
+    store
+        .create(observation("v1", "code-1", 4.5, "Patient/p1"))
+        .await
+        .unwrap();
+    store
+        .create(observation("v2", "code-2", 9.0, "Patient/p2"))
+        .await
+        .unwrap();
+}
+
+pub async fn selection(store: &dyn fhir_store::ResourceStore) {
+    seeded(store).await;
+
+    let by_id = store.search(&query("Patient", vec![filter("Patient", "_id", "p1")])).await.unwrap();
+    assert_eq!(ids(&by_id), vec!["p1"]);
+    assert_eq!(by_id.total, Some(1));
+
+    let by_flag = store
+        .search(&query("Patient", vec![filter("Patient", "active", "true")]))
+        .await
+        .unwrap();
+    let mut found = ids(&by_flag);
+    found.sort();
+    assert_eq!(found, vec!["p1", "p3"]);
+
+    let by_name = store
+        .search(&query("Patient", vec![filter("Patient", "name", "sto")]))
+        .await
+        .unwrap();
+    let mut found = ids(&by_name);
+    found.sort();
+    assert_eq!(found, vec!["p1", "p3"]);
+
+    let by_code = store
+        .search(&query("Observation", vec![filter("Observation", "code", "urn:s|code-1")]))
+        .await
+        .unwrap();
+    assert_eq!(ids(&by_code), vec!["v1"]);
+
+    let by_wrong_system = store
+        .search(&query("Observation", vec![filter("Observation", "code", "urn:other|code-1")]))
+        .await
+        .unwrap();
+    assert!(by_wrong_system.entries.is_empty());
+
+    let by_quantity = store
+        .search(&query(
+            "Observation",
+            vec![filter("Observation", "value-quantity", "gt5|urn:u|mg")],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(ids(&by_quantity), vec!["v2"]);
+
+    let by_reference = store
+        .search(&query("Observation", vec![filter("Observation", "subject", "Patient/p1")]))
+        .await
+        .unwrap();
+    assert_eq!(ids(&by_reference), vec!["v1"]);
+
+    let by_bare_reference = store
+        .search(&query("Observation", vec![filter("Observation", "subject", "p2")]))
+        .await
+        .unwrap();
+    assert_eq!(ids(&by_bare_reference), vec!["v2"]);
+
+    let by_date = store
+        .search(&query("Patient", vec![filter("Patient", "birthdate", "1980")]))
+        .await
+        .unwrap();
+    assert_eq!(by_date.total, Some(3));
+
+    let alternatives = store
+        .search(&query("Patient", vec![filter("Patient", "_id", "p1,p2")]))
+        .await
+        .unwrap();
+    assert_eq!(alternatives.total, Some(2));
+
+    let conjunction = store
+        .search(&query(
+            "Patient",
+            vec![filter("Patient", "_id", "p1"), filter("Patient", "active", "false")],
+        ))
+        .await
+        .unwrap();
+    assert!(conjunction.entries.is_empty());
+
+    let every = store.search(&SearchQuery::default()).await.unwrap();
+    assert_eq!(every.total, Some(5));
+}
+
+pub async fn qualifiers(store: &dyn fhir_store::ResourceStore) {
+    seeded(store).await;
+    store
+        .create(envelope(
+            "Patient",
+            "p4",
+            r#""active":true,"identifier":[{"system":"urn:i","value":"abc","type":{"coding":[{"system":"urn:t","code":"mr"}]}}]"#,
+        ))
+        .await
+        .unwrap();
+
+    let missing = store
+        .search(&query(
+            "Patient",
+            vec![qualified("Patient", "name", Modifier::Missing, "true")],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(ids(&missing), vec!["p4"]);
+
+    let present = store
+        .search(&query(
+            "Patient",
+            vec![qualified("Patient", "name", Modifier::Missing, "false")],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(present.total, Some(3));
+
+    let exact = store
+        .search(&query(
+            "Patient",
+            vec![qualified("Patient", "name", Modifier::Exact, "Stone")],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(ids(&exact), vec!["p1"]);
+
+    let contains = store
+        .search(&query(
+            "Patient",
+            vec![qualified("Patient", "name", Modifier::Contains, "onew")],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(ids(&contains), vec!["p3"]);
+
+    let negated = store
+        .search(&query(
+            "Observation",
+            vec![qualified("Observation", "code", Modifier::Not, "code-1")],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(ids(&negated), vec!["v2"]);
+
+    let narrative = store
+        .search(&query(
+            "Patient",
+            vec![qualified("Patient", "identifier", Modifier::OfType, "urn:t|mr|abc")],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(ids(&narrative), vec!["p4"]);
+
+    let typed = store
+        .search(&query(
+            "Observation",
+            vec![qualified(
+                "Observation",
+                "subject",
+                Modifier::Type(kind("Patient")),
+                "p1",
+            )],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(ids(&typed), vec!["v1"]);
+
+    store
+        .create(code_set("s1", "urn:set:one", &["code-1"]))
+        .await
+        .unwrap();
+    let in_set = store
+        .search(&query(
+            "Observation",
+            vec![qualified("Observation", "code", Modifier::In, "urn:set:one")],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(ids(&in_set), vec!["v1"]);
+    let out_of_set = store
+        .search(&query(
+            "Observation",
+            vec![qualified("Observation", "code", Modifier::NotIn, "urn:set:one")],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(ids(&out_of_set), vec!["v2"]);
+}
+
+pub async fn ordering(store: &dyn fhir_store::ResourceStore) {
+    seeded(store).await;
+    let sorted = |direction| SearchQuery {
+        sort: vec![SortKey {
+            name: "name".to_owned(),
+            target: lookup(Some(kind("Patient")), "name").unwrap().target.clone(),
+            direction,
+        }],
+        ..SearchQuery::of_type(kind("Patient"))
+    };
+
+    let ascending = store.search(&sorted(SortDirection::Ascending)).await.unwrap();
+    assert_eq!(ids(&ascending), vec!["p2", "p1", "p3"]);
+    let descending = store.search(&sorted(SortDirection::Descending)).await.unwrap();
+    assert_eq!(ids(&descending), vec!["p3", "p1", "p2"]);
+
+    let paged = SearchQuery {
+        offset: 1,
+        count: 1,
+        ..sorted(SortDirection::Ascending)
+    };
+    let page = store.search(&paged).await.unwrap();
+    assert_eq!(ids(&page), vec!["p1"]);
+    assert_eq!(page.total, Some(3));
+    assert_eq!(page.offset, 1);
+
+    let untotalled = SearchQuery {
+        total: TotalMode::None,
+        ..SearchQuery::of_type(kind("Patient"))
+    };
+    assert_eq!(store.search(&untotalled).await.unwrap().total, None);
+
+    let estimated = SearchQuery {
+        total: TotalMode::Estimate,
+        ..SearchQuery::of_type(kind("Patient"))
+    };
+    assert!(store.search(&estimated).await.unwrap().total.is_some());
+
+    let deleted = store.delete(&id("p1")).await.unwrap();
+    assert!(deleted.is_deleted());
+    let after = store.search(&SearchQuery::of_type(kind("Patient"))).await.unwrap();
+    assert_eq!(after.total, Some(2));
+}
+
+pub async fn linking(store: &dyn fhir_store::ResourceStore) {
+    seeded(store).await;
+    store.create(list("l1", &["Patient/p1"])).await.unwrap();
+
+    let chained = SearchQuery {
+        chains: vec![Chain {
+            name: "subject".to_owned(),
+            target: lookup(Some(kind("Observation")), "subject").unwrap().target.clone(),
+            types: vec![kind("Patient")],
+            direction: ChainDirection::Forward,
+            next: Box::new(Criterion::Direct(filter("Patient", "name", "Stone"))),
+        }],
+        ..SearchQuery::of_type(kind("Observation"))
+    };
+    assert_eq!(ids(&store.search(&chained).await.unwrap()), vec!["v1"]);
+
+    let reverse = SearchQuery {
+        chains: vec![Chain {
+            name: "subject".to_owned(),
+            target: lookup(Some(kind("Observation")), "subject").unwrap().target.clone(),
+            types: vec![kind("Observation")],
+            direction: ChainDirection::Reverse,
+            next: Box::new(Criterion::Direct(filter("Observation", "code", "code-2"))),
+        }],
+        ..SearchQuery::of_type(kind("Patient"))
+    };
+    assert_eq!(ids(&store.search(&reverse).await.unwrap()), vec!["p2"]);
+
+    let with_include = SearchQuery {
+        filters: vec![filter("Observation", "code", "code-1")],
+        includes: vec![Include {
+            name: "subject".to_owned(),
+            source: Some(kind("Observation")),
+            paths: vec!["subject".to_owned()],
+            target: None,
+            direction: IncludeDirection::Forward,
+            iterate: false,
+        }],
+        ..SearchQuery::of_type(kind("Observation"))
+    };
+    let page = store.search(&with_include).await.unwrap();
+    assert_eq!(ids(&page), vec!["v1"]);
+    assert_eq!(included(&page), vec!["p1"]);
+    assert_eq!(page.total, Some(1));
+
+    let with_revinclude = SearchQuery {
+        filters: vec![filter("Patient", "_id", "p1")],
+        includes: vec![Include {
+            name: "subject".to_owned(),
+            source: Some(kind("Observation")),
+            paths: vec!["subject".to_owned()],
+            target: Some(kind("Patient")),
+            direction: IncludeDirection::Reverse,
+            iterate: false,
+        }],
+        ..SearchQuery::of_type(kind("Patient"))
+    };
+    let page = store.search(&with_revinclude).await.unwrap();
+    assert_eq!(included(&page), vec!["v1"]);
+
+    let by_list = SearchQuery {
+        list: Some(id("l1")),
+        ..SearchQuery::of_type(kind("Patient"))
+    };
+    assert_eq!(ids(&store.search(&by_list).await.unwrap()), vec!["p1"]);
+
+    let in_compartment = SearchQuery {
+        compartment: Some(Compartment {
+            kind: kind("Patient"),
+            id: id("p1"),
+        }),
+        ..SearchQuery::of_type(kind("Observation"))
+    };
+    assert_eq!(ids(&store.search(&in_compartment).await.unwrap()), vec!["v1"]);
+
+    let granted = SearchQuery {
+        grant: Some(Grant {
+            types: vec![kind("Observation")],
+            compartments: vec![Compartment {
+                kind: kind("Patient"),
+                id: id("p2"),
+            }],
+        }),
+        ..SearchQuery::default()
+    };
+    assert_eq!(ids(&store.search(&granted).await.unwrap()), vec!["v2"]);
+
+    let refused = SearchQuery {
+        grant: Some(Grant {
+            types: vec![kind("Observation")],
+            compartments: Vec::new(),
+        }),
+        ..SearchQuery::of_type(kind("Patient"))
+    };
+    assert!(store.search(&refused).await.unwrap().entries.is_empty());
+}
+
+pub async fn composites(store: &dyn fhir_store::ResourceStore) {
+    store
+        .create(observation("c1", "code-1", 4.5, "Patient/p1"))
+        .await
+        .unwrap();
+    store
+        .create(observation("c2", "code-2", 4.5, "Patient/p1"))
+        .await
+        .unwrap();
+    let paired = query(
+        "Observation",
+        vec![filter("Observation", "code-value-quantity", "urn:s|code-1$4.5|urn:u|mg")],
+    );
+    assert_eq!(ids(&store.search(&paired).await.unwrap()), vec!["c1"]);
+    let mismatched = query(
+        "Observation",
+        vec![filter("Observation", "code-value-quantity", "urn:s|code-1$9|urn:u|mg")],
+    );
+    assert!(store.search(&mismatched).await.unwrap().entries.is_empty());
+    let _ = SearchValue::Missing(true);
+}

@@ -94,6 +94,10 @@ impl RelationalStore {
         self.plans.stats()
     }
 
+    pub(crate) fn cache(&self) -> &PlanCache {
+        &self.plans
+    }
+
     pub(crate) fn table(&self, name: &str) -> String {
         format!("{}.{name}", self.namespace.as_str())
     }

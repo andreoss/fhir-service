@@ -2,9 +2,30 @@ use fhir_core::{Error, FhirInstant, FhirVersion, ResourceEnvelope, ResourceId, R
 use sqlx::postgres::PgRow;
 use sqlx::Row;
 
+const NAMES: [&str; 10] = [
+    "surrogate_id",
+    "resource_type",
+    "resource_id",
+    "version_number",
+    "spec_version",
+    "last_updated",
+    "updated_secs",
+    "updated_nanos",
+    "is_deleted",
+    "body",
+];
+
 pub const COLUMNS: &str = "surrogate_id, resource_type, resource_id, version_number, \
                            spec_version, last_updated, updated_secs, updated_nanos, \
                            is_deleted, body";
+
+pub fn columns(alias: &str) -> String {
+    NAMES
+        .iter()
+        .map(|name| format!("{alias}.{name}"))
+        .collect::<Vec<String>>()
+        .join(", ")
+}
 
 fn wrong(reason: &str) -> Error {
     Error::Internal(format!("stored row is malformed: {reason}"))
