@@ -5,10 +5,12 @@ edition = "2021"
 
 [dependencies]
 async-trait = "0.1"
+serde_json = "1"
 fhir-core = { path = "../core" }
 fhir-store = { path = "../store" }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"] }
 tokio = { version = "1", features = ["macros", "rt"] }
 
 [dev-dependencies]
+fhir-store-contract = { path = "../contract" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

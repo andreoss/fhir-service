@@ -427,6 +427,14 @@ pub fn lookup(resource_type: Option<ResourceType>, name: &str) -> Option<Arc<Par
         .map(|(_, def)| Arc::clone(def))
 }
 
+pub fn for_type(resource_type: ResourceType) -> Vec<Arc<ParamDef>> {
+    definitions()
+        .iter()
+        .filter(|(kind, _)| kind.is_none() || *kind == Some(resource_type.as_str()))
+        .map(|(_, def)| Arc::clone(def))
+        .collect()
+}
+
 pub fn references(resource_type: ResourceType) -> Vec<Arc<ParamDef>> {
     definitions()
         .iter()
@@ -726,5 +734,20 @@ mod tests {
         let found = registry.references("Patient".parse().unwrap());
         assert!(found.iter().any(|def| def.name == "care-team"));
         assert_eq!(found.first().map(|def| def.paths().len()), Some(1));
+    }
+}
+
+#[cfg(test)]
+mod type_tests {
+    use super::*;
+
+    #[test]
+    fn a_type_carries_its_own_parameters_and_the_common_ones() {
+        let kind: ResourceType = "Patient".parse().unwrap();
+        let defs = for_type(kind);
+        assert!(defs.iter().any(|def| def.name == "_id"));
+        assert!(defs.iter().any(|def| def.name == "name"));
+        assert!(!defs.iter().any(|def| def.name == "status"));
+        assert!(defs.len() > common().len());
     }
 }

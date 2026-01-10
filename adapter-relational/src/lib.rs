@@ -1,9 +1,15 @@
 
+pub mod body;
+pub mod extract;
 pub mod migration;
 pub mod namespace;
+pub(crate) mod query;
+pub mod row;
+pub mod store;
 
 pub use migration::{latest, Migration, MIGRATIONS};
 pub use namespace::Namespace;
+pub use store::RelationalStore;
 
 pub const ENV_URL: &str = "FHIR_DATABASE_URL";
 

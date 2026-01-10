@@ -37,6 +37,97 @@ create index if not exists resource_live_type_key
     on resource (resource_type) where is_current and not is_deleted;
 ";
 
+const INDEX_TABLES: &str = "
+create table if not exists index_token (
+    surrogate_id bigint not null references resource(surrogate_id) on delete cascade,
+    param text not null,
+    slot text not null,
+    ordinal integer not null,
+    system text,
+    code text not null,
+    code_tail text
+);
+create index if not exists index_token_key on index_token (param, slot, code);
+create index if not exists index_token_owner on index_token (surrogate_id);
+
+create table if not exists index_text (
+    surrogate_id bigint not null references resource(surrogate_id) on delete cascade,
+    param text not null,
+    slot text not null,
+    ordinal integer not null,
+    value text not null,
+    folded text not null
+);
+create index if not exists index_text_key on index_text (param, slot, folded text_pattern_ops);
+create index if not exists index_text_owner on index_text (surrogate_id);
+
+create table if not exists index_number (
+    surrogate_id bigint not null references resource(surrogate_id) on delete cascade,
+    param text not null,
+    slot text not null,
+    ordinal integer not null,
+    value double precision not null
+);
+create index if not exists index_number_key on index_number (param, slot, value);
+create index if not exists index_number_owner on index_number (surrogate_id);
+
+create table if not exists index_date (
+    surrogate_id bigint not null references resource(surrogate_id) on delete cascade,
+    param text not null,
+    slot text not null,
+    ordinal integer not null,
+    low_secs bigint not null,
+    low_nanos integer not null,
+    high_secs bigint not null,
+    high_nanos integer not null
+);
+create index if not exists index_date_key on index_date (param, slot, low_secs, high_secs);
+create index if not exists index_date_owner on index_date (surrogate_id);
+
+create table if not exists index_quantity (
+    surrogate_id bigint not null references resource(surrogate_id) on delete cascade,
+    param text not null,
+    slot text not null,
+    ordinal integer not null,
+    value double precision not null,
+    system text,
+    code text,
+    structured boolean not null
+);
+create index if not exists index_quantity_key on index_quantity (param, slot, value);
+create index if not exists index_quantity_owner on index_quantity (surrogate_id);
+
+create table if not exists index_reference (
+    surrogate_id bigint not null references resource(surrogate_id) on delete cascade,
+    param text not null,
+    slot text not null,
+    ordinal integer not null,
+    ref_full text not null,
+    ref_id text not null,
+    ref_type text
+);
+create index if not exists index_reference_key on index_reference (param, slot, ref_id);
+create index if not exists index_reference_full on index_reference (param, slot, ref_full);
+create index if not exists index_reference_owner on index_reference (surrogate_id);
+
+create table if not exists index_uri (
+    surrogate_id bigint not null references resource(surrogate_id) on delete cascade,
+    param text not null,
+    slot text not null,
+    ordinal integer not null,
+    value text not null
+);
+create index if not exists index_uri_key on index_uri (param, slot, value);
+create index if not exists index_uri_owner on index_uri (surrogate_id);
+
+create table if not exists index_sort (
+    surrogate_id bigint not null references resource(surrogate_id) on delete cascade,
+    param text not null,
+    sort_text text
+);
+create unique index if not exists index_sort_key on index_sort (surrogate_id, param);
+";
+
 pub const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 1,
@@ -49,6 +140,12 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "resource keys",
         required: true,
         statements: RESOURCE_KEYS,
+    },
+    Migration {
+        version: 3,
+        name: "index tables",
+        required: true,
+        statements: INDEX_TABLES,
     },
 ];
 

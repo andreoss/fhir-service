@@ -33,6 +33,14 @@ impl FhirInstant {
 }
 
 impl InstantKey {
+    pub fn seconds(&self) -> i64 {
+        self.seconds
+    }
+
+    pub fn nanos(&self) -> u32 {
+        self.nanos
+    }
+
     pub fn shifted(&self, seconds: i64) -> Option<InstantKey> {
         Some(InstantKey {
             seconds: self.seconds.checked_add(seconds)?,
@@ -398,5 +406,17 @@ mod period_tests {
         for value in ["", "text", "2026-13", "2026-02-30", "2026-09-06T04:00:00", "20260906"] {
             assert!(matches!(InstantPeriod::parse(value), Err(Error::InvalidInstant(_))), "should reject {value:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod key_tests {
+    use super::*;
+
+    #[test]
+    fn a_key_reports_the_position_it_holds() {
+        let key = FhirInstant::parse("1970-01-01T00:00:10.500Z").unwrap().key();
+        assert_eq!(key.seconds(), 10);
+        assert_eq!(key.nanos(), 500_000_000);
     }
 }

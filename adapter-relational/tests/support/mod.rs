@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use fhir_adapter_relational::{Namespace, DEFAULT_URL, ENV_URL};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
@@ -34,4 +36,15 @@ pub fn namespace(name: &str) -> Namespace {
 pub async fn drop_namespace(pool: &PgPool, namespace: &Namespace) {
     let statement = format!("drop schema if exists {} cascade", namespace.as_str());
     let _ = sqlx::raw_sql(&statement).execute(pool).await;
+}
+
+pub async fn fresh(name: &str) -> Option<(fhir_adapter_relational::RelationalStore, PgPool, Namespace)> {
+    let pool = engine().await?;
+    let namespace = namespace(name);
+    let store = fhir_adapter_relational::RelationalStore::new(pool.clone(), namespace.clone())
+        .with_clock(std::sync::Arc::new(|| {
+            fhir_core::FhirInstant::parse("2026-09-06T04:00:00.000Z").expect("fixed instant")
+        }));
+    store.migrate().await.expect("the schema applies");
+    Some((store, pool, namespace))
 }

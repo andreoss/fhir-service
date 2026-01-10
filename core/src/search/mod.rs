@@ -19,7 +19,7 @@ pub use modifier::Modifier;
 pub use parameter::ParameterSpec;
 pub use path::select;
 pub use registry::{
-    common, lookup, references, CompositeDef, ParamDef, ParamStatus, RegisteredParam, Registry,
+    common, for_type, lookup, references, CompositeDef, ParamDef, ParamStatus, RegisteredParam, Registry,
     SubDef, Target,
 };
 pub use value::{Comparator, SearchValue, Token, TokenSystem, ValueType};

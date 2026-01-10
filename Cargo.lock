@@ -288,6 +288,8 @@ dependencies = [
  "async-trait",
  "fhir-core",
  "fhir-store",
+ "fhir-store-contract",
+ "serde_json",
  "sqlx",
  "tokio",
 ]
