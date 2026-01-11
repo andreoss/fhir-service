@@ -189,3 +189,87 @@ fn the_service_serves_every_interaction_over_the_relational_backend() {
     stop(child);
     drop_schema(&namespace);
 }
+
+fn bundle_body(kind: &str, entries: &str) -> Vec<u8> {
+    format!(r#"{{"resourceType":"Bundle","type":"{kind}","entry":[{entries}]}}"#).into_bytes()
+}
+
+fn entry(method: &str, url: &str, resource: &str) -> String {
+    match resource.is_empty() {
+        true => format!(r#"{{"request":{{"method":"{method}","url":"{url}"}}}}"#),
+        false => format!(
+            r#"{{"resource":{resource},"request":{{"method":"{method}","url":"{url}"}}}}"#
+        ),
+    }
+}
+
+fn patient_text(id: &str, family: &str) -> String {
+    String::from_utf8(patient(id, family, true)).expect("the fixture is text")
+}
+
+#[test]
+fn bundles_are_atomic_over_the_relational_backend() {
+    let namespace = schema();
+    let Some((child, port)) = spawn_server(&namespace) else { return };
+    let headers = [("Content-Type", "application/fhir+json")];
+
+    let applied = request(
+        port,
+        "POST",
+        "/",
+        &headers,
+        &bundle_body(
+            "transaction",
+            &format!(
+                "{},{}",
+                entry("POST", "Patient", &patient_text("bx1", "Stone")),
+                entry("POST", "Patient", &patient_text("bx2", "Rivers"))
+            ),
+        ),
+    );
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    assert_eq!(json(&applied.body)["type"], "transaction-response");
+    assert_eq!(request(port, "GET", "/Patient/bx1", &[], &[]).status, 200);
+    assert_eq!(request(port, "GET", "/Patient/bx2", &[], &[]).status, 200);
+
+    let refused = request(
+        port,
+        "POST",
+        "/",
+        &headers,
+        &bundle_body(
+            "transaction",
+            &format!(
+                "{},{}",
+                entry("POST", "Patient", &patient_text("bx3", "Vale")),
+                entry("POST", "Patient", &patient_text("bx1", "Stone"))
+            ),
+        ),
+    );
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    assert_eq!(request(port, "GET", "/Patient/bx3", &[], &[]).status, 404);
+
+    let mixed = request(
+        port,
+        "POST",
+        "/",
+        &headers,
+        &bundle_body(
+            "batch",
+            &format!(
+                "{},{},{}",
+                entry("POST", "Patient", &patient_text("bx4", "Marsh")),
+                entry("POST", "Patient", &patient_text("bx1", "Stone")),
+                entry("GET", "Patient?name=stone", "")
+            ),
+        ),
+    );
+    assert_eq!(mixed.status, 200, "{}", mixed.body);
+    let value = json(&mixed.body);
+    assert_eq!(value["entry"][0]["response"]["status"], "201 Created");
+    assert_eq!(value["entry"][1]["outcome"]["resourceType"], "OperationOutcome");
+    assert_eq!(value["entry"][2]["resource"]["total"], 1);
+
+    stop(child);
+    drop_schema(&namespace);
+}
