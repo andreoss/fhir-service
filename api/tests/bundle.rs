@@ -222,3 +222,117 @@ async fn a_batch_leaves_earlier_entries_in_place_when_a_later_one_fails() {
     assert_eq!(stored["active"], false);
     assert_eq!(stored["meta"]["versionId"], "2");
 }
+
+fn named(id: &str, family: &str) -> Value {
+    json!({"resourceType": "Patient", "id": id, "name": [{"family": family}], "active": true})
+}
+
+fn conditional(method: &str, url: &str, resource: Value, condition: &str) -> Value {
+    json!({
+        "resource": resource,
+        "request": {"method": method, "url": url, "ifNoneExist": condition},
+    })
+}
+
+#[tokio::test]
+async fn a_conditional_create_entry_resolves_against_stored_state() {
+    let app = service();
+    request(&app, "POST", "/Patient", &[], named("cd-1", "Stone").to_string().as_bytes()).await;
+    let sent = bundle(
+        "transaction",
+        vec![conditional("POST", "Patient", named("cd-2", "Stone"), "family=Stone")],
+    );
+    let (status, body) = post(&app, &sent).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(statuses(&body)[0], "200 OK");
+    assert_eq!(body["entry"][0]["resource"]["id"], "cd-1");
+    assert_eq!(request(&app, "GET", "/Patient/cd-2", &[], &[]).await.status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn a_conditional_entry_sees_a_write_made_earlier_in_the_same_transaction() {
+    let app = service();
+    let sent = bundle(
+        "transaction",
+        vec![
+            write("POST", "Patient", named("cd-3", "Rivers")),
+            conditional("POST", "Patient", named("cd-4", "Rivers"), "family=Rivers"),
+        ],
+    );
+    let (status, body) = post(&app, &sent).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(statuses(&body)[1], "200 OK");
+    assert_eq!(body["entry"][1]["resource"]["id"], "cd-3");
+    assert_eq!(request(&app, "GET", "/Patient/cd-4", &[], &[]).await.status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn a_conditional_update_entry_selects_the_resource_to_replace() {
+    let app = service();
+    request(&app, "POST", "/Patient", &[], named("cd-5", "Brook").to_string().as_bytes()).await;
+    let replacement = json!({"resourceType": "Patient", "name": [{"family": "Brook"}], "active": false});
+    let sent = bundle("transaction", vec![write("PUT", "Patient?family=Brook", replacement)]);
+    let (status, body) = post(&app, &sent).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(statuses(&body)[0], "200 OK");
+    let stored: Value = serde_json::from_str(&request(&app, "GET", "/Patient/cd-5", &[], &[]).await.body).unwrap();
+    assert_eq!(stored["active"], false);
+    assert_eq!(stored["meta"]["versionId"], "2");
+}
+
+#[tokio::test]
+async fn delete_entries_run_against_current_state() {
+    let app = service();
+    request(&app, "POST", "/Patient", &[], named("cd-6", "Vale").to_string().as_bytes()).await;
+    request(&app, "POST", "/Patient", &[], named("cd-7", "Marsh").to_string().as_bytes()).await;
+    let sent = bundle(
+        "transaction",
+        vec![plain("DELETE", "Patient/cd-6"), plain("DELETE", "Patient?family=Marsh")],
+    );
+    let (status, body) = post(&app, &sent).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["entry"].as_array().unwrap().len(), 2);
+    assert_eq!(request(&app, "GET", "/Patient/cd-6", &[], &[]).await.status, StatusCode::GONE);
+    assert_eq!(request(&app, "GET", "/Patient/cd-7", &[], &[]).await.status, StatusCode::GONE);
+}
+
+#[tokio::test]
+async fn a_patch_entry_changes_the_selected_resource() {
+    let app = service();
+    request(&app, "POST", "/Patient", &[], named("cd-8", "Ford").to_string().as_bytes()).await;
+    let patch = json!([{"op": "replace", "path": "/active", "value": false}]);
+    let sent = bundle("transaction", vec![write("PATCH", "Patient/cd-8", patch)]);
+    let (status, body) = post(&app, &sent).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(statuses(&body)[0], "200 OK");
+    let stored: Value = serde_json::from_str(&request(&app, "GET", "/Patient/cd-8", &[], &[]).await.body).unwrap();
+    assert_eq!(stored["active"], false);
+}
+
+#[tokio::test]
+async fn a_search_entry_returns_a_result_set() {
+    let app = service();
+    request(&app, "POST", "/Patient", &[], named("cd-9", "Quarry").to_string().as_bytes()).await;
+    let sent = bundle("batch", vec![plain("GET", "Patient?family=Quarry")]);
+    let (status, body) = post(&app, &sent).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(statuses(&body)[0], "200 OK");
+    assert_eq!(body["entry"][0]["resource"]["resourceType"], "Bundle");
+    assert_eq!(body["entry"][0]["resource"]["type"], "searchset");
+    assert_eq!(body["entry"][0]["resource"]["entry"][0]["resource"]["id"], "cd-9");
+}
+
+#[tokio::test]
+async fn a_search_entry_in_a_transaction_sees_the_uncommitted_writes() {
+    let app = service();
+    let sent = bundle(
+        "transaction",
+        vec![
+            write("POST", "Patient", named("cd-10", "Hollow")),
+            plain("GET", "Patient?family=Hollow"),
+        ],
+    );
+    let (status, body) = post(&app, &sent).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["entry"][1]["resource"]["total"], 1);
+}
