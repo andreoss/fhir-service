@@ -785,7 +785,7 @@ fn bundles_are_processed_over_http() {
         ),
     );
     assert_eq!(refused.status, 400, "{}", refused.body);
-    assert_eq!(issue_code(&refused.body).is_empty(), false);
+    assert!(!issue_code(&refused.body).is_empty());
     assert_eq!(request(port, "GET", "/Patient/bn-3", &[], &[]).status, 404);
 
     let mixed = request(

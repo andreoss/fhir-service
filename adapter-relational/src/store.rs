@@ -1,3 +1,4 @@
+use crate::compile::Bind;
 use crate::extract::{rows_of, Rows};
 use crate::fault::{self, Policy};
 use crate::migration::Migrator;
@@ -8,11 +9,12 @@ use fhir_core::search::{for_type, ParamDef, ParameterSpec};
 use fhir_core::{Error, ResourceEnvelope, ResourceId, VersionId};
 use fhir_store::{
     system_clock, Clock, HistoryOrder, HistoryPage, HistoryQuery, HistoryScope, IndexReport,
-    PlanCache, PlanStat, ResourceStore, SearchPage, SearchQuery,
+    PlanCache, PlanStat, ResourceStore, SearchPage, SearchQuery, StoreScope,
 };
 use serde_json::Value;
 use sqlx::postgres::PgRow;
-use sqlx::{PgPool, Postgres, Row, Transaction};
+use sqlx::{PgConnection, PgPool, Postgres, Row, Transaction};
+use tokio::sync::{Mutex, OwnedMutexGuard};
 use std::collections::HashMap;
 use crate::throttle::{Admission, Throttle};
 use std::sync::{Arc, RwLock};
@@ -56,10 +58,46 @@ pub struct RelationalStore {
     pool: PgPool,
     namespace: Namespace,
     clock: Clock,
-    plans: PlanCache,
-    custom: RwLock<HashMap<String, (ParameterSpec, IndexReport)>>,
+    plans: Arc<PlanCache>,
+    custom: Arc<RwLock<HashMap<String, (ParameterSpec, IndexReport)>>>,
     policy: Policy,
-    throttle: Throttle,
+    throttle: Arc<Throttle>,
+    source: Source,
+}
+
+#[derive(Clone)]
+enum Source {
+    Pool,
+    Held(Held),
+}
+
+type Held = Arc<Mutex<Option<Transaction<'static, Postgres>>>>;
+
+pub(crate) enum Work {
+    Owned(Transaction<'static, Postgres>),
+    Held(OwnedMutexGuard<Option<Transaction<'static, Postgres>>>),
+}
+
+impl Work {
+    pub(crate) fn conn(&mut self) -> Result<&mut PgConnection, Error> {
+        match self {
+            Work::Owned(transaction) => Ok(transaction),
+            Work::Held(guard) => match guard.as_mut() {
+                Some(transaction) => Ok(transaction),
+                None => Err(Error::Internal("the scope is closed".to_owned())),
+            },
+        }
+    }
+
+    pub(crate) async fn done(self) -> Result<(), Error> {
+        match self {
+            Work::Owned(transaction) => transaction
+                .commit()
+                .await
+                .map_err(|error| faulted("committing a write", error)),
+            Work::Held(_) => Ok(()),
+        }
+    }
 }
 
 impl RelationalStore {
@@ -68,10 +106,11 @@ impl RelationalStore {
             pool,
             namespace,
             clock: system_clock(),
-            plans: PlanCache::new(),
-            custom: RwLock::new(HashMap::new()),
+            plans: Arc::new(PlanCache::new()),
+            custom: Arc::new(RwLock::new(HashMap::new())),
             policy: Policy::default(),
-            throttle: Throttle::default(),
+            throttle: Arc::new(Throttle::default()),
+            source: Source::Pool,
         }
     }
 
@@ -102,7 +141,10 @@ impl RelationalStore {
     }
 
     pub fn with_throttle(self, throttle: Throttle) -> RelationalStore {
-        RelationalStore { throttle, ..self }
+        RelationalStore {
+            throttle: Arc::new(throttle),
+            ..self
+        }
     }
 
     pub fn policy(&self) -> &Policy {
@@ -176,9 +218,132 @@ impl RelationalStore {
             .and_then(|custom| custom.get(url).map(|(_, report)| report.clone()))
     }
 
+    pub(crate) async fn work(&self) -> Result<Work, Error> {
+        match &self.source {
+            Source::Pool => Ok(Work::Owned(
+                self.pool
+                    .begin()
+                    .await
+                    .map_err(|error| faulted("starting a write", error))?,
+            )),
+            Source::Held(held) => Ok(Work::Held(Arc::clone(held).lock_owned().await)),
+        }
+    }
+
+    fn held(&self) -> bool {
+        matches!(self.source, Source::Held(_))
+    }
+
+    fn sharing(&self, source: Source) -> RelationalStore {
+        RelationalStore {
+            pool: self.pool.clone(),
+            namespace: self.namespace.clone(),
+            clock: Arc::clone(&self.clock),
+            plans: Arc::clone(&self.plans),
+            custom: Arc::clone(&self.custom),
+            policy: self.policy,
+            throttle: Arc::clone(&self.throttle),
+            source,
+        }
+    }
+
+    pub(crate) async fn listed(
+        &self,
+        statement: &str,
+        binds: &[Bind],
+        context: &str,
+    ) -> Result<Vec<PgRow>, Error> {
+        match self.held() {
+            false => {
+                fault::retried(&self.policy, context, || {
+                    crate::query::apply(statement, binds).fetch_all(&self.pool)
+                })
+                .await
+            }
+            true => {
+                let mut work = self.work().await?;
+                crate::query::apply(statement, binds)
+                    .fetch_all(work.conn()?)
+                    .await
+                    .map_err(|error| faulted(context, error))
+            }
+        }
+    }
+
+    pub(crate) async fn only(
+        &self,
+        statement: &str,
+        binds: &[Bind],
+        context: &str,
+    ) -> Result<PgRow, Error> {
+        match self.held() {
+            false => {
+                fault::retried(&self.policy, context, || {
+                    crate::query::apply(statement, binds).fetch_one(&self.pool)
+                })
+                .await
+            }
+            true => {
+                let mut work = self.work().await?;
+                crate::query::apply(statement, binds)
+                    .fetch_one(work.conn()?)
+                    .await
+                    .map_err(|error| faulted(context, error))
+            }
+        }
+    }
+
+    pub(crate) async fn perhaps(
+        &self,
+        statement: &str,
+        binds: &[Bind],
+        context: &str,
+    ) -> Result<Option<PgRow>, Error> {
+        match self.held() {
+            false => {
+                fault::retried(&self.policy, context, || {
+                    crate::query::apply(statement, binds).fetch_optional(&self.pool)
+                })
+                .await
+            }
+            true => {
+                let mut work = self.work().await?;
+                crate::query::apply(statement, binds)
+                    .fetch_optional(work.conn()?)
+                    .await
+                    .map_err(|error| faulted(context, error))
+            }
+        }
+    }
+
+    pub(crate) async fn ran(
+        &self,
+        statement: &str,
+        binds: &[Bind],
+        context: &str,
+    ) -> Result<u64, Error> {
+        match self.held() {
+            false => {
+                let done = fault::retried(&self.policy, context, || {
+                    crate::query::apply(statement, binds).execute(&self.pool)
+                })
+                .await?;
+                Ok(done.rows_affected())
+            }
+            true => {
+                let mut work = self.work().await?;
+                let done = crate::query::apply(statement, binds)
+                    .execute(work.conn()?)
+                    .await
+                    .map_err(|error| faulted(context, error))?;
+                Ok(done.rows_affected())
+            }
+        }
+    }
+
     async fn current_in(
         &self,
-        transaction: &mut Transaction<'_, Postgres>,
+        transaction: &mut PgConnection,
         id: &ResourceId,
         lock: bool,
     ) -> Result<Option<Current>, Error> {
@@ -189,7 +354,7 @@ impl RelationalStore {
         );
         let found = sqlx::query(&statement)
             .bind(id.as_str())
-            .fetch_optional(&mut **transaction)
+            .fetch_optional(&mut *transaction)
             .await
             .map_err(|error| faulted("reading the current version", error))?;
         found.map(|row| Record::of(&row)).transpose()
@@ -197,14 +362,14 @@ impl RelationalStore {
 
     async fn clear_index(
         &self,
-        transaction: &mut Transaction<'_, Postgres>,
+        transaction: &mut PgConnection,
         surrogate: i64,
     ) -> Result<(), Error> {
         for table in INDEX_TABLES {
             let statement = format!("delete from {} where surrogate_id = $1", self.table(table));
             sqlx::query(&statement)
                 .bind(surrogate)
-                .execute(&mut **transaction)
+                .execute(&mut *transaction)
                 .await
                 .map_err(|error| faulted("clearing index values", error))?;
         }
@@ -213,7 +378,7 @@ impl RelationalStore {
 
     async fn append(
         &self,
-        transaction: &mut Transaction<'_, Postgres>,
+        transaction: &mut PgConnection,
         previous: Option<&Current>,
         envelope: &ResourceEnvelope,
     ) -> Result<i64, Error> {
@@ -224,7 +389,7 @@ impl RelationalStore {
             );
             sqlx::query(&statement)
                 .bind(previous.surrogate)
-                .execute(&mut **transaction)
+                .execute(&mut *transaction)
                 .await
                 .map_err(|error| faulted("superseding a version", error))?;
             self.clear_index(transaction, previous.surrogate).await?;
@@ -248,7 +413,7 @@ impl RelationalStore {
             .bind(key.nanos() as i32)
             .bind(envelope.is_deleted())
             .bind(packed).bind(encoding.as_str())
-            .fetch_one(&mut **transaction)
+            .fetch_one(&mut *transaction)
             .await
             .map_err(|error| faulted("writing a version", error))?;
         let surrogate: i64 = row.try_get("surrogate_id").map_err(|error| faulted("writing a version", error))?;
@@ -262,7 +427,7 @@ impl RelationalStore {
 
     pub(crate) async fn index(
         &self,
-        transaction: &mut Transaction<'_, Postgres>,
+        transaction: &mut PgConnection,
         surrogate: i64,
         rows: &Rows,
     ) -> Result<(), Error> {
@@ -282,7 +447,7 @@ impl RelationalStore {
                 .bind(rows.tokens.iter().map(|row| row.system.clone()).collect::<Vec<Option<String>>>())
                 .bind(rows.tokens.iter().map(|row| row.code.clone()).collect::<Vec<String>>())
                 .bind(rows.tokens.iter().map(|row| row.code_tail.clone()).collect::<Vec<Option<String>>>())
-                .execute(&mut **transaction)
+                .execute(&mut *transaction)
                 .await
                 .map_err(|error| faulted("indexing coded values", error))?;
         }
@@ -301,7 +466,7 @@ impl RelationalStore {
                 .bind(rows.texts.iter().map(|row| row.ordinal).collect::<Vec<i32>>())
                 .bind(rows.texts.iter().map(|row| row.value.clone()).collect::<Vec<String>>())
                 .bind(rows.texts.iter().map(|row| row.folded.clone()).collect::<Vec<String>>())
-                .execute(&mut **transaction)
+                .execute(&mut *transaction)
                 .await
                 .map_err(|error| faulted("indexing textual values", error))?;
         }
@@ -318,7 +483,7 @@ impl RelationalStore {
                 .bind(rows.numbers.iter().map(|row| row.slot.clone()).collect::<Vec<String>>())
                 .bind(rows.numbers.iter().map(|row| row.ordinal).collect::<Vec<i32>>())
                 .bind(rows.numbers.iter().map(|row| row.value).collect::<Vec<f64>>())
-                .execute(&mut **transaction)
+                .execute(&mut *transaction)
                 .await
                 .map_err(|error| faulted("indexing decimal values", error))?;
         }
@@ -339,7 +504,7 @@ impl RelationalStore {
                 .bind(rows.dates.iter().map(|row| row.low_nanos).collect::<Vec<i32>>())
                 .bind(rows.dates.iter().map(|row| row.high_secs).collect::<Vec<i64>>())
                 .bind(rows.dates.iter().map(|row| row.high_nanos).collect::<Vec<i32>>())
-                .execute(&mut **transaction)
+                .execute(&mut *transaction)
                 .await
                 .map_err(|error| faulted("indexing spans of time", error))?;
         }
@@ -360,7 +525,7 @@ impl RelationalStore {
                 .bind(rows.quantities.iter().map(|row| row.system.clone()).collect::<Vec<Option<String>>>())
                 .bind(rows.quantities.iter().map(|row| row.code.clone()).collect::<Vec<Option<String>>>())
                 .bind(rows.quantities.iter().map(|row| row.structured).collect::<Vec<bool>>())
-                .execute(&mut **transaction)
+                .execute(&mut *transaction)
                 .await
                 .map_err(|error| faulted("indexing measured values", error))?;
         }
@@ -380,7 +545,7 @@ impl RelationalStore {
                 .bind(rows.references.iter().map(|row| row.ref_full.clone()).collect::<Vec<String>>())
                 .bind(rows.references.iter().map(|row| row.ref_id.clone()).collect::<Vec<String>>())
                 .bind(rows.references.iter().map(|row| row.ref_type.clone()).collect::<Vec<Option<String>>>())
-                .execute(&mut **transaction)
+                .execute(&mut *transaction)
                 .await
                 .map_err(|error| faulted("indexing pointers", error))?;
         }
@@ -397,7 +562,7 @@ impl RelationalStore {
                 .bind(rows.uris.iter().map(|row| row.slot.clone()).collect::<Vec<String>>())
                 .bind(rows.uris.iter().map(|row| row.ordinal).collect::<Vec<i32>>())
                 .bind(rows.uris.iter().map(|row| row.value.clone()).collect::<Vec<String>>())
-                .execute(&mut **transaction)
+                .execute(&mut *transaction)
                 .await
                 .map_err(|error| faulted("indexing identifiers", error))?;
         }
@@ -412,7 +577,7 @@ impl RelationalStore {
                 .bind(surrogate)
                 .bind(rows.sorts.iter().map(|row| row.param.clone()).collect::<Vec<String>>())
                 .bind(rows.sorts.iter().map(|row| row.sort_text.clone()).collect::<Vec<Option<String>>>())
-                .execute(&mut **transaction)
+                .execute(&mut *transaction)
                 .await
                 .map_err(|error| faulted("indexing ordering keys", error))?;
         }
@@ -505,8 +670,9 @@ impl RelationalStore {
         for (seconds, nanos) in &bounds {
             counter = counter.bind(*seconds).bind(*nanos);
         }
+        let mut work = self.work().await?;
         let total: i64 = counter
-            .fetch_one(&self.pool)
+            .fetch_one(work.conn()?)
             .await
             .map_err(|error| faulted("counting history", error))?
             .try_get("total")
@@ -525,7 +691,7 @@ impl RelationalStore {
         let rows = lister
             .bind(limit)
             .bind(offset)
-            .fetch_all(&self.pool)
+            .fetch_all(work.conn()?)
             .await
             .map_err(|error| faulted("reading history", error))?;
         Ok((rows, total))
@@ -544,12 +710,8 @@ fn bind_count(
 impl ResourceStore for RelationalStore {
     async fn create(&self, envelope: ResourceEnvelope) -> Result<ResourceEnvelope, Error> {
         let _place = self.admit().await?;
-        let mut transaction = self
-            .pool
-            .begin()
-            .await
-            .map_err(|error| faulted("starting a write", error))?;
-        if self.current_in(&mut transaction, envelope.id(), true).await?.is_some() {
+        let mut work = self.work().await?;
+        if self.current_in(work.conn()?, envelope.id(), true).await?.is_some() {
             return Err(Error::Duplicate(format!(
                 "id {:?} already exists",
                 envelope.id().as_str()
@@ -557,11 +719,8 @@ impl ResourceStore for RelationalStore {
         }
         let first: VersionId = "1".parse()?;
         let stored = envelope.stored_with(first, (self.clock)())?;
-        self.append(&mut transaction, None, &stored).await?;
-        transaction
-            .commit()
-            .await
-            .map_err(|error| faulted("committing a write", error))?;
+        self.append(work.conn()?, None, &stored).await?;
+        work.done().await?;
         Ok(stored)
     }
 
@@ -571,10 +730,8 @@ impl ResourceStore for RelationalStore {
             "select {COLUMNS} from {} where resource_id = $1 and is_current",
             self.table("resource")
         );
-        let row = fault::retried(&self.policy, "reading a resource", || {
-            sqlx::query(&statement).bind(id.as_str()).fetch_optional(&self.pool)
-        })
-        .await?;
+        let binds = [Bind::Text(id.as_str().to_owned())];
+        let row = self.perhaps(&statement, &binds, "reading a resource").await?;
         match row {
             Some(row) => envelope_of(&row),
             None => Err(Error::NotFound),
@@ -588,10 +745,8 @@ impl ResourceStore for RelationalStore {
             self.table("resource")
         );
         let number = version_number(version)?;
-        let row = fault::retried(&self.policy, "reading a version", || {
-            sqlx::query(&statement).bind(id.as_str()).bind(number).fetch_optional(&self.pool)
-        })
-        .await?;
+        let binds = [Bind::Text(id.as_str().to_owned()), Bind::Big(number)];
+        let row = self.perhaps(&statement, &binds, "reading a version").await?;
         match row {
             Some(row) => envelope_of(&row),
             None => Err(Error::NotFound),
@@ -604,12 +759,8 @@ impl ResourceStore for RelationalStore {
         expected_version: Option<&VersionId>,
     ) -> Result<ResourceEnvelope, Error> {
         let _place = self.admit().await?;
-        let mut transaction = self
-            .pool
-            .begin()
-            .await
-            .map_err(|error| faulted("starting a write", error))?;
-        let Some(current) = self.current_in(&mut transaction, envelope.id(), true).await? else {
+        let mut work = self.work().await?;
+        let Some(current) = self.current_in(work.conn()?, envelope.id(), true).await? else {
             return Err(Error::NotFound);
         };
         if let Some(expected) = expected_version {
@@ -634,11 +785,8 @@ impl ResourceStore for RelationalStore {
             next_version(&current.version)?,
             (self.clock)(),
         )?;
-        self.append(&mut transaction, Some(&current), &stored).await?;
-        transaction
-            .commit()
-            .await
-            .map_err(|error| faulted("committing a write", error))?;
+        self.append(work.conn()?, Some(&current), &stored).await?;
+        work.done().await?;
         Ok(stored)
     }
 
@@ -649,13 +797,9 @@ impl ResourceStore for RelationalStore {
 
     async fn delete(&self, id: &ResourceId) -> Result<ResourceEnvelope, Error> {
         let _place = self.admit().await?;
-        let mut transaction = self
-            .pool
-            .begin()
-            .await
-            .map_err(|error| faulted("starting a write", error))?;
+        let mut work = self.work().await?;
         let current = self
-            .current_in(&mut transaction, id, true)
+            .current_in(work.conn()?, id, true)
             .await?
             .ok_or(Error::NotFound)?;
         if current.deleted {
@@ -668,11 +812,8 @@ impl ResourceStore for RelationalStore {
             next_version(&current.version)?,
             (self.clock)(),
         );
-        self.append(&mut transaction, Some(&current), &marker).await?;
-        transaction
-            .commit()
-            .await
-            .map_err(|error| faulted("committing a write", error))?;
+        self.append(work.conn()?, Some(&current), &marker).await?;
+        work.done().await?;
         Ok(marker)
     }
 
@@ -682,11 +823,8 @@ impl ResourceStore for RelationalStore {
             "delete from {} where resource_id = $1",
             self.table("resource")
         );
-        let removed = fault::retried(&self.policy, "removing a resource", || {
-            sqlx::query(&statement).bind(id.as_str()).execute(&self.pool)
-        })
-        .await?;
-        match removed.rows_affected() {
+        let binds = [Bind::Text(id.as_str().to_owned())];
+        match self.ran(&statement, &binds, "removing a resource").await? {
             0 => Err(Error::NotFound),
             _ => Ok(()),
         }
@@ -694,12 +832,8 @@ impl ResourceStore for RelationalStore {
 
     async fn purge_history(&self, id: &ResourceId) -> Result<usize, Error> {
         let _place = self.admit().await?;
-        let mut transaction = self
-            .pool
-            .begin()
-            .await
-            .map_err(|error| faulted("starting a purge", error))?;
-        if self.current_in(&mut transaction, id, true).await?.is_none() {
+        let mut work = self.work().await?;
+        if self.current_in(work.conn()?, id, true).await?.is_none() {
             return Err(Error::NotFound);
         }
         let statement = format!(
@@ -708,13 +842,10 @@ impl ResourceStore for RelationalStore {
         );
         let removed = sqlx::query(&statement)
             .bind(id.as_str())
-            .execute(&mut *transaction)
+            .execute(work.conn()?)
             .await
             .map_err(|error| faulted("purging history", error))?;
-        transaction
-            .commit()
-            .await
-            .map_err(|error| faulted("committing a purge", error))?;
+        work.done().await?;
         Ok(removed.rows_affected() as usize)
     }
 
@@ -730,11 +861,10 @@ impl ResourceStore for RelationalStore {
                  order by version_number limit 1",
                 self.table("resource")
             );
-            let row = sqlx::query(&statement)
-                .bind(id.as_str())
-                .fetch_optional(&self.pool)
-                .await
-                .map_err(|error| faulted("reading a resource", error))?
+            let binds = [Bind::Text(id.as_str().to_owned())];
+            let row = self
+                .perhaps(&statement, &binds, "reading a resource")
+                .await?
                 .ok_or(Error::NotFound)?;
             let found: String = row
                 .try_get("resource_type")
@@ -775,6 +905,22 @@ impl ResourceStore for RelationalStore {
         self.reported(url)
     }
 
+    async fn begin(&self) -> Result<Arc<dyn StoreScope>, Error> {
+        if self.held() {
+            return Err(Error::Internal("a scope is already open".to_owned()));
+        }
+        let transaction = self
+            .pool
+            .begin()
+            .await
+            .map_err(|error| faulted("starting a scope", error))?;
+        let held: Held = Arc::new(Mutex::new(Some(transaction)));
+        Ok(Arc::new(RelationalScope {
+            store: Arc::new(self.sharing(Source::Held(Arc::clone(&held)))),
+            held,
+        }))
+    }
+
     fn health(&self) -> Result<(), Error> {
         match self.pool.is_closed() {
             false => Ok(()),
@@ -806,5 +952,43 @@ impl RelationalStore {
                 .map_err(|error| faulted("reclaiming space", error))?;
         }
         Ok(RECLAIMED.len())
+    }
+}
+
+pub struct RelationalScope {
+    store: Arc<RelationalStore>,
+    held: Held,
+}
+
+impl RelationalScope {
+    async fn settle(&self, keep: bool) -> Result<(), Error> {
+        let Some(transaction) = self.held.lock().await.take() else {
+            return Ok(());
+        };
+        match keep {
+            true => transaction
+                .commit()
+                .await
+                .map_err(|error| faulted("committing a scope", error)),
+            false => transaction
+                .rollback()
+                .await
+                .map_err(|error| faulted("rolling a scope back", error)),
+        }
+    }
+}
+
+#[async_trait]
+impl StoreScope for RelationalScope {
+    fn store(&self) -> Arc<dyn ResourceStore> {
+        Arc::clone(&self.store) as Arc<dyn ResourceStore>
+    }
+
+    async fn commit(&self) -> Result<(), Error> {
+        self.settle(true).await
+    }
+
+    async fn rollback(&self) -> Result<(), Error> {
+        self.settle(false).await
     }
 }

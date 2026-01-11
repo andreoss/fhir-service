@@ -27,7 +27,7 @@ const INDEX_TABLES: [&str; 7] = [
     "index_uri",
 ];
 
-fn apply<'a>(statement: &'a str, binds: &[Bind]) -> Query<'a, Postgres, PgArguments> {
+pub(crate) fn apply<'a>(statement: &'a str, binds: &[Bind]) -> Query<'a, Postgres, PgArguments> {
     let mut prepared = sqlx::query(statement);
     for bind in binds {
         prepared = match bind {
@@ -114,10 +114,7 @@ async fn code_set(store: &RelationalStore, url: &str) -> Result<Vec<SearchValue>
          and resource_type = 'ValueSet'",
         store.table("resource")
     );
-    let rows = sqlx::query(&statement)
-        .fetch_all(store.pool())
-        .await
-        .map_err(|error| faulted("reading a code set", error))?;
+    let rows = store.listed(&statement, &[], "reading a code set").await?;
     for row in &rows {
         let envelope = envelope_of(row)?;
         let body = body_of(&envelope)?;
@@ -145,11 +142,8 @@ async fn members(store: &RelationalStore, id: &fhir_core::ResourceId) -> Result<
         "select {COLUMNS} from {} where resource_id = $1 and is_current and not is_deleted",
         store.table("resource")
     );
-    let row = sqlx::query(&statement)
-        .bind(id.as_str())
-        .fetch_optional(store.pool())
-        .await
-        .map_err(|error| faulted("reading list membership", error))?;
+    let binds = [Bind::Text(id.as_str().to_owned())];
+    let row = store.perhaps(&statement, &binds, "reading list membership").await?;
     let Some(row) = row else { return Ok(Vec::new()) };
     let body = body_of(&envelope_of(&row)?)?;
     Ok(select(&body, "entry.item.reference")
@@ -266,10 +260,9 @@ async fn examined(
         }
     };
     let binds = compiler.into_binds();
-    let total: i64 = apply(&statement, &binds)
-        .fetch_one(store.pool())
-        .await
-        .map_err(|error| faulted("measuring a plan", error))?
+    let total: i64 = store
+        .only(&statement, &binds, "measuring a plan")
+        .await?
         .try_get("total")
         .map_err(|error| faulted("measuring a plan", error))?;
     Ok(total.max(0) as u64)
@@ -277,10 +270,7 @@ async fn examined(
 
 async fn estimated(store: &RelationalStore, statement: &str, binds: &[Bind]) -> Result<usize, Error> {
     let explained = format!("explain {statement}");
-    let rows = apply(&explained, binds)
-        .fetch_all(store.pool())
-        .await
-        .map_err(|error| faulted("estimating a total", error))?;
+    let rows = store.listed(&explained, binds, "estimating a total").await?;
     for row in &rows {
         let line: String = row.try_get(0).unwrap_or_default();
         if let Some(rest) = line.split("rows=").nth(1) {
@@ -298,10 +288,7 @@ async fn fetch(
     statement: &str,
     binds: &[Bind],
 ) -> Result<Vec<ResourceEnvelope>, Error> {
-    let rows: Vec<PgRow> = crate::fault::retried(store.policy(), "running a search", || {
-        apply(statement, binds).fetch_all(store.pool())
-    })
-    .await?;
+    let rows: Vec<PgRow> = store.listed(statement, binds, "running a search").await?;
     rows.iter().map(envelope_of).collect()
 }
 
@@ -482,10 +469,9 @@ pub async fn run(store: &RelationalStore, query: &SearchQuery) -> Result<SearchP
     let total = match query.total {
         TotalMode::None => None,
         TotalMode::Accurate => {
-            let row = crate::fault::retried(store.policy(), "counting matches", || {
-                apply(&counting, &selected.binds).fetch_one(store.pool())
-            })
-            .await?;
+            let row = store
+                .only(&counting, &selected.binds, "counting matches")
+                .await?;
             let found: i64 = row
                 .try_get("total")
                 .map_err(|error| faulted("counting matches", error))?;
@@ -510,11 +496,8 @@ pub async fn run(store: &RelationalStore, query: &SearchQuery) -> Result<SearchP
 pub async fn drop_index(store: &RelationalStore, url: &str) -> Result<(), Error> {
     for table in INDEX_TABLES {
         let statement = format!("delete from {} where param = $1", store.table(table));
-        sqlx::query(&statement)
-            .bind(url)
-            .execute(store.pool())
-            .await
-            .map_err(|error| faulted("dropping an index", error))?;
+        let binds = [Bind::Text(url.to_owned())];
+        store.ran(&statement, &binds, "dropping an index").await?;
     }
     Ok(())
 }
@@ -533,11 +516,10 @@ pub async fn reindex(
              and resource_type = any($1) order by surrogate_id",
             store.table("resource")
         );
-        let rows = sqlx::query(&statement)
-            .bind(names)
-            .fetch_all(store.pool())
-            .await
-            .map_err(|error| faulted("reading resources to index", error))?;
+        let binds = [Bind::Texts(names)];
+        let rows = store
+            .listed(&statement, &binds, "reading resources to index")
+            .await?;
         for row in &rows {
             let envelope = envelope_of(row)?;
             let surrogate: i64 = row
@@ -571,16 +553,9 @@ pub async fn reindex(
                             .filter(|row| row.code_tail.is_some())
                             .count();
                     }
-                    let mut transaction = store
-                        .pool()
-                        .begin()
-                        .await
-                        .map_err(|error| faulted("starting an index write", error))?;
-                    store.index(&mut transaction, surrogate, &rows).await?;
-                    transaction
-                        .commit()
-                        .await
-                        .map_err(|error| faulted("committing an index write", error))?;
+                    let mut work = store.work().await?;
+                    store.index(work.conn()?, surrogate, &rows).await?;
+                    work.done().await?;
                 }
             }
         }
