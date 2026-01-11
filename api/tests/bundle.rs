@@ -146,3 +146,79 @@ async fn a_nested_bundle_entry_is_rejected() {
     let (status, _) = post(&app, &bundle("transaction", vec![write("POST", "", inner)])).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
+
+#[tokio::test]
+async fn a_batch_reports_one_outcome_per_entry() {
+    let app = service();
+    let sent = bundle(
+        "batch",
+        vec![
+            write("POST", "Patient", patient("ba-1", true)),
+            write("POST", "Nonesuch", patient("ba-2", true)),
+            write("POST", "Patient", patient("ba-3", true)),
+        ],
+    );
+    let (status, body) = post(&app, &sent).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["type"], "batch-response");
+    let reported = statuses(&body);
+    assert_eq!(reported[0], "201 Created");
+    assert!(reported[1].starts_with("400"));
+    assert_eq!(reported[2], "201 Created");
+    assert_eq!(body["entry"][1]["outcome"]["resourceType"], "OperationOutcome");
+    assert!(body["entry"][1].get("resource").is_none());
+    assert_eq!(request(&app, "GET", "/Patient/ba-1", &[], &[]).await.status, StatusCode::OK);
+    assert_eq!(request(&app, "GET", "/Patient/ba-3", &[], &[]).await.status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn a_malformed_batch_entry_fails_only_itself() {
+    let app = service();
+    let sent = bundle(
+        "batch",
+        vec![
+            json!({"request": {"method": "SING", "url": "Patient"}}),
+            write("POST", "Patient", patient("ba-4", true)),
+        ],
+    );
+    let (status, body) = post(&app, &sent).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(statuses(&body)[0].starts_with("400"));
+    assert_eq!(statuses(&body)[1], "201 Created");
+    assert_eq!(request(&app, "GET", "/Patient/ba-4", &[], &[]).await.status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn a_malformed_transaction_entry_fails_the_bundle() {
+    let app = service();
+    let sent = bundle(
+        "transaction",
+        vec![
+            write("POST", "Patient", patient("ba-5", true)),
+            json!({"request": {"method": "SING", "url": "Patient"}}),
+        ],
+    );
+    let (status, _) = post(&app, &sent).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(request(&app, "GET", "/Patient/ba-5", &[], &[]).await.status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn a_batch_leaves_earlier_entries_in_place_when_a_later_one_fails() {
+    let app = service();
+    request(&app, "POST", "/Patient", &[], patient("ba-6", true).to_string().as_bytes()).await;
+    let sent = bundle(
+        "batch",
+        vec![
+            write("PUT", "Patient/ba-6", patient("ba-6", false)),
+            write("POST", "Patient", patient("ba-6", true)),
+        ],
+    );
+    let (_, body) = post(&app, &sent).await;
+    assert_eq!(statuses(&body)[0], "200 OK");
+    assert!(statuses(&body)[1].starts_with("409"));
+    let after = request(&app, "GET", "/Patient/ba-6", &[], &[]).await;
+    let stored: Value = serde_json::from_str(&after.body).unwrap();
+    assert_eq!(stored["active"], false);
+    assert_eq!(stored["meta"]["versionId"], "2");
+}

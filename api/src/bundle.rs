@@ -58,7 +58,7 @@ struct Entry {
 
 struct Incoming {
     kind: Kind,
-    entries: Vec<Entry>,
+    entries: Vec<Result<Entry, Error>>,
 }
 
 impl Incoming {
@@ -79,7 +79,7 @@ impl Incoming {
             Value::Array(entries) => entries.clone(),
             _ => return Err(Error::InvalidEnvelope("bundle entries are a list".to_owned())),
         };
-        let entries = listed.iter().map(Entry::parse).collect::<Result<Vec<_>, _>>()?;
+        let entries = listed.iter().map(Entry::parse).collect();
         Ok(Incoming { kind, entries })
     }
 }
@@ -187,7 +187,7 @@ fn spelled(status: StatusCode) -> String {
 async fn transaction(
     state: &AppState,
     headers: &HeaderMap,
-    entries: &[Entry],
+    entries: &[Result<Entry, Error>],
 ) -> Result<Response, AppError> {
     let scope = state.store.begin().await?;
     let router = crate::app::over(state, scope.store());
@@ -205,7 +205,7 @@ async fn transaction(
     Ok(replied(Kind::Transaction, listed))
 }
 
-async fn batch(state: &AppState, headers: &HeaderMap, entries: &[Entry]) -> Response {
+async fn batch(state: &AppState, headers: &HeaderMap, entries: &[Result<Entry, Error>]) -> Response {
     let router = crate::app::over(state, std::sync::Arc::clone(&state.store));
     let mut listed = Vec::with_capacity(entries.len());
     for entry in entries {
@@ -214,9 +214,12 @@ async fn batch(state: &AppState, headers: &HeaderMap, entries: &[Entry]) -> Resp
     replied(Kind::Batch, listed)
 }
 
-fn ordered(entries: &[Entry]) -> Vec<usize> {
+fn ordered(entries: &[Result<Entry, Error>]) -> Vec<usize> {
     let mut indexes: Vec<usize> = (0..entries.len()).collect();
-    indexes.sort_by_key(|index| rank(&entries[*index].method));
+    indexes.sort_by_key(|index| match &entries[*index] {
+        Ok(entry) => rank(&entry.method),
+        Err(_) => 0,
+    });
     indexes
 }
 
@@ -243,11 +246,15 @@ fn replied(kind: Kind, entries: Vec<Value>) -> Response {
         .into_response()
 }
 
-async fn dispatch(router: &Router<()>, outer: &HeaderMap, entry: &Entry) -> Taken {
+async fn dispatch(router: &Router<()>, outer: &HeaderMap, entry: &Result<Entry, Error>) -> Taken {
+    let entry = match entry {
+        Err(error) => return refused(error),
+        Ok(entry) => entry,
+    };
     match built(outer, entry) {
-        Err(error) => refused(error),
+        Err(error) => refused(&error),
         Ok(request) => match router.clone().oneshot(request).await {
-            Err(_) => refused(Error::Internal("an entry was not dispatched".to_owned())),
+            Err(_) => refused(&Error::Internal("an entry was not dispatched".to_owned())),
             Ok(response) => collected(response).await,
         },
     }
@@ -279,7 +286,7 @@ fn host_of(headers: &HeaderMap) -> HeaderValue {
         .unwrap_or_else(|| HeaderValue::from_static("localhost"))
 }
 
-fn refused(error: Error) -> Taken {
+fn refused(error: &Error) -> Taken {
     let outcome = error.to_operation_outcome();
     let status =
         StatusCode::from_u16(outcome.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
