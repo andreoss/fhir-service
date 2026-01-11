@@ -24,6 +24,7 @@ pub struct AppState {
     pub dependencies: Arc<Vec<Dependency>>,
     pub registry: Arc<Registry>,
     pub parameters: Arc<tokio::sync::Mutex<()>>,
+    pub entries: Arc<tokio::sync::Semaphore>,
 }
 
 #[derive(Clone)]
@@ -50,6 +51,16 @@ impl Service {
                 dependencies: Arc::new(dependencies),
                 registry: Arc::new(Registry::new()),
                 parameters: Arc::new(tokio::sync::Mutex::new(())),
+                entries: Arc::new(tokio::sync::Semaphore::new(crate::bundle::ENTRIES_AT_ONCE)),
+            },
+        }
+    }
+
+    pub fn with_entries(self, limit: usize) -> Service {
+        Service {
+            state: AppState {
+                entries: Arc::new(tokio::sync::Semaphore::new(limit.max(1))),
+                ..self.state
             },
         }
     }

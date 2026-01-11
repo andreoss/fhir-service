@@ -8,6 +8,8 @@ use fhir_core::search::Grant;
 use fhir_core::{Error, ResourceType};
 use http_body_util::BodyExt;
 use serde_json::{json, Map, Value};
+use std::sync::Arc;
+use tokio::task::JoinSet;
 use tower::ServiceExt;
 
 use crate::app::AppState;
@@ -21,6 +23,8 @@ const BATCH: &str = "batch";
 const IF_NONE_EXIST: &str = "if-none-exist";
 const SCOPE: &str = "x-scope";
 
+pub const ENTRIES_AT_ONCE: usize = 8;
+
 pub async fn process(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -30,11 +34,10 @@ pub async fn process(
         serde_json::from_slice(&body).map_err(|error| Error::InvalidJson(error.to_string()))?;
     let incoming = Incoming::parse(&value)?;
     let grant = granted(&headers)?;
+    let entries = Arc::new(incoming.entries);
     match incoming.kind {
-        Kind::Transaction => {
-            transaction(&state, &headers, &incoming.entries, grant.as_ref()).await
-        }
-        Kind::Batch => Ok(batch(&state, &headers, &incoming.entries, grant.as_ref()).await),
+        Kind::Transaction => transaction(&state, &headers, &entries, grant.as_ref()).await,
+        Kind::Batch => Ok(batch(&state, &headers, &entries, grant.as_ref()).await),
     }
 }
 
@@ -213,13 +216,29 @@ async fn transaction(
 async fn batch(
     state: &AppState,
     headers: &HeaderMap,
-    entries: &[Result<Entry, Error>],
+    entries: &Arc<Vec<Result<Entry, Error>>>,
     grant: Option<&Grant>,
 ) -> Response {
-    let router = crate::app::over(state, std::sync::Arc::clone(&state.store));
-    let mut listed = Vec::with_capacity(entries.len());
-    for entry in entries {
-        listed.push(dispatch(&router, headers, entry, grant).await.to_entry());
+    let router = crate::app::over(state, Arc::clone(&state.store));
+    let mut running = JoinSet::new();
+    for index in 0..entries.len() {
+        let router = router.clone();
+        let headers = headers.clone();
+        let entries = Arc::clone(entries);
+        let grant = grant.cloned();
+        let gate = Arc::clone(&state.entries);
+        running.spawn(async move {
+            let _permit = gate.acquire().await;
+            let taken = dispatch(&router, &headers, &entries[index], grant.as_ref()).await;
+            (index, taken.to_entry())
+        });
+    }
+    let mut listed = vec![Value::Null; entries.len()];
+    while let Some(joined) = running.join_next().await {
+        match joined {
+            Ok((index, entry)) => listed[index] = entry,
+            Err(_) => continue,
+        }
     }
     replied(Kind::Batch, listed)
 }

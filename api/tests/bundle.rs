@@ -415,3 +415,196 @@ async fn a_delete_entry_outside_the_scope_is_refused() {
     assert!(statuses(&body)[0].starts_with("403"));
     assert_eq!(request(&app, "GET", "/Observation/au-8", &[], &[]).await.status, StatusCode::OK);
 }
+
+use async_trait::async_trait;
+use fhir_core::search::ParameterSpec;
+use fhir_core::{Error, ResourceEnvelope, ResourceId, VersionId};
+use fhir_store::{
+    HistoryPage, HistoryQuery, HistoryScope, IndexReport, ResourceStore, SearchPage, SearchQuery,
+    StoreScope,
+};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
+
+#[derive(Clone)]
+struct Counter {
+    live: Arc<AtomicUsize>,
+    peak: Arc<AtomicUsize>,
+}
+
+impl Counter {
+    fn new() -> Counter {
+        Counter {
+            live: Arc::new(AtomicUsize::new(0)),
+            peak: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    fn entered(&self) {
+        let live = self.live.fetch_add(1, Ordering::SeqCst) + 1;
+        self.peak.fetch_max(live, Ordering::SeqCst);
+    }
+
+    fn left(&self) {
+        self.live.fetch_sub(1, Ordering::SeqCst);
+    }
+
+    fn peak(&self) -> usize {
+        self.peak.load(Ordering::SeqCst)
+    }
+}
+
+struct Probe {
+    inner: Arc<dyn ResourceStore>,
+    counter: Counter,
+}
+
+#[async_trait]
+impl ResourceStore for Probe {
+    async fn create(&self, envelope: ResourceEnvelope) -> Result<ResourceEnvelope, Error> {
+        self.counter.entered();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let stored = self.inner.create(envelope).await;
+        self.counter.left();
+        stored
+    }
+
+    async fn read(&self, id: &ResourceId) -> Result<ResourceEnvelope, Error> {
+        self.inner.read(id).await
+    }
+
+    async fn vread(&self, id: &ResourceId, version: &VersionId) -> Result<ResourceEnvelope, Error> {
+        self.inner.vread(id, version).await
+    }
+
+    async fn update(
+        &self,
+        envelope: ResourceEnvelope,
+        expected_version: Option<&VersionId>,
+    ) -> Result<ResourceEnvelope, Error> {
+        self.inner.update(envelope, expected_version).await
+    }
+
+    async fn search(&self, query: &SearchQuery) -> Result<SearchPage, Error> {
+        self.inner.search(query).await
+    }
+
+    async fn delete(&self, id: &ResourceId) -> Result<ResourceEnvelope, Error> {
+        self.inner.delete(id).await
+    }
+
+    async fn hard_delete(&self, id: &ResourceId) -> Result<(), Error> {
+        self.inner.hard_delete(id).await
+    }
+
+    async fn purge_history(&self, id: &ResourceId) -> Result<usize, Error> {
+        self.inner.purge_history(id).await
+    }
+
+    async fn history(
+        &self,
+        scope: &HistoryScope,
+        query: &HistoryQuery,
+    ) -> Result<HistoryPage, Error> {
+        self.inner.history(scope, query).await
+    }
+
+    async fn index_parameter(&self, spec: &ParameterSpec) -> Result<IndexReport, Error> {
+        self.inner.index_parameter(spec).await
+    }
+
+    async fn begin(&self) -> Result<Arc<dyn StoreScope>, Error> {
+        let inner = self.inner.begin().await?;
+        Ok(Arc::new(ProbeScope {
+            inner,
+            counter: self.counter.clone(),
+        }))
+    }
+
+    fn health(&self) -> Result<(), Error> {
+        self.inner.health()
+    }
+}
+
+struct ProbeScope {
+    inner: Arc<dyn StoreScope>,
+    counter: Counter,
+}
+
+#[async_trait]
+impl StoreScope for ProbeScope {
+    fn store(&self) -> Arc<dyn ResourceStore> {
+        Arc::new(Probe {
+            inner: self.inner.store(),
+            counter: self.counter.clone(),
+        })
+    }
+
+    async fn commit(&self) -> Result<(), Error> {
+        self.inner.commit().await
+    }
+
+    async fn rollback(&self) -> Result<(), Error> {
+        self.inner.rollback().await
+    }
+}
+
+fn watched(limit: usize) -> (Service, Counter) {
+    let counter = Counter::new();
+    let inner: Arc<dyn ResourceStore> = Arc::new(MemoryStore::with_clock(Arc::new(|| {
+        FhirInstant::parse("2026-09-06T04:00:00.000Z").unwrap()
+    })));
+    let store = Arc::new(Probe {
+        inner,
+        counter: counter.clone(),
+    });
+    let service = Service::new(store, FhirVersion::R4, Vec::new()).with_entries(limit);
+    (service, counter)
+}
+
+fn creates(count: usize, prefix: &str) -> Vec<Value> {
+    (0..count)
+        .map(|number| write("POST", "Patient", patient(&format!("{prefix}-{number}"), true)))
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_batch_admits_only_the_permitted_number_of_entries_at_once() {
+    let (app, counter) = watched(2);
+    let (status, body) = post(&app, &bundle("batch", creates(6, "or"))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(statuses(&body).len(), 6);
+    assert!(statuses(&body).iter().all(|status| status == "201 Created"));
+    assert!(counter.peak() <= 2, "peak {}", counter.peak());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_batch_runs_entries_side_by_side() {
+    let (app, counter) = watched(8);
+    let (status, _) = post(&app, &bundle("batch", creates(6, "os"))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(counter.peak() > 1, "peak {}", counter.peak());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_batch_answers_in_the_order_it_was_asked() {
+    let (app, _) = watched(4);
+    let (_, body) = post(&app, &bundle("batch", creates(5, "ot"))).await;
+    let located: Vec<String> = body["entry"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["response"]["location"].as_str().unwrap_or_default().to_owned())
+        .collect();
+    let expected: Vec<String> =
+        (0..5).map(|number| format!("Patient/ot-{number}/_history/1")).collect();
+    assert_eq!(located, expected);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_transaction_runs_its_entries_one_at_a_time() {
+    let (app, counter) = watched(8);
+    let (status, _) = post(&app, &bundle("transaction", creates(4, "ou"))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(counter.peak(), 1);
+}
