@@ -731,3 +731,85 @@ fn live_search_is_confined_to_the_granted_scope() {
     assert_eq!(ids(&exact.body), vec!["pt-g3".to_owned()]);
     assert_eq!(total(&miss.body), serde_json::json!(0));
 }
+
+fn bundle_body(kind: &str, entries: &str) -> Vec<u8> {
+    format!(r#"{{"resourceType":"Bundle","type":"{kind}","entry":[{entries}]}}"#).into_bytes()
+}
+
+fn entry(method: &str, url: &str, resource: &str) -> String {
+    match resource.is_empty() {
+        true => format!(r#"{{"request":{{"method":"{method}","url":"{url}"}}}}"#),
+        false => format!(
+            r#"{{"resource":{resource},"request":{{"method":"{method}","url":"{url}"}}}}"#
+        ),
+    }
+}
+
+#[test]
+fn bundles_are_processed_over_http() {
+    let (child, port) = spawn_server();
+    let headers = [("Content-Type", "application/fhir+json")];
+
+    let applied = request(
+        port,
+        "POST",
+        "/",
+        &headers,
+        &bundle_body(
+            "transaction",
+            &format!(
+                "{},{}",
+                entry("POST", "Patient", r#"{"resourceType":"Patient","id":"bn-1","active":true}"#),
+                entry("POST", "Patient", r#"{"resourceType":"Patient","id":"bn-2","active":false}"#)
+            ),
+        ),
+    );
+    assert_eq!(applied.status, 200, "transaction failed: {}", applied.body);
+    let value: serde_json::Value = serde_json::from_str(&applied.body).unwrap();
+    assert_eq!(value["type"], "transaction-response");
+    assert_eq!(value["entry"][0]["response"]["status"], "201 Created");
+    assert_eq!(request(port, "GET", "/Patient/bn-2", &[], &[]).status, 200);
+
+    let refused = request(
+        port,
+        "POST",
+        "/",
+        &headers,
+        &bundle_body(
+            "transaction",
+            &format!(
+                "{},{}",
+                entry("POST", "Patient", r#"{"resourceType":"Patient","id":"bn-3","active":true}"#),
+                entry("POST", "Nonesuch", r#"{"resourceType":"Nonesuch","id":"bn-4"}"#)
+            ),
+        ),
+    );
+    assert_eq!(refused.status, 400, "{}", refused.body);
+    assert_eq!(issue_code(&refused.body).is_empty(), false);
+    assert_eq!(request(port, "GET", "/Patient/bn-3", &[], &[]).status, 404);
+
+    let mixed = request(
+        port,
+        "POST",
+        "/",
+        &headers,
+        &bundle_body(
+            "batch",
+            &format!(
+                "{},{},{}",
+                entry("POST", "Patient", r#"{"resourceType":"Patient","id":"bn-5","active":true}"#),
+                entry("POST", "Nonesuch", r#"{"resourceType":"Nonesuch","id":"bn-6"}"#),
+                entry("GET", "Patient/bn-1", "")
+            ),
+        ),
+    );
+    assert_eq!(mixed.status, 200, "batch failed: {}", mixed.body);
+    let value: serde_json::Value = serde_json::from_str(&mixed.body).unwrap();
+    assert_eq!(value["type"], "batch-response");
+    assert_eq!(value["entry"][0]["response"]["status"], "201 Created");
+    assert_eq!(value["entry"][1]["outcome"]["resourceType"], "OperationOutcome");
+    assert_eq!(value["entry"][2]["resource"]["id"], "bn-1");
+    assert_eq!(request(port, "GET", "/Patient/bn-5", &[], &[]).status, 200);
+
+    stop(child);
+}
