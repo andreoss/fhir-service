@@ -1,14 +1,19 @@
 
 pub mod clock;
 pub mod history;
+pub mod job;
 pub mod parameter;
 pub mod plan;
 pub mod resource;
 pub mod scope;
 pub mod search;
 
-pub use clock::{system_clock, Clock};
+pub use clock::{system_clock, system_ticker, Clock, StepTicker, Ticker};
 pub use history::{HistoryOrder, HistoryPage, HistoryQuery, HistoryScope};
+pub use job::{
+    JobFilter, JobId, JobKind, JobProgress, JobRecord, JobRequest, JobResult, JobSignal, JobState,
+    JobStore, Lease,
+};
 pub use parameter::{IndexFailure, IndexReport};
 pub use plan::{Plan, PlanCache, PlanKey, PlanStat, REGRESSION_FACTOR};
 pub use resource::{ResourceStore, SearchParam, SearchParams};

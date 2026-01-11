@@ -1,8 +1,9 @@
 = FHIR Service
 
 A FHIR server. Resources are stored with every version of
-themselves and answered over HTTP: read, write, history and search.
-One store contract, more than one engine behind it.
+themselves and answered over HTTP: read, write, history, search, bundles
+and long-running bulk jobs. One store contract, more than one engine
+behind it.
 
 == Build
 
@@ -18,18 +19,18 @@ cargo run --bin fhir-host
 
 [source,http]
 ----
-GET /Patient/1
-GET /Patient?name=Smith&_count=10&_sort=-_lastUpdated
-GET /Patient/1/_history
+GET  /Patient/1
+GET  /Patient?name=Smith&_count=10&_sort=-_lastUpdated
 POST /                      # transaction and batch bundles
+GET  /$export               # submit a bulk job, then poll it by id
 ----
 
 == Layout
 
 `core` the model and its rules, `contract` the storage port and the suite
 every engine satisfies, `store` the query and index types, `adapter-memory`
-and `adapter-relational` the engines, `api` the HTTP surface, `host` the
-binary.
+and `adapter-relational` the engines, `jobs` the durable queue and the
+bulk handlers, `api` the HTTP surface, `host` the binary.
 
 `FHIR_BACKEND` chooses the engine; `FHIR_DATABASE_URL` points the relational
 one at its server.

@@ -1,5 +1,6 @@
 
 pub mod fixture;
+pub mod job;
 pub mod search;
 
 use fhir_core::Error;
