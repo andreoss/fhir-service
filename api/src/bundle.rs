@@ -4,7 +4,8 @@ use axum::http::header::{self, HeaderMap, HeaderName, HeaderValue};
 use axum::http::{Request, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Router;
-use fhir_core::Error;
+use fhir_core::search::Grant;
+use fhir_core::{Error, ResourceType};
 use http_body_util::BodyExt;
 use serde_json::{json, Map, Value};
 use tower::ServiceExt;
@@ -28,9 +29,12 @@ pub async fn process(
     let value: Value =
         serde_json::from_slice(&body).map_err(|error| Error::InvalidJson(error.to_string()))?;
     let incoming = Incoming::parse(&value)?;
+    let grant = granted(&headers)?;
     match incoming.kind {
-        Kind::Transaction => transaction(&state, &headers, &incoming.entries).await,
-        Kind::Batch => Ok(batch(&state, &headers, &incoming.entries).await),
+        Kind::Transaction => {
+            transaction(&state, &headers, &incoming.entries, grant.as_ref()).await
+        }
+        Kind::Batch => Ok(batch(&state, &headers, &incoming.entries, grant.as_ref()).await),
     }
 }
 
@@ -188,12 +192,13 @@ async fn transaction(
     state: &AppState,
     headers: &HeaderMap,
     entries: &[Result<Entry, Error>],
+    grant: Option<&Grant>,
 ) -> Result<Response, AppError> {
     let scope = state.store.begin().await?;
     let router = crate::app::over(state, scope.store());
     let mut taken: Vec<Option<Taken>> = entries.iter().map(|_| None).collect();
     for index in ordered(entries) {
-        let outcome = dispatch(&router, headers, &entries[index]).await;
+        let outcome = dispatch(&router, headers, &entries[index], grant).await;
         if outcome.failed() {
             scope.rollback().await?;
             return Ok(outcome.into_response());
@@ -205,11 +210,16 @@ async fn transaction(
     Ok(replied(Kind::Transaction, listed))
 }
 
-async fn batch(state: &AppState, headers: &HeaderMap, entries: &[Result<Entry, Error>]) -> Response {
+async fn batch(
+    state: &AppState,
+    headers: &HeaderMap,
+    entries: &[Result<Entry, Error>],
+    grant: Option<&Grant>,
+) -> Response {
     let router = crate::app::over(state, std::sync::Arc::clone(&state.store));
     let mut listed = Vec::with_capacity(entries.len());
     for entry in entries {
-        listed.push(dispatch(&router, headers, entry).await.to_entry());
+        listed.push(dispatch(&router, headers, entry, grant).await.to_entry());
     }
     replied(Kind::Batch, listed)
 }
@@ -246,11 +256,19 @@ fn replied(kind: Kind, entries: Vec<Value>) -> Response {
         .into_response()
 }
 
-async fn dispatch(router: &Router<()>, outer: &HeaderMap, entry: &Result<Entry, Error>) -> Taken {
+async fn dispatch(
+    router: &Router<()>,
+    outer: &HeaderMap,
+    entry: &Result<Entry, Error>,
+    grant: Option<&Grant>,
+) -> Taken {
     let entry = match entry {
         Err(error) => return refused(error),
         Ok(entry) => entry,
     };
+    if let Err(error) = permitted(grant, entry) {
+        return refused(&error);
+    }
     match built(outer, entry) {
         Err(error) => refused(&error),
         Ok(request) => match router.clone().oneshot(request).await {
@@ -330,4 +348,34 @@ fn trimmed(location: &str) -> String {
 
 fn named(headers: &HeaderMap, name: HeaderName) -> Option<String> {
     headers.get(name).and_then(|value| value.to_str().ok()).map(str::to_owned)
+}
+
+fn granted(headers: &HeaderMap) -> Result<Option<Grant>, Error> {
+    match headers.get(SCOPE) {
+        None => Ok(None),
+        Some(value) => {
+            let raw = value
+                .to_str()
+                .map_err(|_| Error::InvalidParameter("scope is not ascii".to_owned()))?;
+            Ok(Some(Grant::parse(raw)?))
+        }
+    }
+}
+
+fn permitted(grant: Option<&Grant>, entry: &Entry) -> Result<(), Error> {
+    let Some(grant) = grant else { return Ok(()) };
+    let Some(target) = target(&entry.url) else { return Ok(()) };
+    let Ok(kind) = target.parse::<ResourceType>() else { return Ok(()) };
+    match grant.admits(kind) {
+        true => Ok(()),
+        false => Err(Error::Forbidden(format!("type {:?}", kind.as_str()))),
+    }
+}
+
+fn target(url: &str) -> Option<&str> {
+    let head = url.split('?').next().unwrap_or_default().split('/').next().unwrap_or_default();
+    match head.is_empty() || head.starts_with('_') || head.starts_with('$') {
+        true => None,
+        false => Some(head),
+    }
 }

@@ -336,3 +336,82 @@ async fn a_search_entry_in_a_transaction_sees_the_uncommitted_writes() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["entry"][1]["resource"]["total"], 1);
 }
+
+fn observation(id: &str) -> Value {
+    json!({
+        "resourceType": "Observation",
+        "id": id,
+        "status": "final",
+        "code": {"coding": [{"system": "urn:s", "code": "c1"}]},
+    })
+}
+
+#[tokio::test]
+async fn an_unauthorized_batch_entry_fails_only_that_entry() {
+    let app = service();
+    let sent = bundle(
+        "batch",
+        vec![
+            write("POST", "Patient", patient("au-1", true)),
+            write("POST", "Observation", observation("au-2")),
+        ],
+    );
+    let reply = request(&app, "POST", "/", &[("x-scope", "types=Patient")], sent.to_string().as_bytes()).await;
+    assert_eq!(reply.status, StatusCode::OK);
+    let body: Value = serde_json::from_str(&reply.body).unwrap();
+    assert_eq!(statuses(&body)[0], "201 Created");
+    assert!(statuses(&body)[1].starts_with("403"));
+    assert_eq!(body["entry"][1]["outcome"]["resourceType"], "OperationOutcome");
+    assert_eq!(request(&app, "GET", "/Patient/au-1", &[], &[]).await.status, StatusCode::OK);
+    assert_eq!(request(&app, "GET", "/Observation/au-2", &[], &[]).await.status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn an_unauthorized_transaction_entry_fails_the_whole_bundle() {
+    let app = service();
+    let sent = bundle(
+        "transaction",
+        vec![
+            write("POST", "Patient", patient("au-3", true)),
+            write("POST", "Observation", observation("au-4")),
+        ],
+    );
+    let reply = request(&app, "POST", "/", &[("x-scope", "types=Patient")], sent.to_string().as_bytes()).await;
+    assert_eq!(reply.status, StatusCode::FORBIDDEN);
+    assert_eq!(request(&app, "GET", "/Patient/au-3", &[], &[]).await.status, StatusCode::NOT_FOUND);
+    assert_eq!(request(&app, "GET", "/Observation/au-4", &[], &[]).await.status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn an_open_scope_admits_every_entry() {
+    let app = service();
+    let sent = bundle(
+        "transaction",
+        vec![
+            write("POST", "Patient", patient("au-5", true)),
+            write("POST", "Observation", observation("au-6")),
+        ],
+    );
+    let (status, body) = post(&app, &sent).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(statuses(&body), vec!["201 Created".to_owned(), "201 Created".to_owned()]);
+}
+
+#[tokio::test]
+async fn a_malformed_scope_rejects_the_bundle() {
+    let app = service();
+    let sent = bundle("batch", vec![write("POST", "Patient", patient("au-7", true))]);
+    let reply = request(&app, "POST", "/", &[("x-scope", "types")], sent.to_string().as_bytes()).await;
+    assert_eq!(reply.status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn a_delete_entry_outside_the_scope_is_refused() {
+    let app = service();
+    request(&app, "POST", "/Observation", &[], observation("au-8").to_string().as_bytes()).await;
+    let sent = bundle("batch", vec![plain("DELETE", "Observation/au-8")]);
+    let reply = request(&app, "POST", "/", &[("x-scope", "types=Patient")], sent.to_string().as_bytes()).await;
+    let body: Value = serde_json::from_str(&reply.body).unwrap();
+    assert!(statuses(&body)[0].starts_with("403"));
+    assert_eq!(request(&app, "GET", "/Observation/au-8", &[], &[]).await.status, StatusCode::OK);
+}
