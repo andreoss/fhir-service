@@ -50,7 +50,7 @@ impl Orchestrator {
             Ok(handler) => handler,
             Err(error) => {
                 return jobs
-                    .finish(&record.id, worker, JobResult::Failed(error.to_string()))
+                    .finish(&record.id, worker, JobResult::Rejected(error.to_string()))
                     .await
             }
         };
@@ -59,7 +59,7 @@ impl Orchestrator {
             Ok(units) => units,
             Err(error) => {
                 return jobs
-                    .finish(&record.id, worker, JobResult::Failed(error.to_string()))
+                    .finish(&record.id, worker, JobResult::Rejected(error.to_string()))
                     .await
             }
         };

@@ -139,14 +139,17 @@ async fn polling_a_finished_job_answers_with_its_manifest() {
 
 #[tokio::test]
 async fn polling_a_failed_job_answers_with_an_outcome() {
-    let (jobs, _ticker) = queue();
+    let (jobs, ticker) = queue();
     let app = service(Arc::clone(&jobs) as Arc<dyn JobStore>);
     let reply = request(&app, "POST", "/$export", b"{}").await;
     let id = submitted_id(&reply);
-    jobs.claim(&fhir_store::Lease::new("one", 1_000)).await.unwrap();
-    jobs.finish(&id, "one", fhir_store::JobResult::Failed("no store".to_owned()))
-        .await
-        .unwrap();
+    while jobs.fetch(&id).await.unwrap().state != fhir_store::JobState::Failed {
+        ticker.advance(10_000);
+        jobs.claim(&fhir_store::Lease::new("one", 1_000)).await.unwrap();
+        jobs.finish(&id, "one", fhir_store::JobResult::Failed("no store".to_owned()))
+            .await
+            .unwrap();
+    }
 
     let polled = request(&app, "GET", &format!("/_jobs/{id}"), b"").await;
 

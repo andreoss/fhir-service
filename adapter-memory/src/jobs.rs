@@ -2,9 +2,11 @@ use async_trait::async_trait;
 use fhir_core::Error;
 use fhir_store::{
     system_ticker, JobFilter, JobId, JobProgress, JobRecord, JobRequest, JobResult, JobSignal,
-    JobState, JobStore, Lease, Ticker,
+    JobState, JobStore, Lease, Ticker, RETRY_BACKOFF,
 };
 use std::sync::Mutex;
+
+const STOPPED: &str = "the worker holding the lease stopped";
 
 pub struct MemoryJobStore {
     ticker: Ticker,
@@ -145,6 +147,16 @@ impl JobStore for MemoryJobStore {
                 record.outcome = Some(detail);
             }
             JobResult::Failed(message) => {
+                record.outcome = Some(message);
+                match record.attempt < record.attempts {
+                    true => {
+                        record.state = JobState::Queued;
+                        record.available = now + RETRY_BACKOFF * record.attempt.max(1) as i64;
+                    }
+                    false => record.state = JobState::Failed,
+                }
+            }
+            JobResult::Rejected(message) => {
                 record.state = JobState::Failed;
                 record.outcome = Some(message);
             }
@@ -153,6 +165,35 @@ impl JobStore for MemoryJobStore {
             }
         }
         Ok(record.clone())
+    }
+
+    async fn reclaim(&self) -> Result<Vec<JobId>, Error> {
+        let now = (self.ticker)();
+        let mut records = self.held()?;
+        let mut moved = Vec::new();
+        for record in records.iter_mut() {
+            let running = matches!(record.state, JobState::Running)
+                || matches!(record.state, JobState::Cancelling);
+            if !running || !record.lease.is_some_and(|until| until <= now) {
+                continue;
+            }
+            record.worker = None;
+            record.lease = None;
+            record.updated = now;
+            record.state = match (record.cancelled, record.attempt < record.attempts) {
+                (true, _) => JobState::Cancelled,
+                (false, true) => {
+                    record.available = now;
+                    JobState::Queued
+                }
+                (false, false) => {
+                    record.outcome = Some(STOPPED.to_owned());
+                    JobState::Failed
+                }
+            };
+            moved.push(record.id.clone());
+        }
+        Ok(moved)
     }
 
     async fn cancel(&self, id: &JobId) -> Result<JobRecord, Error> {

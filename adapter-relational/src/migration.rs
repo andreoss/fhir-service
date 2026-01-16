@@ -139,6 +139,33 @@ create index if not exists resource_live_key
     on resource (resource_type, resource_id) where is_current and not is_deleted;
 ";
 
+const JOB_TABLE: &str = "
+create table if not exists job (
+    job_id text primary key,
+    kind text not null,
+    state text not null,
+    payload text,
+    progress_done bigint not null,
+    progress_total bigint,
+    progress_detail text,
+    attempt integer not null,
+    attempts integer not null,
+    outcome text,
+    created_ms bigint not null,
+    updated_ms bigint not null,
+    available_ms bigint not null,
+    lease_ms bigint,
+    worker text,
+    cancelled boolean not null
+);
+create index if not exists job_ready on job (state, available_ms, created_ms, job_id);
+";
+
+const JOB_TUNING: &str = "
+create index if not exists job_lease on job (state, lease_ms);
+create index if not exists job_ended on job (state, updated_ms);
+";
+
 pub const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 1,
@@ -169,6 +196,18 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "index tuning",
         required: false,
         statements: TUNING,
+    },
+    Migration {
+        version: 6,
+        name: "job queue",
+        required: true,
+        statements: JOB_TABLE,
+    },
+    Migration {
+        version: 7,
+        name: "job index tuning",
+        required: false,
+        statements: JOB_TUNING,
     },
 ];
 

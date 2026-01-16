@@ -3,6 +3,7 @@ pub(crate) mod compile;
 pub mod body;
 pub mod extract;
 pub mod fault;
+pub mod jobs;
 pub mod migration;
 pub mod namespace;
 pub(crate) mod query;
@@ -13,6 +14,7 @@ pub mod throttle;
 pub use migration::{latest, Migration, MIGRATIONS};
 pub use namespace::Namespace;
 pub use fault::{Fault, Policy};
+pub use jobs::RelationalJobStore;
 pub use store::RelationalStore;
 pub use throttle::Throttle;
 

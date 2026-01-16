@@ -14,4 +14,5 @@ tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
 
 [dev-dependencies]
 fhir-store-contract = { path = "../contract" }
+fhir-store = { path = "../store" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

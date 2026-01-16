@@ -223,8 +223,11 @@ pub enum JobSignal {
 pub enum JobResult {
     Succeeded(String),
     Failed(String),
+    Rejected(String),
     Cancelled,
 }
+
+pub const RETRY_BACKOFF: i64 = 1_000;
 
 #[derive(Debug, Clone)]
 pub struct Lease {
@@ -288,6 +291,8 @@ pub trait JobStore: Send + Sync {
 
     async fn finish(&self, id: &JobId, worker: &str, result: JobResult)
         -> Result<JobRecord, Error>;
+
+    async fn reclaim(&self) -> Result<Vec<JobId>, Error>;
 
     async fn cancel(&self, id: &JobId) -> Result<JobRecord, Error>;
 

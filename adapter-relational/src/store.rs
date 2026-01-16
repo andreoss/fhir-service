@@ -132,6 +132,10 @@ impl RelationalStore {
         RelationalStore::new(pool, namespace)
     }
 
+    pub fn jobs(&self) -> crate::jobs::RelationalJobStore {
+        crate::jobs::RelationalJobStore::new(self.pool.clone(), self.namespace.clone())
+    }
+
     pub fn with_clock(self, clock: Clock) -> RelationalStore {
         RelationalStore { clock, ..self }
     }

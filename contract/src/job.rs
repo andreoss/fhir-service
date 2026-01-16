@@ -1,7 +1,7 @@
 use fhir_core::Error;
 use fhir_store::{
     JobFilter, JobId, JobKind, JobProgress, JobRequest, JobResult, JobSignal, JobState, JobStore,
-    Lease,
+    Lease, StepTicker, RETRY_BACKOFF,
 };
 
 pub fn job(raw: &str) -> JobId {
@@ -144,4 +144,109 @@ pub async fn cancellation(store: &dyn JobStore) {
 
     let missing = store.cancel(&job("nobody")).await;
     assert!(matches!(missing, Err(Error::NotFound)), "{missing:?}");
+}
+
+pub async fn retries(store: &dyn JobStore, ticker: &StepTicker) {
+    store
+        .submit(queued("t1", JobKind::Import).with_attempts(2))
+        .await
+        .unwrap();
+    store.claim(&Lease::new("one", 1_000)).await.unwrap();
+
+    let failed = store
+        .finish(&job("t1"), "one", JobResult::Failed("first".to_owned()))
+        .await
+        .unwrap();
+    assert_eq!(failed.state, JobState::Queued);
+    assert_eq!(failed.attempt, 1);
+    assert!(failed.available > ticker.now(), "a retry waits");
+
+    let early = store.claim(&Lease::new("two", 1_000)).await.unwrap();
+    assert!(early.is_empty(), "{early:?}");
+
+    ticker.advance(RETRY_BACKOFF * 2);
+    let late = store.claim(&Lease::new("two", 1_000)).await.unwrap();
+    assert_eq!(late.len(), 1);
+    assert_eq!(late[0].attempt, 2);
+
+    let spent = store
+        .finish(&job("t1"), "two", JobResult::Failed("second".to_owned()))
+        .await
+        .unwrap();
+    assert_eq!(spent.state, JobState::Failed);
+    assert_eq!(spent.outcome.as_deref(), Some("second"));
+}
+
+pub async fn recovery(store: &dyn JobStore, ticker: &StepTicker) {
+    store.submit(queued("w1", JobKind::Export)).await.unwrap();
+    let held = store.claim(&Lease::new("one", 1_000)).await.unwrap();
+    assert_eq!(held.len(), 1);
+
+    ticker.advance(1_500);
+    let held_still = store.claim(&Lease::new("two", 1_000)).await.unwrap();
+    assert!(held_still.is_empty(), "an unexpired claim is not handed on");
+
+    let reclaimed = store.reclaim().await.unwrap();
+    assert_eq!(reclaimed, vec![job("w1")]);
+    assert_eq!(store.fetch(&job("w1")).await.unwrap().state, JobState::Queued);
+
+    let resumed = store.claim(&Lease::new("two", 1_000)).await.unwrap();
+    assert_eq!(resumed.len(), 1);
+    assert_eq!(resumed[0].id, job("w1"));
+    assert_eq!(resumed[0].attempt, 2);
+    assert_eq!(resumed[0].worker.as_deref(), Some("two"));
+
+    let stale = store.heartbeat(&job("w1"), "one", 1_000, None).await;
+    assert!(matches!(stale, Err(Error::VersionConflict)), "{stale:?}");
+
+    let done = store
+        .finish(&job("w1"), "two", JobResult::Succeeded("resumed".to_owned()))
+        .await
+        .unwrap();
+    assert_eq!(done.state, JobState::Completed);
+}
+
+pub async fn exhaustion(store: &dyn JobStore, ticker: &StepTicker) {
+    store
+        .submit(queued("x1", JobKind::Reindex).with_attempts(1))
+        .await
+        .unwrap();
+    store.claim(&Lease::new("one", 1_000)).await.unwrap();
+
+    ticker.advance(2_000);
+    assert_eq!(store.reclaim().await.unwrap(), vec![job("x1")]);
+
+    let record = store.fetch(&job("x1")).await.unwrap();
+    assert_eq!(record.state, JobState::Failed);
+    assert!(record.outcome.is_some());
+    assert!(store.reclaim().await.unwrap().is_empty());
+}
+
+pub async fn stopped_while_cancelling(store: &dyn JobStore, ticker: &StepTicker) {
+    store.submit(queued("z1", JobKind::Export)).await.unwrap();
+    store.claim(&Lease::new("one", 1_000)).await.unwrap();
+    store.cancel(&job("z1")).await.unwrap();
+
+    ticker.advance(2_000);
+    assert_eq!(store.reclaim().await.unwrap(), vec![job("z1")]);
+    assert_eq!(
+        store.fetch(&job("z1")).await.unwrap().state,
+        JobState::Cancelled
+    );
+}
+
+pub async fn rejection(store: &dyn JobStore) {
+    store
+        .submit(queued("j1", JobKind::BulkUpdate).with_attempts(5))
+        .await
+        .unwrap();
+    store.claim(&Lease::new("one", 1_000)).await.unwrap();
+
+    let rejected = store
+        .finish(&job("j1"), "one", JobResult::Rejected("no patch".to_owned()))
+        .await
+        .unwrap();
+    assert_eq!(rejected.state, JobState::Failed);
+    assert_eq!(rejected.attempt, 1);
+    assert_eq!(rejected.outcome.as_deref(), Some("no patch"));
 }

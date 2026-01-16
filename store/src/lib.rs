@@ -11,6 +11,7 @@ pub mod search;
 pub use clock::{system_clock, system_ticker, Clock, StepTicker, Ticker};
 pub use history::{HistoryOrder, HistoryPage, HistoryQuery, HistoryScope};
 pub use job::{
+    RETRY_BACKOFF,
     JobFilter, JobId, JobKind, JobProgress, JobRecord, JobRequest, JobResult, JobSignal, JobState,
     JobStore, Lease,
 };
