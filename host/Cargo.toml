@@ -8,8 +8,9 @@ fhir-adapter-memory = { path = "../adapter-memory", optional = true }
 fhir-adapter-relational = { path = "../adapter-relational", optional = true }
 fhir-api = { path = "../api" }
 fhir-core = { path = "../core" }
+fhir-jobs = { path = "../jobs" }
 fhir-store = { path = "../store" }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "time"] }
 
 [features]
 default = ["backend-memory", "backend-relational"]

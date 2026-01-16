@@ -155,6 +155,26 @@ impl JobStore for MemoryJobStore {
         Ok(record.clone())
     }
 
+    async fn cancel(&self, id: &JobId) -> Result<JobRecord, Error> {
+        let now = (self.ticker)();
+        let mut records = self.held()?;
+        let record = locate(&mut records, id)?;
+        if record.state.is_terminal() {
+            return Err(Error::VersionConflict);
+        }
+        record.cancelled = true;
+        record.updated = now;
+        match record.state {
+            JobState::Queued => {
+                record.state = JobState::Cancelled;
+                record.worker = None;
+                record.lease = None;
+            }
+            _ => record.state = JobState::Cancelling,
+        }
+        Ok(record.clone())
+    }
+
     async fn list(&self, filter: &JobFilter) -> Result<Vec<JobRecord>, Error> {
         let records = self.held()?;
         let mut found: Vec<JobRecord> = records

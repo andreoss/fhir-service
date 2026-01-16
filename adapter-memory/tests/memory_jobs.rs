@@ -34,3 +34,9 @@ async fn a_listing_filters_by_kind_and_state() {
     let ticker = StepTicker::starting_at(1_000);
     fhir_store_contract::job::listing(&store(&ticker)).await;
 }
+
+#[tokio::test]
+async fn a_stop_reaches_a_queued_and_a_running_job() {
+    let ticker = StepTicker::starting_at(1_000);
+    fhir_store_contract::job::cancellation(&store(&ticker)).await;
+}

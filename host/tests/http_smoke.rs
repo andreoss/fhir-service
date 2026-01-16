@@ -813,3 +813,65 @@ fn bundles_are_processed_over_http() {
 
     stop(child);
 }
+
+#[test]
+fn a_submitted_job_is_polled_to_completion_over_http() {
+    let (child, port) = spawn_server();
+
+    let created = request(port, "POST", "/Patient", &[], &patient("jb-1", true));
+    assert_eq!(created.status, 201, "create failed: {}", created.body);
+
+    let submitted = request(port, "POST", "/$export", &[], br#"{"types":["Patient"]}"#);
+    assert_eq!(submitted.status, 202, "submit failed: {}", submitted.body);
+    let location = header(&submitted, "content-location").to_owned();
+    assert!(location.contains("/_jobs/"), "{location}");
+    assert_eq!(header(&submitted, "retry-after"), "1");
+    let path = location
+        .split_once("/_jobs/")
+        .map(|(_, id)| format!("/_jobs/{id}"))
+        .expect("a status location carries an id");
+
+    let mut polled = request(port, "GET", &path, &[], &[]);
+    for _ in 0..100 {
+        if polled.status != 202 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+        polled = request(port, "GET", &path, &[], &[]);
+    }
+    stop(child);
+
+    assert_eq!(polled.status, 200, "poll failed: {}", polled.body);
+    let value: serde_json::Value = serde_json::from_str(&polled.body).expect("a manifest is json");
+    assert_eq!(value["state"], "completed");
+    assert_eq!(value["kind"], "export");
+    assert_eq!(value["outcome"]["handled"], 1);
+}
+
+#[test]
+fn a_submitted_job_is_cancelled_over_http() {
+    let (child, port) = spawn_server();
+
+    let submitted = request(port, "POST", "/$import", &[], br#"{"resources":[]}"#);
+    assert_eq!(submitted.status, 202, "submit failed: {}", submitted.body);
+    let location = header(&submitted, "content-location").to_owned();
+    let path = location
+        .split_once("/_jobs/")
+        .map(|(_, id)| format!("/_jobs/{id}"))
+        .expect("a status location carries an id");
+
+    let cancelled = request(port, "DELETE", &path, &[], &[]);
+    let polled = request(port, "GET", &path, &[], &[]);
+    stop(child);
+
+    assert!(
+        cancelled.status == 202 || cancelled.status == 409,
+        "cancel answered {}",
+        cancelled.status
+    );
+    assert!(
+        polled.status == 404 || polled.status == 200,
+        "poll answered {}",
+        polled.status
+    );
+}

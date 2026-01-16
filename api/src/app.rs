@@ -20,6 +20,7 @@ use crate::handlers::{
 #[derive(Clone)]
 pub struct AppState {
     pub store: Arc<dyn ResourceStore>,
+    pub jobs: Option<Arc<dyn fhir_store::JobStore>>,
     pub version: FhirVersion,
     pub dependencies: Arc<Vec<Dependency>>,
     pub registry: Arc<Registry>,
@@ -47,11 +48,21 @@ impl Service {
         Service {
             state: AppState {
                 store,
+                jobs: None,
                 version,
                 dependencies: Arc::new(dependencies),
                 registry: Arc::new(Registry::new()),
                 parameters: Arc::new(tokio::sync::Mutex::new(())),
                 entries: Arc::new(tokio::sync::Semaphore::new(crate::bundle::ENTRIES_AT_ONCE)),
+            },
+        }
+    }
+
+    pub fn with_jobs(self, jobs: Arc<dyn fhir_store::JobStore>) -> Service {
+        Service {
+            state: AppState {
+                jobs: Some(jobs),
+                ..self.state
             },
         }
     }
@@ -129,6 +140,12 @@ fn routes() -> Router<AppState> {
             .route("/{type}/{id}/_history/{vid}", get(vread))
             .route("/{type}", get(search_type).post(create).put(conditional_update).delete(conditional_delete).patch(conditional_patch))
             .route("/{type}/{id}/$purge-history", post(purge_history))
+            .route("/$export", post(crate::job::submit_export))
+            .route("/$import", post(crate::job::submit_import))
+            .route("/$bulk-delete", post(crate::job::submit_bulk_delete))
+            .route("/$bulk-update", post(crate::job::submit_bulk_update))
+            .route("/$reindex", post(crate::job::submit_reindex))
+            .route("/_jobs/{id}", get(crate::job::poll).delete(crate::job::cancel))
             .fallback(not_found)
             .method_not_allowed_fallback(method_not_allowed)
 }

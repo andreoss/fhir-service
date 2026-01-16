@@ -289,6 +289,8 @@ pub trait JobStore: Send + Sync {
     async fn finish(&self, id: &JobId, worker: &str, result: JobResult)
         -> Result<JobRecord, Error>;
 
+    async fn cancel(&self, id: &JobId) -> Result<JobRecord, Error>;
+
     async fn list(&self, filter: &JobFilter) -> Result<Vec<JobRecord>, Error>;
 
     fn health(&self) -> Result<(), Error> {

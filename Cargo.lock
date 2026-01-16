@@ -342,6 +342,7 @@ dependencies = [
  "fhir-adapter-relational",
  "fhir-api",
  "fhir-core",
+ "fhir-jobs",
  "fhir-store",
  "serde_json",
  "sqlx",

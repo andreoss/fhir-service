@@ -116,3 +116,32 @@ pub async fn listing(store: &dyn JobStore) {
     let every = store.list(&JobFilter::default()).await.unwrap();
     assert_eq!(every.len(), 2);
 }
+
+pub async fn cancellation(store: &dyn JobStore) {
+    store.submit(queued("k1", JobKind::Export)).await.unwrap();
+    store.submit(queued("k2", JobKind::Export)).await.unwrap();
+
+    let stopped = store.cancel(&job("k1")).await.unwrap();
+    assert_eq!(stopped.state, JobState::Cancelled);
+    assert!(stopped.cancelled);
+
+    let claimed = store.claim(&Lease::new("one", 1_000)).await.unwrap();
+    assert_eq!(claimed.len(), 1);
+    assert_eq!(claimed[0].id, job("k2"));
+
+    let running = store.cancel(&job("k2")).await.unwrap();
+    assert_eq!(running.state, JobState::Cancelling);
+    assert!(running.cancelled);
+
+    store
+        .finish(&job("k2"), "one", JobResult::Cancelled)
+        .await
+        .unwrap();
+    assert_eq!(store.fetch(&job("k2")).await.unwrap().state, JobState::Cancelled);
+
+    let ended = store.cancel(&job("k2")).await;
+    assert!(matches!(ended, Err(Error::VersionConflict)), "{ended:?}");
+
+    let missing = store.cancel(&job("nobody")).await;
+    assert!(matches!(missing, Err(Error::NotFound)), "{missing:?}");
+}

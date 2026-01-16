@@ -33,6 +33,12 @@ impl From<Error> for AppError {
     }
 }
 
+impl AppError {
+    pub fn into_response_now(self) -> Response {
+        self.into_response()
+    }
+}
+
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let outcome = self.0.to_operation_outcome();
