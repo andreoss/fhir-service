@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 const LEASE_MILLIS: i64 = 30_000;
 const POLL_MILLIS: u64 = 50;
+const SWEEP_MILLIS: u64 = 1_000;
 
 #[cfg(feature = "backend-memory")]
 use fhir_adapter_memory::MemoryStore;
@@ -38,6 +39,7 @@ async fn run() -> Result<(), Error> {
     if let Some(jobs) = &jobs {
         service = service.with_jobs(Arc::clone(jobs));
         spawn_worker(Arc::clone(jobs), store, config.version);
+        spawn_watchdog(Arc::clone(jobs));
     }
     eprintln!("serving {config}");
     let bound = service.bind(config.bind).await?;
@@ -127,6 +129,16 @@ fn spawn_worker(
         loop {
             let _ = worker.poll().await;
             tokio::time::sleep(std::time::Duration::from_millis(POLL_MILLIS)).await;
+        }
+    });
+}
+
+fn spawn_watchdog(jobs: Arc<dyn fhir_store::JobStore>) {
+    let watchdog = fhir_jobs::Watchdog::new(jobs);
+    tokio::spawn(async move {
+        loop {
+            let _ = watchdog.sweep().await;
+            tokio::time::sleep(std::time::Duration::from_millis(SWEEP_MILLIS)).await;
         }
     });
 }

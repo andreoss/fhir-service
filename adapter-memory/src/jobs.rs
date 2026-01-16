@@ -219,6 +219,21 @@ impl JobStore for MemoryJobStore {
         Ok(record.clone())
     }
 
+    async fn defragment(&self) -> Result<usize, Error> {
+        let now = (self.ticker)();
+        let mut records = self.held()?;
+        let mut compacted = 0;
+        for record in records.iter_mut() {
+            if record.state.is_terminal() && record.payload.is_some() {
+                record.payload = None;
+                record.updated = now;
+                compacted += 1;
+            }
+        }
+        records.shrink_to_fit();
+        Ok(compacted)
+    }
+
     async fn list(&self, filter: &JobFilter) -> Result<Vec<JobRecord>, Error> {
         let records = self.held()?;
         let mut found: Vec<JobRecord> = records

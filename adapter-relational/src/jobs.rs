@@ -308,6 +308,24 @@ impl JobStore for RelationalJobStore {
         }
     }
 
+    async fn defragment(&self) -> Result<usize, Error> {
+        let now = (self.ticker)();
+        let statement = format!(
+            "update {} set payload = null, updated_ms = $1 \
+             where payload is not null and state in ($2, $3, $4)",
+            self.table()
+        );
+        let done = sqlx::query(&statement)
+            .bind(now)
+            .bind(JobState::Completed.as_str())
+            .bind(JobState::Failed.as_str())
+            .bind(JobState::Cancelled.as_str())
+            .execute(&self.pool)
+            .await
+            .map_err(|error| faulted("compacting the queue", error))?;
+        Ok(done.rows_affected() as usize)
+    }
+
     async fn list(&self, filter: &JobFilter) -> Result<Vec<JobRecord>, Error> {
         let statement = format!(
             "select {COLUMNS} from {} order by created_ms desc, job_id desc",

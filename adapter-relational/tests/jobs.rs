@@ -41,6 +41,7 @@ suite!(a_claim_holds_one_job_under_a_lease, claiming, "jclaim");
 suite!(a_heartbeat_extends_the_lease, heartbeats, "jbeat");
 suite!(a_finished_attempt_keeps_its_result, completion, "jdone");
 suite!(a_listing_filters_by_kind_and_state, listing, "jlist");
+suite!(an_ended_job_releases_its_description, defragmentation, "jdefrag");
 suite!(a_stop_reaches_a_queued_and_a_running_job, cancellation, "jstop");
 suite!(work_that_cannot_succeed_fails_at_once, rejection, "jreject");
 suite!(

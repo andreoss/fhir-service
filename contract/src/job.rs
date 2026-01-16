@@ -271,3 +271,21 @@ pub async fn cancel_signal(store: &dyn JobStore) {
     assert!(stopped.worker.is_none());
     assert!(stopped.lease.is_none());
 }
+
+pub async fn defragmentation(store: &dyn JobStore) {
+    store.submit(queued("d1", JobKind::Import)).await.unwrap();
+    store.submit(queued("d2", JobKind::Import)).await.unwrap();
+    store.claim(&Lease::new("one", 1_000)).await.unwrap();
+    store
+        .finish(&job("d1"), "one", JobResult::Succeeded("done".to_owned()))
+        .await
+        .unwrap();
+
+    assert_eq!(store.defragment().await.unwrap(), 1);
+    let ended = store.fetch(&job("d1")).await.unwrap();
+    assert_eq!(ended.payload, None);
+    assert_eq!(ended.outcome.as_deref(), Some("done"));
+    assert!(store.fetch(&job("d2")).await.unwrap().payload.is_some());
+
+    assert_eq!(store.defragment().await.unwrap(), 0);
+}
