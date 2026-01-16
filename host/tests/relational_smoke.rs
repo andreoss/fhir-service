@@ -7,6 +7,7 @@ const SKIPPED: &str = "skipped: the relational engine is not available";
 
 struct Reply {
     status: u16,
+    headers: Vec<(String, String)>,
     body: String,
 }
 
@@ -99,7 +100,17 @@ fn request(port: u16, method: &str, path: &str, headers: &[(&str, &str)], body: 
         .nth(1)
         .and_then(|code| code.parse().ok())
         .unwrap_or_default();
-    Reply { status, body }
+    let headers = head
+        .split("\r\n")
+        .skip(1)
+        .filter_map(|line| line.split_once(':'))
+        .map(|(name, value)| (name.to_ascii_lowercase(), value.trim().to_owned()))
+        .collect();
+    Reply {
+        status,
+        headers,
+        body,
+    }
 }
 
 fn patient(id: &str, family: &str, active: bool) -> Vec<u8> {
@@ -272,4 +283,49 @@ fn bundles_are_atomic_over_the_relational_backend() {
 
     stop(child);
     drop_schema(&namespace);
+}
+
+fn header<'a>(reply: &'a Reply, name: &str) -> &'a str {
+    reply
+        .headers
+        .iter()
+        .find(|(held, _)| held == name)
+        .map(|(_, value)| value.as_str())
+        .unwrap_or_default()
+}
+
+#[test]
+fn a_job_runs_to_completion_over_the_relational_backend() {
+    let namespace = schema();
+    let Some((child, port)) = spawn_server(&namespace) else {
+        return;
+    };
+
+    let created = request(port, "POST", "/Patient", &[], &patient("jr-1", "Stone", true));
+    assert_eq!(created.status, 201, "create failed: {}", created.body);
+
+    let submitted = request(port, "POST", "/$export", &[], br#"{"types":["Patient"]}"#);
+    assert_eq!(submitted.status, 202, "submit failed: {}", submitted.body);
+    assert_eq!(header(&submitted, "retry-after"), "1");
+    let path = header(&submitted, "content-location")
+        .split_once("/_jobs/")
+        .map(|(_, id)| format!("/_jobs/{id}"))
+        .expect("a status location carries an id");
+
+    let mut polled = request(port, "GET", &path, &[], &[]);
+    for _ in 0..100 {
+        if polled.status != 202 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+        polled = request(port, "GET", &path, &[], &[]);
+    }
+    stop(child);
+    drop_schema(&namespace);
+
+    assert_eq!(polled.status, 200, "poll failed: {}", polled.body);
+    let manifest = json(&polled.body);
+    assert_eq!(manifest["state"], "completed");
+    assert_eq!(manifest["kind"], "export");
+    assert_eq!(manifest["outcome"]["handled"], 1);
 }
