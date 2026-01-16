@@ -118,6 +118,7 @@ pub struct Worker {
     name: String,
     duration: i64,
     batch: usize,
+    limits: fhir_store::JobLimits,
 }
 
 impl Worker {
@@ -133,7 +134,12 @@ impl Worker {
             name: name.into(),
             duration: duration.max(1),
             batch: 1,
+            limits: fhir_store::JobLimits::unlimited(),
         }
+    }
+
+    pub fn with_limits(self, limits: fhir_store::JobLimits) -> Worker {
+        Worker { limits, ..self }
     }
 
     pub fn with_batch(self, batch: usize) -> Worker {
@@ -148,7 +154,9 @@ impl Worker {
     }
 
     pub async fn poll(&self) -> Result<usize, Error> {
-        let lease = fhir_store::Lease::new(self.name.clone(), self.duration).with_limit(self.batch);
+        let lease = fhir_store::Lease::new(self.name.clone(), self.duration)
+            .with_limit(self.batch)
+            .with_limits(self.limits);
         let claimed = self.jobs.claim(&lease).await?;
         let mut ended = 0;
         for record in claimed {

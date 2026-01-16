@@ -2,6 +2,7 @@ mod support;
 
 use fhir_adapter_relational::{Namespace, RelationalJobStore};
 use fhir_store::StepTicker;
+use fhir_store::JobStore;
 use sqlx::PgPool;
 
 async fn queue(name: &str) -> Option<(RelationalJobStore, StepTicker, PgPool, Namespace)> {
@@ -43,6 +44,14 @@ suite!(a_finished_attempt_keeps_its_result, completion, "jdone");
 suite!(a_listing_filters_by_kind_and_state, listing, "jlist");
 suite!(an_ended_job_releases_its_description, defragmentation, "jdefrag");
 suite!(a_stop_reaches_a_queued_and_a_running_job, cancellation, "jstop");
+suite!(a_kind_runs_no_more_jobs_at_once_than_its_limit, concurrency, "jcap");
+suite!(one_kind_never_holds_another_back, limits_are_per_kind, "jkinds");
+suite!(
+    a_kind_starts_no_more_often_than_its_throttle,
+    throttling,
+    "jgap",
+    timed
+);
 suite!(work_that_cannot_succeed_fails_at_once, rejection, "jreject");
 suite!(
     a_running_job_learns_of_a_stop_at_its_next_heartbeat,
@@ -58,3 +67,45 @@ suite!(
     "jgone",
     timed
 );
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_limit_holds_when_many_workers_claim_at_once() {
+    let Some((jobs, _ticker, pool, namespace)) = queue("jload").await else {
+        return;
+    };
+    let jobs = std::sync::Arc::new(jobs);
+    for slot in 0..12 {
+        let id = fhir_store::JobId::parse(&format!("load-{slot}")).unwrap();
+        jobs.submit(fhir_store::JobRequest::new(
+            id,
+            fhir_store::JobKind::Export,
+            "{}",
+        ))
+        .await
+        .unwrap();
+    }
+    let limits = fhir_store::JobLimits::unlimited().running(fhir_store::JobKind::Export, 3);
+
+    let mut claiming = Vec::new();
+    for worker in 0..8 {
+        let jobs = std::sync::Arc::clone(&jobs);
+        claiming.push(tokio::spawn(async move {
+            let lease = fhir_store::Lease::new(format!("w{worker}"), 60_000)
+                .with_limit(12)
+                .with_limits(limits);
+            jobs.claim(&lease).await.unwrap().len()
+        }));
+    }
+    let mut taken = 0;
+    for task in claiming {
+        taken += task.await.unwrap();
+    }
+
+    let running = jobs
+        .list(&fhir_store::JobFilter::in_state(fhir_store::JobState::Running))
+        .await
+        .unwrap();
+    assert_eq!(taken, 3, "the limit did not hold under load");
+    assert_eq!(running.len(), 3);
+    support::drop_namespace(&pool, &namespace).await;
+}

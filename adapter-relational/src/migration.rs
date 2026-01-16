@@ -156,6 +156,7 @@ create table if not exists job (
     available_ms bigint not null,
     lease_ms bigint,
     worker text,
+    started_ms bigint,
     cancelled boolean not null
 );
 create index if not exists job_ready on job (state, available_ms, created_ms, job_id);
@@ -164,6 +165,7 @@ create index if not exists job_ready on job (state, available_ms, created_ms, jo
 const JOB_TUNING: &str = "
 create index if not exists job_lease on job (state, lease_ms);
 create index if not exists job_ended on job (state, updated_ms);
+create index if not exists job_started on job (kind, started_ms);
 ";
 
 pub const MIGRATIONS: &[Migration] = &[

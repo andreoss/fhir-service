@@ -1,7 +1,7 @@
 use fhir_core::Error;
 use fhir_store::{
     JobFilter, JobId, JobKind, JobProgress, JobRequest, JobResult, JobSignal, JobState, JobStore,
-    Lease, StepTicker, RETRY_BACKOFF,
+    JobLimits, Lease, StepTicker, RETRY_BACKOFF,
 };
 
 pub fn job(raw: &str) -> JobId {
@@ -288,4 +288,83 @@ pub async fn defragmentation(store: &dyn JobStore) {
     assert!(store.fetch(&job("d2")).await.unwrap().payload.is_some());
 
     assert_eq!(store.defragment().await.unwrap(), 0);
+}
+
+pub async fn concurrency(store: &dyn JobStore) {
+    for slot in 0..4 {
+        store
+            .submit(queued(&format!("n{slot}"), JobKind::Export))
+            .await
+            .unwrap();
+    }
+    let limits = JobLimits::unlimited().running(JobKind::Export, 2);
+
+    let first = store
+        .claim(&Lease::new("one", 10_000).with_limit(4).with_limits(limits))
+        .await
+        .unwrap();
+    assert_eq!(first.len(), 2, "the limit did not hold");
+
+    let second = store
+        .claim(&Lease::new("two", 10_000).with_limit(4).with_limits(limits))
+        .await
+        .unwrap();
+    assert!(second.is_empty(), "{second:?}");
+
+    store
+        .finish(&first[0].id, "one", JobResult::Succeeded("done".to_owned()))
+        .await
+        .unwrap();
+
+    let freed = store
+        .claim(&Lease::new("two", 10_000).with_limit(4).with_limits(limits))
+        .await
+        .unwrap();
+    assert_eq!(freed.len(), 1, "a finished job did not free its place");
+}
+
+pub async fn throttling(store: &dyn JobStore, ticker: &StepTicker) {
+    for slot in 0..3 {
+        store
+            .submit(queued(&format!("p{slot}"), JobKind::Reindex))
+            .await
+            .unwrap();
+    }
+    let limits = JobLimits::unlimited().every(JobKind::Reindex, 1_000);
+
+    let first = store
+        .claim(&Lease::new("one", 10_000).with_limit(3).with_limits(limits))
+        .await
+        .unwrap();
+    assert_eq!(first.len(), 1, "a throttle admits one start at a time");
+
+    let early = store
+        .claim(&Lease::new("two", 10_000).with_limit(3).with_limits(limits))
+        .await
+        .unwrap();
+    assert!(early.is_empty(), "{early:?}");
+
+    ticker.advance(1_000);
+    let late = store
+        .claim(&Lease::new("two", 10_000).with_limit(3).with_limits(limits))
+        .await
+        .unwrap();
+    assert_eq!(late.len(), 1);
+}
+
+pub async fn limits_are_per_kind(store: &dyn JobStore) {
+    store.submit(queued("q1", JobKind::Export)).await.unwrap();
+    store.submit(queued("q2", JobKind::Export)).await.unwrap();
+    store.submit(queued("q3", JobKind::Import)).await.unwrap();
+    let limits = JobLimits::unlimited().running(JobKind::Export, 1);
+
+    let taken = store
+        .claim(&Lease::new("one", 10_000).with_limit(5).with_limits(limits))
+        .await
+        .unwrap();
+
+    let kinds: Vec<JobKind> = taken.iter().map(|record| record.kind).collect();
+    assert_eq!(kinds.len(), 2, "{kinds:?}");
+    assert!(kinds.contains(&JobKind::Export));
+    assert!(kinds.contains(&JobKind::Import));
 }

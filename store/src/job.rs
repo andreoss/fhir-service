@@ -210,6 +210,7 @@ pub struct JobRecord {
     pub available: i64,
     pub lease: Option<i64>,
     pub worker: Option<String>,
+    pub started: Option<i64>,
     pub cancelled: bool,
 }
 
@@ -229,11 +230,63 @@ pub enum JobResult {
 
 pub const RETRY_BACKOFF: i64 = 1_000;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct JobLimits {
+    running: [i64; 5],
+    gap: [i64; 5],
+}
+
+impl Default for JobLimits {
+    fn default() -> JobLimits {
+        JobLimits::unlimited()
+    }
+}
+
+impl JobLimits {
+    pub const fn unlimited() -> JobLimits {
+        JobLimits {
+            running: [-1; 5],
+            gap: [0; 5],
+        }
+    }
+
+    pub fn running(mut self, kind: JobKind, most: usize) -> JobLimits {
+        self.running[kind.slot()] = most as i64;
+        self
+    }
+
+    pub fn every(mut self, kind: JobKind, millis: i64) -> JobLimits {
+        self.gap[kind.slot()] = millis.max(0);
+        self
+    }
+
+    pub fn most_running(&self, kind: JobKind) -> Option<usize> {
+        match self.running[kind.slot()] {
+            limit if limit < 0 => None,
+            limit => Some(limit as usize),
+        }
+    }
+
+    pub fn gap(&self, kind: JobKind) -> i64 {
+        self.gap[kind.slot()]
+    }
+
+    pub fn admits(&self, kind: JobKind, held: usize, last_start: Option<i64>, now: i64) -> bool {
+        let room = self.most_running(kind).is_none_or(|most| held < most);
+        let waited = match (self.gap(kind), last_start) {
+            (0, _) | (_, None) => true,
+            (gap, Some(last)) => now - last >= gap,
+        };
+        room && waited
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Lease {
     pub worker: String,
     pub duration: i64,
     pub limit: usize,
+    pub limits: JobLimits,
 }
 
 impl Lease {
@@ -242,6 +295,7 @@ impl Lease {
             worker: worker.into(),
             duration: duration.max(1),
             limit: 1,
+            limits: JobLimits::unlimited(),
         }
     }
 
@@ -250,6 +304,10 @@ impl Lease {
             limit: limit.max(1),
             ..self
         }
+    }
+
+    pub fn with_limits(self, limits: JobLimits) -> Lease {
+        Lease { limits, ..self }
     }
 }
 

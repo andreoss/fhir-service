@@ -12,9 +12,11 @@ use std::str::FromStr;
 
 const STOPPED: &str = "the worker holding the lease stopped";
 
+const QUEUE_LOCK: i64 = 0x6a_6f_62_71;
+
 const COLUMNS: &str = "job_id, kind, state, payload, progress_done, progress_total, \
                        progress_detail, attempt, attempts, outcome, created_ms, updated_ms, \
-                       available_ms, lease_ms, worker, cancelled";
+                       available_ms, lease_ms, worker, started_ms, cancelled";
 
 pub struct RelationalJobStore {
     pool: PgPool,
@@ -90,6 +92,9 @@ fn record_of(row: &PgRow) -> Result<JobRecord, Error> {
             .try_get::<Option<i64>, _>("lease_ms")
             .map_err(|error| faulted("reading a job column", error))?,
         worker: maybe("worker")?,
+        started: row
+            .try_get::<Option<i64>, _>("started_ms")
+            .map_err(|error| faulted("reading a job column", error))?,
         cancelled: row
             .try_get::<bool, _>("cancelled")
             .map_err(|error| faulted("reading a job column", error))?,
@@ -102,7 +107,7 @@ impl JobStore for RelationalJobStore {
         let now = (self.ticker)();
         let statement = format!(
             "insert into {} ({COLUMNS}) values \
-             ($1, $2, $3, $4, 0, null, null, 0, $5, null, $6, $6, $6, null, null, false) \
+             ($1, $2, $3, $4, 0, null, null, 0, $5, null, $6, $6, $6, null, null, null, false) \
              on conflict (job_id) do nothing",
             self.table()
         );
@@ -129,27 +134,76 @@ impl JobStore for RelationalJobStore {
     async fn claim(&self, lease: &Lease) -> Result<Vec<JobRecord>, Error> {
         let now = (self.ticker)();
         let table = self.table();
+        let kinds: Vec<String> = JobKind::ALL
+            .iter()
+            .map(|kind| kind.as_str().to_owned())
+            .collect();
+        let most: Vec<i64> = JobKind::ALL
+            .iter()
+            .map(|kind| match lease.limits.most_running(*kind) {
+                Some(limit) => limit as i64,
+                None => -1,
+            })
+            .collect();
+        let gaps: Vec<i64> = JobKind::ALL
+            .iter()
+            .map(|kind| lease.limits.gap(*kind))
+            .collect();
         let statement = format!(
-            "update {table} set state = $1, attempt = attempt + 1, worker = $2, \
-             lease_ms = $3, updated_ms = $4 where job_id in ( \
-             select job_id from {table} where state = $5 and available_ms <= $4 \
-             order by created_ms, job_id for update skip locked limit $6) \
-             returning {COLUMNS}"
+            "with caps as (select * from unnest($1::text[], $2::bigint[], $3::bigint[]) \
+             as c(kind, most, gap)), \
+             busy as (select kind, count(*) as held from {table} \
+             where state in ($4, $5) group by kind), \
+             latest as (select kind, max(started_ms) as started from {table} group by kind), \
+             ranked as (select j.job_id, \
+             row_number() over (partition by j.kind order by j.created_ms, j.job_id) as rank, \
+             coalesce(b.held, 0) as held, c.most, c.gap \
+             from {table} j \
+             join caps c on c.kind = j.kind \
+             left join busy b on b.kind = j.kind \
+             left join latest l on l.kind = j.kind \
+             where j.state = $6 and j.available_ms <= $7 \
+             and (c.gap <= 0 or l.started is null or $7 - l.started >= c.gap)), \
+             ready as (select job_id from ranked \
+             where (most < 0 or held + rank <= most) and (gap <= 0 or rank = 1) \
+             order by job_id limit $8) \
+             update {table} set state = $4, attempt = attempt + 1, worker = $9, \
+             lease_ms = $10, started_ms = $7, updated_ms = $7 \
+             where job_id in (select job_id from ready) returning {COLUMNS}"
         );
+        let mut transaction = self
+            .pool
+            .begin()
+            .await
+            .map_err(|error| faulted("claiming a job", error))?;
+        sqlx::query("select pg_advisory_xact_lock($1)")
+            .bind(QUEUE_LOCK)
+            .execute(&mut *transaction)
+            .await
+            .map_err(|error| faulted("holding the queue", error))?;
         let rows = sqlx::query(&statement)
+            .bind(&kinds)
+            .bind(&most)
+            .bind(&gaps)
             .bind(JobState::Running.as_str())
+            .bind(JobState::Cancelling.as_str())
+            .bind(JobState::Queued.as_str())
+            .bind(now)
+            .bind(lease.limit as i64)
             .bind(&lease.worker)
             .bind(now + lease.duration)
-            .bind(now)
-            .bind(JobState::Queued.as_str())
-            .bind(lease.limit as i64)
-            .fetch_all(&self.pool)
+            .fetch_all(&mut *transaction)
+            .await
+            .map_err(|error| faulted("claiming a job", error))?;
+        transaction
+            .commit()
             .await
             .map_err(|error| faulted("claiming a job", error))?;
         let mut claimed: Vec<JobRecord> = rows.iter().map(record_of).collect::<Result<_, _>>()?;
         claimed.sort_by(|left, right| (left.created, &left.id).cmp(&(right.created, &right.id)));
         Ok(claimed)
     }
+
 
     async fn heartbeat(
         &self,

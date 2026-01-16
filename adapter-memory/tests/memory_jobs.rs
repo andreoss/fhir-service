@@ -82,3 +82,21 @@ async fn an_ended_job_releases_its_description() {
     let ticker = StepTicker::starting_at(1_000);
     fhir_store_contract::job::defragmentation(&store(&ticker)).await;
 }
+
+#[tokio::test]
+async fn a_kind_runs_no_more_jobs_at_once_than_its_limit() {
+    let ticker = StepTicker::starting_at(1_000);
+    fhir_store_contract::job::concurrency(&store(&ticker)).await;
+}
+
+#[tokio::test]
+async fn a_kind_starts_no_more_often_than_its_throttle() {
+    let ticker = StepTicker::starting_at(1_000);
+    fhir_store_contract::job::throttling(&store(&ticker), &ticker).await;
+}
+
+#[tokio::test]
+async fn one_kind_never_holds_another_back() {
+    let ticker = StepTicker::starting_at(1_000);
+    fhir_store_contract::job::limits_are_per_kind(&store(&ticker)).await;
+}

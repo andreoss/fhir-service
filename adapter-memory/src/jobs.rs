@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use fhir_core::Error;
 use fhir_store::{
     system_ticker, JobFilter, JobId, JobProgress, JobRecord, JobRequest, JobResult, JobSignal,
-    JobState, JobStore, Lease, Ticker, RETRY_BACKOFF,
+    JobKind, JobState, JobStore, Lease, Ticker, RETRY_BACKOFF,
 };
 use std::sync::Mutex;
 
@@ -67,6 +67,7 @@ impl JobStore for MemoryJobStore {
             available: now,
             lease: None,
             worker: None,
+            started: None,
             cancelled: false,
         };
         records.push(record.clone());
@@ -81,6 +82,19 @@ impl JobStore for MemoryJobStore {
     async fn claim(&self, lease: &Lease) -> Result<Vec<JobRecord>, Error> {
         let now = (self.ticker)();
         let mut records = self.held()?;
+        let mut running: Vec<usize> = vec![0; JobKind::ALL.len()];
+        let mut started: Vec<Option<i64>> = vec![None; JobKind::ALL.len()];
+        for record in records.iter() {
+            let slot = record.kind.slot();
+            if matches!(record.state, JobState::Running)
+                || matches!(record.state, JobState::Cancelling)
+            {
+                running[slot] += 1;
+            }
+            if let Some(start) = record.started {
+                started[slot] = Some(started[slot].map_or(start, |held: i64| held.max(start)));
+            }
+        }
         let mut ready: Vec<usize> = records
             .iter()
             .enumerate()
@@ -93,17 +107,29 @@ impl JobStore for MemoryJobStore {
             (first.created, &first.id).cmp(&(second.created, &second.id))
         });
         let mut taken = Vec::new();
-        for slot in ready.into_iter().take(lease.limit) {
+        for slot in ready {
+            if taken.len() >= lease.limit {
+                break;
+            }
+            let kind = records[slot].kind;
+            let position = kind.slot();
+            if !lease.limits.admits(kind, running[position], started[position], now) {
+                continue;
+            }
+            running[position] += 1;
+            started[position] = Some(now);
             let record = &mut records[slot];
             record.state = JobState::Running;
             record.attempt += 1;
             record.worker = Some(lease.worker.clone());
             record.lease = Some(now + lease.duration);
+            record.started = Some(now);
             record.updated = now;
             taken.push(record.clone());
         }
         Ok(taken)
     }
+
 
     async fn heartbeat(
         &self,

@@ -83,3 +83,41 @@ async fn a_sweep_that_finds_nothing_changes_nothing() {
     assert!(swept.is_empty());
     assert_eq!(swept, fhir_jobs::Sweep::default());
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_limit_holds_when_many_workers_claim_at_once() {
+    let ticker = StepTicker::starting_at(1_000);
+    let jobs = Arc::new(MemoryJobStore::new(ticker.ticker()));
+    for slot in 0..12 {
+        jobs.submit(JobRequest::new(
+            job(&format!("load-{slot}")),
+            JobKind::BulkUpdate,
+            "{}",
+        ))
+        .await
+        .unwrap();
+    }
+    let limits = fhir_store::JobLimits::unlimited().running(JobKind::BulkUpdate, 3);
+
+    let mut claiming = Vec::new();
+    for worker in 0..8 {
+        let jobs = Arc::clone(&jobs);
+        claiming.push(tokio::spawn(async move {
+            let lease = Lease::new(format!("w{worker}"), 60_000)
+                .with_limit(12)
+                .with_limits(limits);
+            jobs.claim(&lease).await.unwrap().len()
+        }));
+    }
+    let mut taken = 0;
+    for task in claiming {
+        taken += task.await.unwrap();
+    }
+
+    assert_eq!(taken, 3, "the limit did not hold under load");
+    let running = jobs
+        .list(&fhir_store::JobFilter::in_state(JobState::Running))
+        .await
+        .unwrap();
+    assert_eq!(running.len(), 3);
+}
