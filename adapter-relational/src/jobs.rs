@@ -159,7 +159,7 @@ impl JobStore for RelationalJobStore {
         progress: Option<JobProgress>,
     ) -> Result<JobSignal, Error> {
         let now = (self.ticker)();
-        let progress = progress.unwrap_or_else(|| JobProgress {
+        let progress = progress.unwrap_or(JobProgress {
             done: u64::MAX,
             total: None,
             detail: None,

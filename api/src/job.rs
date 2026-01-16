@@ -20,11 +20,8 @@ pub const JOBS: &str = "/_jobs";
 
 pub const RETRY_AFTER: u64 = 1;
 
-fn queue(state: &AppState) -> Result<Arc<dyn JobStore>, Response> {
-    match &state.jobs {
-        Some(jobs) => Ok(Arc::clone(jobs)),
-        None => Err(unsupported()),
-    }
+fn queue(state: &AppState) -> Option<Arc<dyn JobStore>> {
+    state.jobs.as_ref().map(Arc::clone)
 }
 
 fn unsupported() -> Response {
@@ -97,9 +94,8 @@ fn accepted(host: &str, id: &JobId) -> Response {
 }
 
 async fn submit(state: &AppState, kind: JobKind, headers: &HeaderMap, body: &[u8]) -> Response {
-    let jobs = match queue(state) {
-        Ok(jobs) => jobs,
-        Err(response) => return response,
+    let Some(jobs) = queue(state) else {
+        return unsupported();
     };
     let payload = match std::str::from_utf8(body) {
         Ok(text) if !text.trim().is_empty() => text.to_owned(),
@@ -159,9 +155,8 @@ pub async fn submit_reindex(
 }
 
 pub async fn poll(State(state): State<AppState>, Path(id_text): Path<String>) -> Response {
-    let jobs = match queue(&state) {
-        Ok(jobs) => jobs,
-        Err(response) => return response,
+    let Some(jobs) = queue(&state) else {
+        return unsupported();
     };
     let id = match JobId::parse(&id_text) {
         Ok(id) => id,
@@ -202,9 +197,8 @@ pub async fn poll(State(state): State<AppState>, Path(id_text): Path<String>) ->
 }
 
 pub async fn cancel(State(state): State<AppState>, Path(id_text): Path<String>) -> Response {
-    let jobs = match queue(&state) {
-        Ok(jobs) => jobs,
-        Err(response) => return response,
+    let Some(jobs) = queue(&state) else {
+        return unsupported();
     };
     let id = match JobId::parse(&id_text) {
         Ok(id) => id,
