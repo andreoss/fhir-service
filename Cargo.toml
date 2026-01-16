@@ -6,6 +6,7 @@ members = [
     "contract",
     "adapter-memory",
     "adapter-relational",
+    "jobs",
     "api",
     "host",
 ]
