@@ -250,3 +250,24 @@ pub async fn rejection(store: &dyn JobStore) {
     assert_eq!(rejected.attempt, 1);
     assert_eq!(rejected.outcome.as_deref(), Some("no patch"));
 }
+
+pub async fn cancel_signal(store: &dyn JobStore) {
+    store.submit(queued("g1", JobKind::BulkDelete)).await.unwrap();
+    store.claim(&Lease::new("one", 1_000)).await.unwrap();
+
+    let before = store.heartbeat(&job("g1"), "one", 1_000, None).await.unwrap();
+    assert_eq!(before, JobSignal::Continue);
+
+    store.cancel(&job("g1")).await.unwrap();
+
+    let after = store.heartbeat(&job("g1"), "one", 1_000, None).await.unwrap();
+    assert_eq!(after, JobSignal::Cancel);
+
+    let stopped = store
+        .finish(&job("g1"), "one", JobResult::Cancelled)
+        .await
+        .unwrap();
+    assert_eq!(stopped.state, JobState::Cancelled);
+    assert!(stopped.worker.is_none());
+    assert!(stopped.lease.is_none());
+}

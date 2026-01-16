@@ -43,6 +43,11 @@ suite!(a_finished_attempt_keeps_its_result, completion, "jdone");
 suite!(a_listing_filters_by_kind_and_state, listing, "jlist");
 suite!(a_stop_reaches_a_queued_and_a_running_job, cancellation, "jstop");
 suite!(work_that_cannot_succeed_fails_at_once, rejection, "jreject");
+suite!(
+    a_running_job_learns_of_a_stop_at_its_next_heartbeat,
+    cancel_signal,
+    "jsignal"
+);
 suite!(a_failed_attempt_waits_and_runs_again, retries, "jretry", timed);
 suite!(a_job_a_stopped_worker_held_is_claimed_again, recovery, "jresume", timed);
 suite!(a_job_with_no_attempt_left_fails_on_reclaim, exhaustion, "jspent", timed);

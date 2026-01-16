@@ -70,3 +70,9 @@ async fn work_that_cannot_succeed_fails_at_once() {
     let ticker = StepTicker::starting_at(1_000);
     fhir_store_contract::job::rejection(&store(&ticker)).await;
 }
+
+#[tokio::test]
+async fn a_running_job_learns_of_a_stop_at_its_next_heartbeat() {
+    let ticker = StepTicker::starting_at(1_000);
+    fhir_store_contract::job::cancel_signal(&store(&ticker)).await;
+}

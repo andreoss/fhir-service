@@ -123,7 +123,10 @@ impl JobStore for MemoryJobStore {
         if let Some(progress) = progress {
             record.progress = progress;
         }
-        Ok(JobSignal::Continue)
+        match record.cancelled {
+            true => Ok(JobSignal::Cancel),
+            false => Ok(JobSignal::Continue),
+        }
     }
 
     async fn finish(
