@@ -3,10 +3,14 @@ use fhir_store::{system_ticker, JobStore, Ticker};
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 
+pub const RETENTION: i64 = 7 * 24 * 60 * 60 * 1_000;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Schedule {
     pub stalled: i64,
     pub defragment: i64,
+    pub purge: i64,
+    pub retention: i64,
 }
 
 impl Default for Schedule {
@@ -14,6 +18,8 @@ impl Default for Schedule {
         Schedule {
             stalled: 5_000,
             defragment: 60_000,
+            purge: 3_600_000,
+            retention: RETENTION,
         }
     }
 }
@@ -22,11 +28,12 @@ impl Default for Schedule {
 pub struct Sweep {
     pub reclaimed: usize,
     pub compacted: usize,
+    pub purged: usize,
 }
 
 impl Sweep {
     pub fn is_empty(&self) -> bool {
-        self.reclaimed == 0 && self.compacted == 0
+        self.reclaimed == 0 && self.compacted == 0 && self.purged == 0
     }
 }
 
@@ -36,6 +43,7 @@ pub struct Watchdog {
     ticker: Ticker,
     stalled_at: AtomicI64,
     defragment_at: AtomicI64,
+    purge_at: AtomicI64,
 }
 
 impl Watchdog {
@@ -46,6 +54,7 @@ impl Watchdog {
             ticker: system_ticker(),
             stalled_at: AtomicI64::new(i64::MIN),
             defragment_at: AtomicI64::new(i64::MIN),
+            purge_at: AtomicI64::new(i64::MIN),
         }
     }
 
@@ -76,6 +85,9 @@ impl Watchdog {
         }
         if self.due(&self.defragment_at, self.schedule.defragment, now) {
             swept.compacted = self.jobs.defragment().await?;
+        }
+        if self.due(&self.purge_at, self.schedule.purge, now) {
+            swept.purged = self.jobs.purge(self.schedule.retention).await?;
         }
         Ok(swept)
     }

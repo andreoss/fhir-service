@@ -368,3 +368,24 @@ pub async fn limits_are_per_kind(store: &dyn JobStore) {
     assert!(kinds.contains(&JobKind::Export));
     assert!(kinds.contains(&JobKind::Import));
 }
+
+pub async fn retention(store: &dyn JobStore, ticker: &StepTicker) {
+    store.submit(queued("y1", JobKind::Export)).await.unwrap();
+    store.submit(queued("y2", JobKind::Export)).await.unwrap();
+    store.claim(&Lease::new("one", 10_000)).await.unwrap();
+    store
+        .finish(&job("y1"), "one", JobResult::Succeeded("done".to_owned()))
+        .await
+        .unwrap();
+
+    assert_eq!(store.purge(10_000).await.unwrap(), 0, "purged too early");
+    assert!(store.fetch(&job("y1")).await.is_ok());
+
+    ticker.advance(10_000);
+    assert_eq!(store.purge(10_000).await.unwrap(), 1);
+
+    let gone = store.fetch(&job("y1")).await;
+    assert!(matches!(gone, Err(Error::NotFound)), "{gone:?}");
+    assert!(store.fetch(&job("y2")).await.is_ok(), "a live job was purged");
+    assert_eq!(store.purge(10_000).await.unwrap(), 0);
+}

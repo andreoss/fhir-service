@@ -362,6 +362,23 @@ impl JobStore for RelationalJobStore {
         }
     }
 
+    async fn purge(&self, retention: i64) -> Result<usize, Error> {
+        let horizon = (self.ticker)() - retention.max(0);
+        let statement = format!(
+            "delete from {} where state in ($1, $2, $3) and updated_ms <= $4",
+            self.table()
+        );
+        let gone = sqlx::query(&statement)
+            .bind(JobState::Completed.as_str())
+            .bind(JobState::Failed.as_str())
+            .bind(JobState::Cancelled.as_str())
+            .bind(horizon)
+            .execute(&self.pool)
+            .await
+            .map_err(|error| faulted("purging the queue", error))?;
+        Ok(gone.rows_affected() as usize)
+    }
+
     async fn defragment(&self) -> Result<usize, Error> {
         let now = (self.ticker)();
         let statement = format!(

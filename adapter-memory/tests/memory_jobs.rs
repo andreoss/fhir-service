@@ -100,3 +100,9 @@ async fn one_kind_never_holds_another_back() {
     let ticker = StepTicker::starting_at(1_000);
     fhir_store_contract::job::limits_are_per_kind(&store(&ticker)).await;
 }
+
+#[tokio::test]
+async fn an_ended_job_is_kept_for_its_retention_and_then_removed() {
+    let ticker = StepTicker::starting_at(1_000);
+    fhir_store_contract::job::retention(&store(&ticker), &ticker).await;
+}

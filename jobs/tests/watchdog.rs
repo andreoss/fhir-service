@@ -41,6 +41,8 @@ async fn each_sweep_waits_for_its_own_schedule() {
     let schedule = Schedule {
         stalled: 1_000,
         defragment: 10_000,
+        purge: 1_000_000,
+        retention: fhir_jobs::RETENTION,
     };
     let watchdog = watched(&jobs, &ticker, schedule);
     jobs.submit(JobRequest::new(job("s2"), JobKind::Import, "{}"))
@@ -120,4 +122,59 @@ async fn a_limit_holds_when_many_workers_claim_at_once() {
         .await
         .unwrap();
     assert_eq!(running.len(), 3);
+}
+
+#[tokio::test]
+async fn an_ended_job_is_purged_on_schedule_without_an_operator() {
+    let ticker = StepTicker::starting_at(1_000);
+    let jobs = Arc::new(MemoryJobStore::new(ticker.ticker()));
+    let schedule = Schedule {
+        stalled: 1_000,
+        defragment: 1_000,
+        purge: 5_000,
+        retention: 20_000,
+    };
+    let watchdog = watched(&jobs, &ticker, schedule);
+    jobs.submit(JobRequest::new(job("r1"), JobKind::Export, "{}"))
+        .await
+        .unwrap();
+    jobs.claim(&Lease::new("one", 60_000)).await.unwrap();
+    jobs.finish(&job("r1"), "one", JobResult::Succeeded("done".to_owned()))
+        .await
+        .unwrap();
+
+    assert_eq!(watchdog.sweep().await.unwrap().purged, 0);
+
+    ticker.advance(10_000);
+    assert_eq!(watchdog.sweep().await.unwrap().purged, 0, "purged too early");
+    assert!(jobs.fetch(&job("r1")).await.is_ok());
+
+    ticker.advance(20_000);
+    let swept = watchdog.sweep().await.unwrap();
+
+    assert_eq!(swept.purged, 1);
+    assert!(jobs.fetch(&job("r1")).await.is_err());
+}
+
+#[tokio::test]
+async fn a_job_still_running_is_never_purged() {
+    let ticker = StepTicker::starting_at(1_000);
+    let jobs = Arc::new(MemoryJobStore::new(ticker.ticker()));
+    let schedule = Schedule {
+        stalled: 1_000_000,
+        defragment: 1_000_000,
+        purge: 1,
+        retention: 0,
+    };
+    let watchdog = watched(&jobs, &ticker, schedule);
+    jobs.submit(JobRequest::new(job("r2"), JobKind::Export, "{}"))
+        .await
+        .unwrap();
+    jobs.claim(&Lease::new("one", 1_000_000)).await.unwrap();
+
+    ticker.advance(100_000);
+    let swept = watchdog.sweep().await.unwrap();
+
+    assert_eq!(swept.purged, 0);
+    assert_eq!(jobs.fetch(&job("r2")).await.unwrap().state, JobState::Running);
 }

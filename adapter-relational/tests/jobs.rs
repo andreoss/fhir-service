@@ -43,6 +43,12 @@ suite!(a_heartbeat_extends_the_lease, heartbeats, "jbeat");
 suite!(a_finished_attempt_keeps_its_result, completion, "jdone");
 suite!(a_listing_filters_by_kind_and_state, listing, "jlist");
 suite!(an_ended_job_releases_its_description, defragmentation, "jdefrag");
+suite!(
+    an_ended_job_is_kept_for_its_retention_and_then_removed,
+    retention,
+    "jkeep",
+    timed
+);
 suite!(a_stop_reaches_a_queued_and_a_running_job, cancellation, "jstop");
 suite!(a_kind_runs_no_more_jobs_at_once_than_its_limit, concurrency, "jcap");
 suite!(one_kind_never_holds_another_back, limits_are_per_kind, "jkinds");

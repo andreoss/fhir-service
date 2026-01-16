@@ -354,6 +354,8 @@ pub trait JobStore: Send + Sync {
 
     async fn cancel(&self, id: &JobId) -> Result<JobRecord, Error>;
 
+    async fn purge(&self, retention: i64) -> Result<usize, Error>;
+
     async fn defragment(&self) -> Result<usize, Error>;
 
     async fn list(&self, filter: &JobFilter) -> Result<Vec<JobRecord>, Error>;

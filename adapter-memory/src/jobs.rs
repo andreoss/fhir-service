@@ -245,6 +245,17 @@ impl JobStore for MemoryJobStore {
         Ok(record.clone())
     }
 
+    async fn purge(&self, retention: i64) -> Result<usize, Error> {
+        let now = (self.ticker)();
+        let horizon = now - retention.max(0);
+        let mut records = self.held()?;
+        let before = records.len();
+        records.retain(|record| !(record.state.is_terminal() && record.updated <= horizon));
+        let removed = before - records.len();
+        records.shrink_to_fit();
+        Ok(removed)
+    }
+
     async fn defragment(&self) -> Result<usize, Error> {
         let now = (self.ticker)();
         let mut records = self.held()?;
