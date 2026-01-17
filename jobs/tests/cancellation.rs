@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use fhir_adapter_memory::MemoryJobStore;
 use fhir_core::Error;
-use fhir_jobs::{JobHandler, Orchestrator, Unit, UnitOutcome, Worker};
+use fhir_jobs::{JobContext, JobHandler, Orchestrator, Unit, UnitOutcome, Worker};
 use fhir_store::{
     JobId, JobKind, JobRequest, JobState, JobStore, StepTicker,
 };
@@ -22,13 +22,13 @@ impl JobHandler for Counting {
         JobKind::Export
     }
 
-    async fn plan(&self, _payload: &str) -> Result<Vec<Unit>, Error> {
+    async fn plan(&self, _job: &JobContext) -> Result<Vec<Unit>, Error> {
         Ok((0..self.units)
             .map(|position| Unit::new(format!("unit {position}"), String::new()))
             .collect())
     }
 
-    async fn process(&self, _unit: &Unit) -> Result<UnitOutcome, Error> {
+    async fn process(&self, _job: &JobContext, _unit: &Unit) -> Result<UnitOutcome, Error> {
         let ran = self.run.fetch_add(1, Ordering::SeqCst) + 1;
         if ran == self.stop_after {
             self.jobs.cancel(&self.id).await?;

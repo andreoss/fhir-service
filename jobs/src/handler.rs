@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use fhir_core::Error;
-use fhir_store::JobKind;
+use fhir_store::{JobId, JobKind, JobRecord};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Unit {
@@ -36,7 +36,31 @@ impl UnitOutcome {
 pub trait JobHandler: Send + Sync {
     fn kind(&self) -> JobKind;
 
-    async fn plan(&self, payload: &str) -> Result<Vec<Unit>, Error>;
+    async fn plan(&self, job: &JobContext) -> Result<Vec<Unit>, Error>;
 
-    async fn process(&self, unit: &Unit) -> Result<UnitOutcome, Error>;
+    async fn process(&self, job: &JobContext, unit: &Unit) -> Result<UnitOutcome, Error>;
+}
+
+pub struct JobContext {
+    pub id: JobId,
+    pub payload: String,
+    pub submitted: i64,
+}
+
+impl JobContext {
+    pub fn new(id: JobId, payload: impl Into<String>, submitted: i64) -> JobContext {
+        JobContext {
+            id,
+            payload: payload.into(),
+            submitted,
+        }
+    }
+
+    pub fn of(record: &JobRecord) -> JobContext {
+        JobContext::new(
+            record.id.clone(),
+            record.payload.clone().unwrap_or_else(|| "{}".to_owned()),
+            record.created,
+        )
+    }
 }

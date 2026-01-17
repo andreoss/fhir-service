@@ -1,4 +1,4 @@
-use crate::handler::{JobHandler, Unit, UnitOutcome};
+use crate::handler::{JobContext, JobHandler, Unit, UnitOutcome};
 use async_trait::async_trait;
 use fhir_core::search::ParameterSpec;
 use fhir_core::{Error, FhirVersion, Patch, ResourceEnvelope, ResourceType};
@@ -74,11 +74,11 @@ impl JobHandler for ExportJob {
         JobKind::Export
     }
 
-    async fn plan(&self, payload: &str) -> Result<Vec<Unit>, Error> {
-        units_per_type(self.store.as_ref(), payload, |_| String::new()).await
+    async fn plan(&self, job: &JobContext) -> Result<Vec<Unit>, Error> {
+        units_per_type(self.store.as_ref(), &job.payload, |_| String::new()).await
     }
 
-    async fn process(&self, unit: &Unit) -> Result<UnitOutcome, Error> {
+    async fn process(&self, _job: &JobContext, unit: &Unit) -> Result<UnitOutcome, Error> {
         let entries = current_of(self.store.as_ref(), &unit.label).await?;
         Ok(UnitOutcome::handled(entries.len() as u64))
     }
@@ -101,8 +101,8 @@ impl JobHandler for ImportJob {
         JobKind::Import
     }
 
-    async fn plan(&self, payload: &str) -> Result<Vec<Unit>, Error> {
-        let payload = body(payload)?;
+    async fn plan(&self, job: &JobContext) -> Result<Vec<Unit>, Error> {
+        let payload = body(&job.payload)?;
         let rows = payload
             .get("resources")
             .and_then(Value::as_array)
@@ -115,7 +115,7 @@ impl JobHandler for ImportJob {
             .collect())
     }
 
-    async fn process(&self, unit: &Unit) -> Result<UnitOutcome, Error> {
+    async fn process(&self, _job: &JobContext, unit: &Unit) -> Result<UnitOutcome, Error> {
         let envelope = match ResourceEnvelope::parse(self.version, unit.detail.as_bytes()) {
             Ok(envelope) => envelope,
             Err(error) => {
@@ -156,11 +156,11 @@ impl JobHandler for BulkDeleteJob {
         JobKind::BulkDelete
     }
 
-    async fn plan(&self, payload: &str) -> Result<Vec<Unit>, Error> {
-        units_per_type(self.store.as_ref(), payload, |_| String::new()).await
+    async fn plan(&self, job: &JobContext) -> Result<Vec<Unit>, Error> {
+        units_per_type(self.store.as_ref(), &job.payload, |_| String::new()).await
     }
 
-    async fn process(&self, unit: &Unit) -> Result<UnitOutcome, Error> {
+    async fn process(&self, _job: &JobContext, unit: &Unit) -> Result<UnitOutcome, Error> {
         let entries = current_of(self.store.as_ref(), &unit.label).await?;
         let mut outcome = UnitOutcome::default();
         for entry in entries {
@@ -192,17 +192,17 @@ impl JobHandler for BulkUpdateJob {
         JobKind::BulkUpdate
     }
 
-    async fn plan(&self, payload: &str) -> Result<Vec<Unit>, Error> {
-        let parsed = body(payload)?;
+    async fn plan(&self, job: &JobContext) -> Result<Vec<Unit>, Error> {
+        let parsed = body(&job.payload)?;
         let patch = parsed
             .get("patch")
             .ok_or_else(|| Error::InvalidPatch("no patch was supplied".to_owned()))?;
         Patch::parse(patch.to_string().as_bytes())?;
         let carried = patch.to_string();
-        units_per_type(self.store.as_ref(), payload, move |_| carried.clone()).await
+        units_per_type(self.store.as_ref(), &job.payload, move |_| carried.clone()).await
     }
 
-    async fn process(&self, unit: &Unit) -> Result<UnitOutcome, Error> {
+    async fn process(&self, _job: &JobContext, unit: &Unit) -> Result<UnitOutcome, Error> {
         let patch = Patch::parse(unit.detail.as_bytes())?;
         let entries = current_of(self.store.as_ref(), &unit.label).await?;
         let mut outcome = UnitOutcome::default();
@@ -242,8 +242,8 @@ impl JobHandler for ReindexJob {
         JobKind::Reindex
     }
 
-    async fn plan(&self, payload: &str) -> Result<Vec<Unit>, Error> {
-        let parsed = body(payload)?;
+    async fn plan(&self, job: &JobContext) -> Result<Vec<Unit>, Error> {
+        let parsed = body(&job.payload)?;
         let urls: Vec<String> = parsed
             .get("urls")
             .and_then(Value::as_array)
@@ -261,7 +261,7 @@ impl JobHandler for ReindexJob {
             .collect())
     }
 
-    async fn process(&self, unit: &Unit) -> Result<UnitOutcome, Error> {
+    async fn process(&self, _job: &JobContext, unit: &Unit) -> Result<UnitOutcome, Error> {
         let specs = self.specs(std::slice::from_ref(&unit.detail)).await?;
         let reports = self.store.reindex(&specs).await?;
         let mut outcome = UnitOutcome::default();

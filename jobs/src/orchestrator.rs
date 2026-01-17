@@ -1,4 +1,4 @@
-use crate::handler::{JobHandler, UnitOutcome};
+use crate::handler::{JobContext, JobHandler, UnitOutcome};
 use fhir_core::Error;
 use fhir_store::{
     JobKind, JobProgress, JobRecord, JobResult, JobSignal, JobStore, JobState,
@@ -54,8 +54,8 @@ impl Orchestrator {
                     .await
             }
         };
-        let payload = record.payload.clone().unwrap_or_else(|| "{}".to_owned());
-        let units = match handler.plan(&payload).await {
+        let context = JobContext::of(record);
+        let units = match handler.plan(&context).await {
             Ok(units) => units,
             Err(error) => {
                 return jobs
@@ -78,7 +78,7 @@ impl Orchestrator {
             {
                 return jobs.finish(&record.id, worker, JobResult::Cancelled).await;
             }
-            match handler.process(unit).await {
+            match handler.process(&context, unit).await {
                 Ok(outcome) => {
                     summary.handled += outcome.handled;
                     summary.failures.extend(outcome.failures);
