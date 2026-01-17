@@ -21,13 +21,14 @@ impl Unit {
 pub struct UnitOutcome {
     pub handled: u64,
     pub failures: Vec<String>,
+    pub detail: serde_json::Map<String, serde_json::Value>,
 }
 
 impl UnitOutcome {
     pub fn handled(handled: u64) -> UnitOutcome {
         UnitOutcome {
             handled,
-            failures: Vec::new(),
+            ..UnitOutcome::default()
         }
     }
 }

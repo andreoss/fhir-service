@@ -58,32 +58,6 @@ async fn current_of(store: &dyn ResourceStore, label: &str) -> Result<Vec<Resour
     Ok(page.entries)
 }
 
-pub struct ExportJob {
-    store: Arc<dyn ResourceStore>,
-}
-
-impl ExportJob {
-    pub fn new(store: Arc<dyn ResourceStore>) -> ExportJob {
-        ExportJob { store }
-    }
-}
-
-#[async_trait]
-impl JobHandler for ExportJob {
-    fn kind(&self) -> JobKind {
-        JobKind::Export
-    }
-
-    async fn plan(&self, job: &JobContext) -> Result<Vec<Unit>, Error> {
-        units_per_type(self.store.as_ref(), &job.payload, |_| String::new()).await
-    }
-
-    async fn process(&self, _job: &JobContext, unit: &Unit) -> Result<UnitOutcome, Error> {
-        let entries = current_of(self.store.as_ref(), &unit.label).await?;
-        Ok(UnitOutcome::handled(entries.len() as u64))
-    }
-}
-
 pub struct ImportJob {
     store: Arc<dyn ResourceStore>,
     version: FhirVersion,
@@ -122,6 +96,7 @@ impl JobHandler for ImportJob {
                 return Ok(UnitOutcome {
                     handled: 0,
                     failures: vec![format!("{}: {error}", unit.label)],
+                    ..UnitOutcome::default()
                 })
             }
         };
@@ -135,6 +110,7 @@ impl JobHandler for ImportJob {
             Err(error) => Ok(UnitOutcome {
                 handled: 0,
                 failures: vec![format!("{}: {error}", unit.label)],
+                ..UnitOutcome::default()
             }),
         }
     }

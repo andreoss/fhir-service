@@ -26,7 +26,7 @@ async fn main() {
 
 async fn run() -> Result<(), Error> {
     let config = fhir_host::Config::from_env()?;
-    let (store, jobs) = build_stores(&config).await?;
+    let (store, jobs, outputs) = build_stores(&config).await?;
     let store_dependency = {
         let store = Arc::clone(&store);
         Arc::new(move || store.health().map_err(|error| error.to_string()))
@@ -36,9 +36,12 @@ async fn run() -> Result<(), Error> {
         check: store_dependency,
     }];
     let mut service = Service::started(Arc::clone(&store), config.version, dependencies).await?;
+    if let Some(outputs) = &outputs {
+        service = service.with_outputs(Arc::clone(outputs));
+    }
     if let Some(jobs) = &jobs {
         service = service.with_jobs(Arc::clone(jobs));
-        spawn_worker(Arc::clone(jobs), store, config.version);
+        spawn_worker(Arc::clone(jobs), store, outputs, config.version);
         spawn_watchdog(Arc::clone(jobs));
     }
     eprintln!("serving {config}");
@@ -47,12 +50,42 @@ async fn run() -> Result<(), Error> {
     bound.serve().await
 }
 
-type Stores = (Arc<dyn ResourceStore>, Option<Arc<dyn fhir_store::JobStore>>);
+type Stores = (
+    Arc<dyn ResourceStore>,
+    Option<Arc<dyn fhir_store::JobStore>>,
+    Option<Arc<dyn fhir_store::BulkStore>>,
+);
 
 async fn build_stores(config: &fhir_host::Config) -> Result<Stores, Error> {
     let store = build_store(config).await?;
     let jobs = build_jobs(config).await?;
-    Ok((store, jobs))
+    let outputs = build_outputs(config).await?;
+    Ok((store, jobs, outputs))
+}
+
+async fn build_outputs(
+    config: &fhir_host::Config,
+) -> Result<Option<Arc<dyn fhir_store::BulkStore>>, Error> {
+    match config.backend {
+        #[cfg(feature = "backend-memory")]
+        fhir_host::Backend::Memory => Ok(Some(Arc::new(
+            fhir_adapter_memory::MemoryBulkStore::new(),
+        ))),
+        #[cfg(not(feature = "backend-memory"))]
+        fhir_host::Backend::Memory => Ok(None),
+        #[cfg(feature = "backend-relational")]
+        fhir_host::Backend::Relational => {
+            let namespace = match std::env::var(fhir_adapter_relational::ENV_NAMESPACE) {
+                Ok(name) => Namespace::parse(&name)?,
+                Err(_) => Namespace::default(),
+            };
+            let store = RelationalStore::connect(&config.database_url, namespace).await?;
+            Ok(Some(Arc::new(store.outputs())))
+        }
+        #[cfg(not(feature = "backend-relational"))]
+        fhir_host::Backend::Relational => Ok(None),
+        fhir_host::Backend::Document => Ok(None),
+    }
 }
 
 async fn build_store(config: &fhir_host::Config) -> Result<Arc<dyn ResourceStore>, Error> {
@@ -114,16 +147,18 @@ async fn build_jobs(config: &fhir_host::Config) -> Result<Option<Arc<dyn fhir_st
 fn spawn_worker(
     jobs: Arc<dyn fhir_store::JobStore>,
     store: Arc<dyn ResourceStore>,
+    outputs: Option<Arc<dyn fhir_store::BulkStore>>,
     version: fhir_core::FhirVersion,
 ) {
-    let orchestrator = Arc::new(
-        fhir_jobs::Orchestrator::new()
-            .with(Arc::new(fhir_jobs::ExportJob::new(Arc::clone(&store))))
-            .with(Arc::new(fhir_jobs::ImportJob::new(Arc::clone(&store), version)))
-            .with(Arc::new(fhir_jobs::BulkDeleteJob::new(Arc::clone(&store))))
-            .with(Arc::new(fhir_jobs::BulkUpdateJob::new(Arc::clone(&store))))
-            .with(Arc::new(fhir_jobs::ReindexJob::new(store))),
-    );
+    let mut registry = fhir_jobs::Orchestrator::new()
+        .with(Arc::new(fhir_jobs::ImportJob::new(Arc::clone(&store), version)))
+        .with(Arc::new(fhir_jobs::BulkDeleteJob::new(Arc::clone(&store))))
+        .with(Arc::new(fhir_jobs::BulkUpdateJob::new(Arc::clone(&store))))
+        .with(Arc::new(fhir_jobs::ReindexJob::new(Arc::clone(&store))));
+    if let Some(sink) = outputs {
+        registry = registry.with(Arc::new(fhir_jobs::ExportJob::new(store, sink)));
+    }
+    let orchestrator = Arc::new(registry);
     let worker = fhir_jobs::Worker::new(jobs, orchestrator, "host", LEASE_MILLIS);
     tokio::spawn(async move {
         loop {

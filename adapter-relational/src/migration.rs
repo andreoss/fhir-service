@@ -173,6 +173,10 @@ create table if not exists job_output (
 );
 ";
 
+const OUTPUT_TUNING: &str = "
+create index if not exists job_output_kind on job_output (job_id, kind);
+";
+
 const JOB_TUNING: &str = "
 create index if not exists job_lease on job (state, lease_ms);
 create index if not exists job_ended on job (state, updated_ms);
@@ -227,6 +231,12 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "job output files",
         required: true,
         statements: OUTPUT_TABLE,
+    },
+    Migration {
+        version: 9,
+        name: "output index tuning",
+        required: false,
+        statements: OUTPUT_TUNING,
     },
 ];
 

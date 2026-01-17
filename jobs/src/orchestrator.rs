@@ -82,6 +82,7 @@ impl Orchestrator {
                 Ok(outcome) => {
                     summary.handled += outcome.handled;
                     summary.failures.extend(outcome.failures);
+                    summary.detail.extend(outcome.detail);
                 }
                 Err(error) => {
                     return jobs
@@ -104,12 +105,17 @@ impl Orchestrator {
 }
 
 fn report(units: u64, summary: &UnitOutcome) -> String {
-    serde_json::json!({
-        "units": units,
-        "handled": summary.handled,
-        "failures": summary.failures,
-    })
-    .to_string()
+    let mut report = serde_json::Map::new();
+    report.insert("units".to_owned(), serde_json::Value::from(units));
+    report.insert("handled".to_owned(), serde_json::Value::from(summary.handled));
+    report.insert(
+        "failures".to_owned(),
+        serde_json::Value::from(summary.failures.clone()),
+    );
+    for (name, value) in &summary.detail {
+        report.insert(name.clone(), value.clone());
+    }
+    serde_json::Value::Object(report).to_string()
 }
 
 pub struct Worker {

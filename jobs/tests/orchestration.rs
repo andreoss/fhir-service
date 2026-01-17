@@ -1,4 +1,4 @@
-use fhir_adapter_memory::{MemoryJobStore, MemoryStore};
+use fhir_adapter_memory::{MemoryBulkStore, MemoryJobStore, MemoryStore};
 use fhir_core::FhirVersion;
 use fhir_jobs::{BulkDeleteJob, BulkUpdateJob, ExportJob, ImportJob, Orchestrator, Worker};
 use fhir_store::{
@@ -16,6 +16,10 @@ async fn seeded() -> Arc<MemoryStore> {
     store.create(patient("p1", "Stone", true)).await.unwrap();
     store.create(patient("p2", "Rivers", true)).await.unwrap();
     store
+}
+
+fn sink() -> Arc<dyn fhir_store::BulkStore> {
+    Arc::new(MemoryBulkStore::new())
 }
 
 fn queue() -> (Arc<MemoryJobStore>, StepTicker) {
@@ -39,7 +43,7 @@ async fn ran(
 async fn an_export_counts_every_resource_of_the_named_types() {
     let store = seeded().await;
     let (jobs, _ticker) = queue();
-    let orchestrator = Orchestrator::new().with(Arc::new(ExportJob::new(store)));
+    let orchestrator = Orchestrator::new().with(Arc::new(ExportJob::new(store, sink())));
     let record = ran(
         jobs,
         orchestrator,
@@ -59,7 +63,7 @@ async fn an_export_counts_every_resource_of_the_named_types() {
 async fn an_export_without_named_types_plans_every_stored_type() {
     let store = seeded().await;
     let (jobs, _ticker) = queue();
-    let orchestrator = Orchestrator::new().with(Arc::new(ExportJob::new(store)));
+    let orchestrator = Orchestrator::new().with(Arc::new(ExportJob::new(store, sink())));
     let record = ran(
         jobs,
         orchestrator,
@@ -155,7 +159,7 @@ async fn a_job_of_an_unregistered_kind_fails_with_its_reason() {
 async fn a_malformed_payload_fails_the_job_and_not_the_worker() {
     let store = seeded().await;
     let (jobs, _ticker) = queue();
-    let orchestrator = Orchestrator::new().with(Arc::new(ExportJob::new(store)));
+    let orchestrator = Orchestrator::new().with(Arc::new(ExportJob::new(store, sink())));
     let record = ran(
         jobs,
         orchestrator,
@@ -170,7 +174,7 @@ async fn a_malformed_payload_fails_the_job_and_not_the_worker() {
 #[tokio::test]
 async fn an_orchestrator_reports_the_kinds_it_runs() {
     let store = seeded().await;
-    let orchestrator = Orchestrator::default().with(Arc::new(ExportJob::new(store)));
+    let orchestrator = Orchestrator::default().with(Arc::new(ExportJob::new(store, sink())));
     assert_eq!(orchestrator.kinds(), vec![JobKind::Export]);
     assert!(orchestrator.handler(JobKind::Import).is_err());
 }

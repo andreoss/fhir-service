@@ -16,12 +16,20 @@ use crate::handlers::AppError;
 const FHIR_JSON: &str = "application/fhir+json";
 const JSON: &str = "application/json";
 
+const NDJSON: &str = "application/fhir+ndjson";
+
+const OUTCOME: &str = "OperationOutcome";
+
 pub const JOBS: &str = "/_jobs";
 
 pub const RETRY_AFTER: u64 = 1;
 
 fn queue(state: &AppState) -> Option<Arc<dyn JobStore>> {
     state.jobs.as_ref().map(Arc::clone)
+}
+
+fn sink(state: &AppState) -> Option<Arc<dyn fhir_store::BulkStore>> {
+    state.outputs.as_ref().map(Arc::clone)
 }
 
 fn unsupported() -> Response {
@@ -60,13 +68,27 @@ fn progress_of(record: &JobRecord) -> String {
     }
 }
 
-fn manifest(record: &JobRecord) -> Value {
+fn manifest(host: &str, record: &JobRecord, files: &[fhir_store::Output]) -> Value {
     let outcome = record
         .outcome
         .as_deref()
         .and_then(|text| serde_json::from_str::<Value>(text).ok())
         .unwrap_or_else(|| Value::String(record.outcome.clone().unwrap_or_default()));
-    serde_json::json!({
+    let entry = |file: &fhir_store::Output| {
+        serde_json::json!({
+            "type": file.kind,
+            "url": format!("http://{host}{JOBS}/{}/{}", record.id, file.name),
+            "count": file.count,
+        })
+    };
+    let listed = |wanted: bool| -> Vec<Value> {
+        files
+            .iter()
+            .filter(|file| (file.kind == OUTCOME) == wanted)
+            .map(entry)
+            .collect()
+    };
+    let mut body = serde_json::json!({
         "id": record.id.as_str(),
         "kind": record.kind.as_str(),
         "state": record.state.as_str(),
@@ -74,8 +96,20 @@ fn manifest(record: &JobRecord) -> Value {
             "done": record.progress.done,
             "total": record.progress.total,
         },
+        "requiresAccessToken": false,
+        "output": listed(false),
+        "error": listed(true),
         "outcome": outcome,
-    })
+    });
+    if let Some(instant) = record
+        .outcome
+        .as_deref()
+        .and_then(|text| serde_json::from_str::<Value>(text).ok())
+        .and_then(|found| found.get("transactionTime").cloned())
+    {
+        body["transactionTime"] = instant;
+    }
+    body
 }
 
 fn accepted(host: &str, id: &JobId) -> Response {
@@ -154,7 +188,11 @@ pub async fn submit_reindex(
     submit(&state, JobKind::Reindex, &headers, &body).await
 }
 
-pub async fn poll(State(state): State<AppState>, Path(id_text): Path<String>) -> Response {
+pub async fn poll(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id_text): Path<String>,
+) -> Response {
     let Some(jobs) = queue(&state) else {
         return unsupported();
     };
@@ -182,7 +220,12 @@ pub async fn poll(State(state): State<AppState>, Path(id_text): Path<String>) ->
             response
         }
         JobState::Completed => {
-            let mut response = Response::new(Body::from(manifest(&record).to_string()));
+            let files = match sink(&state) {
+                Some(sink) => sink.list(&record.id).await.unwrap_or_default(),
+                None => Vec::new(),
+            };
+            let body = manifest(&host_of(&headers), &record, &files).to_string();
+            let mut response = Response::new(Body::from(body));
             response
                 .headers_mut()
                 .insert(header::CONTENT_TYPE, HeaderValue::from_static(JSON));
@@ -208,6 +251,29 @@ pub async fn cancel(State(state): State<AppState>, Path(id_text): Path<String>) 
         Ok(_) => {
             let mut response = Response::new(Body::empty());
             *response.status_mut() = StatusCode::ACCEPTED;
+            response
+        }
+        Err(error) => AppError::from(error).into_response_now(),
+    }
+}
+
+pub async fn output(
+    State(state): State<AppState>,
+    Path((id_text, name)): Path<(String, String)>,
+) -> Response {
+    let Some(sink) = sink(&state) else {
+        return unsupported();
+    };
+    let id = match JobId::parse(&id_text) {
+        Ok(id) => id,
+        Err(_) => return AppError::from(Error::NotFound).into_response_now(),
+    };
+    match sink.read(&id, &name).await {
+        Ok(body) => {
+            let mut response = Response::new(Body::from(body));
+            response
+                .headers_mut()
+                .insert(header::CONTENT_TYPE, HeaderValue::from_static(NDJSON));
             response
         }
         Err(error) => AppError::from(error).into_response_now(),

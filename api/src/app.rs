@@ -21,6 +21,7 @@ use crate::handlers::{
 pub struct AppState {
     pub store: Arc<dyn ResourceStore>,
     pub jobs: Option<Arc<dyn fhir_store::JobStore>>,
+    pub outputs: Option<Arc<dyn fhir_store::BulkStore>>,
     pub version: FhirVersion,
     pub dependencies: Arc<Vec<Dependency>>,
     pub registry: Arc<Registry>,
@@ -49,6 +50,7 @@ impl Service {
             state: AppState {
                 store,
                 jobs: None,
+                outputs: None,
                 version,
                 dependencies: Arc::new(dependencies),
                 registry: Arc::new(Registry::new()),
@@ -62,6 +64,15 @@ impl Service {
         Service {
             state: AppState {
                 jobs: Some(jobs),
+                ..self.state
+            },
+        }
+    }
+
+    pub fn with_outputs(self, outputs: Arc<dyn fhir_store::BulkStore>) -> Service {
+        Service {
+            state: AppState {
+                outputs: Some(outputs),
                 ..self.state
             },
         }
@@ -146,6 +157,7 @@ fn routes() -> Router<AppState> {
             .route("/$bulk-update", post(crate::job::submit_bulk_update))
             .route("/$reindex", post(crate::job::submit_reindex))
             .route("/_jobs/{id}", get(crate::job::poll).delete(crate::job::cancel))
+            .route("/_jobs/{id}/{*name}", get(crate::job::output))
             .fallback(not_found)
             .method_not_allowed_fallback(method_not_allowed)
 }
