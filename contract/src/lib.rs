@@ -1,4 +1,5 @@
 
+pub mod bulk;
 pub mod fixture;
 pub mod job;
 pub mod search;

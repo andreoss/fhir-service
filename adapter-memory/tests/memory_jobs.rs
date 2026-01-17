@@ -106,3 +106,8 @@ async fn an_ended_job_is_kept_for_its_retention_and_then_removed() {
     let ticker = StepTicker::starting_at(1_000);
     fhir_store_contract::job::retention(&store(&ticker), &ticker).await;
 }
+
+#[tokio::test]
+async fn the_sink_satisfies_the_output_contract() {
+    fhir_store_contract::bulk::outputs(&fhir_adapter_memory::MemoryBulkStore::new()).await;
+}
