@@ -27,6 +27,19 @@ pub use value::{Comparator, SearchValue, Token, TokenSystem, ValueType};
 use crate::{FhirInstant, ResourceId};
 use serde_json::Value;
 
+pub fn pointers(element: &Value) -> Vec<String> {
+    match element {
+        Value::String(text) => vec![text.clone()],
+        Value::Array(items) => items.iter().flat_map(pointers).collect(),
+        Value::Object(map) => map
+            .get("reference")
+            .and_then(Value::as_str)
+            .map(|text| vec![text.to_owned()])
+            .unwrap_or_default(),
+        Value::Bool(_) | Value::Number(_) | Value::Null => Vec::new(),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Filter {
     pub name: String,

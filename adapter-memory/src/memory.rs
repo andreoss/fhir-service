@@ -78,16 +78,7 @@ enum Resolved {
 }
 
 fn references(element: &Value) -> Vec<String> {
-    match element {
-        Value::String(text) => vec![text.clone()],
-        Value::Array(items) => items.iter().flat_map(references).collect(),
-        Value::Object(map) => map
-            .get("reference")
-            .and_then(Value::as_str)
-            .map(|text| vec![text.to_owned()])
-            .unwrap_or_default(),
-        Value::Bool(_) | Value::Number(_) | Value::Null => Vec::new(),
-    }
+    fhir_core::search::pointers(element)
 }
 
 fn normalized(text: &str) -> String {
@@ -181,26 +172,7 @@ fn in_compartment(
     envelope: &ResourceEnvelope,
     body: &Value,
 ) -> bool {
-    let Some(def) = fhir_core::search::compartment::definition(compartment.kind.as_str()) else {
-        return false;
-    };
-    let Some(member) = def.member(envelope.resource_type()) else {
-        return false;
-    };
-    if member.params.is_empty() {
-        return envelope.resource_type() == compartment.kind && envelope.id() == &compartment.id;
-    }
-    let root = format!("{}/{}", compartment.kind.as_str(), compartment.id.as_str());
-    member.params.iter().any(|name| {
-        fhir_core::search::lookup(Some(envelope.resource_type()), name)
-            .map(|def| at(&def.target, body))
-            .unwrap_or_default()
-            .iter()
-            .any(|text| {
-                let found = normalized(text);
-                found == root || found == compartment.id.as_str()
-            })
-    })
+    fhir_core::search::compartment::contains(compartment, envelope.resource_type(), body)
 }
 
 fn admitted(grant: Option<&Grant>, envelope: &ResourceEnvelope, body: &Value) -> bool {
