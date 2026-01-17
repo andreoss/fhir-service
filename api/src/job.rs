@@ -1,5 +1,5 @@
 use axum::body::Body;
-use axum::extract::{Path, State};
+use axum::extract::{Path, RawQuery, State};
 use axum::http::header::{self, HeaderMap, HeaderValue};
 use axum::http::StatusCode;
 use axum::response::Response;
@@ -19,6 +19,8 @@ const JSON: &str = "application/json";
 const NDJSON: &str = "application/fhir+ndjson";
 
 const OUTCOME: &str = "OperationOutcome";
+
+const LISTED: [&str; 2] = ["_type", "_typeFilter"];
 
 pub const JOBS: &str = "/_jobs";
 
@@ -151,9 +153,10 @@ async fn submit(state: &AppState, kind: JobKind, headers: &HeaderMap, body: &[u8
 pub async fn submit_export(
     State(state): State<AppState>,
     headers: HeaderMap,
+    RawQuery(query): RawQuery,
     body: axum::body::Bytes,
 ) -> Response {
-    submit(&state, JobKind::Export, &headers, &body).await
+    submit_export_scope(&state, "system", None, &headers, query.as_deref(), &body).await
 }
 
 pub async fn submit_import(
@@ -278,4 +281,92 @@ pub async fn output(
         }
         Err(error) => AppError::from(error).into_response_now(),
     }
+}
+
+fn described(
+    scope: &str,
+    id: Option<&str>,
+    raw: Option<&str>,
+    body: &[u8],
+) -> Result<String, Error> {
+    let mut payload = match std::str::from_utf8(body) {
+        Ok(text) if !text.trim().is_empty() => serde_json::from_str::<Value>(text)
+            .map_err(|error| Error::InvalidJson(error.to_string()))?,
+        Ok(_) => Value::Object(serde_json::Map::new()),
+        Err(error) => return Err(Error::InvalidJson(error.to_string())),
+    };
+    let carried = payload
+        .as_object_mut()
+        .ok_or_else(|| Error::InvalidJson("an export is described by an object".to_owned()))?;
+    carried.insert("scope".to_owned(), Value::String(scope.to_owned()));
+    if let Some(id) = id {
+        carried.insert("id".to_owned(), Value::String(id.to_owned()));
+    }
+    for (name, value) in crate::query::pairs(raw) {
+        if value.trim().is_empty() {
+            return Err(Error::UnsupportedParameter(format!(
+                "{name:?} with an empty value"
+            )));
+        }
+        match LISTED.contains(&name.as_str()) {
+            true => {
+                let items = value
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|part| !part.is_empty())
+                    .map(|part| Value::String(part.to_owned()))
+                    .collect();
+                carried.insert(name, Value::Array(items))
+            }
+            false => carried.insert(name, Value::String(value)),
+        };
+    }
+    if !carried.contains_key("_till") {
+        carried.insert(
+            "_till".to_owned(),
+            Value::String(fhir_store::system_clock()().as_str().to_owned()),
+        );
+    }
+    Ok(Value::Object(carried.clone()).to_string())
+}
+
+async fn submit_export_scope(
+    state: &AppState,
+    scope: &str,
+    id: Option<&str>,
+    headers: &HeaderMap,
+    raw: Option<&str>,
+    body: &[u8],
+) -> Response {
+    match described(scope, id, raw, body) {
+        Ok(payload) => submit(state, JobKind::Export, headers, payload.as_bytes()).await,
+        Err(error) => AppError::from(error).into_response_now(),
+    }
+}
+
+pub async fn submit_patient_export(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    RawQuery(query): RawQuery,
+    body: axum::body::Bytes,
+) -> Response {
+    submit_export_scope(&state, "patient", None, &headers, query.as_deref(), &body).await
+}
+
+pub async fn submit_group_export(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    RawQuery(query): RawQuery,
+    body: axum::body::Bytes,
+) -> Response {
+    submit_export_scope(
+        &state,
+        "group",
+        Some(&id),
+        &headers,
+        query.as_deref(),
+        &body,
+    )
+    .await
 }

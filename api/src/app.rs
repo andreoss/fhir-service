@@ -151,7 +151,15 @@ fn routes() -> Router<AppState> {
             .route("/{type}/{id}/_history/{vid}", get(vread))
             .route("/{type}", get(search_type).post(create).put(conditional_update).delete(conditional_delete).patch(conditional_patch))
             .route("/{type}/{id}/$purge-history", post(purge_history))
-            .route("/$export", post(crate::job::submit_export))
+            .route("/$export", get(crate::job::submit_export).post(crate::job::submit_export))
+            .route(
+                "/Patient/$export",
+                get(crate::job::submit_patient_export).post(crate::job::submit_patient_export),
+            )
+            .route(
+                "/Group/{id}/$export",
+                get(crate::job::submit_group_export).post(crate::job::submit_group_export),
+            )
             .route("/$import", post(crate::job::submit_import))
             .route("/$bulk-delete", post(crate::job::submit_bulk_delete))
             .route("/$bulk-update", post(crate::job::submit_bulk_update))

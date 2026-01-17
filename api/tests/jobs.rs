@@ -80,7 +80,11 @@ async fn a_submission_answers_with_a_status_location_and_a_retry_after() {
     assert!(!header(&reply, "retry-after").is_empty());
     let held = jobs.fetch(&submitted_id(&reply)).await.unwrap();
     assert_eq!(held.kind, fhir_store::JobKind::Export);
-    assert_eq!(held.payload.as_deref(), Some(r#"{"types":["Patient"]}"#));
+    let payload: serde_json::Value =
+        serde_json::from_str(held.payload.as_deref().expect("a job carries a description")).unwrap();
+    assert_eq!(payload["types"][0], "Patient");
+    assert_eq!(payload["scope"], "system");
+    assert!(payload["_till"].is_string());
 }
 
 #[tokio::test]
