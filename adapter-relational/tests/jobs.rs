@@ -115,3 +115,12 @@ async fn a_limit_holds_when_many_workers_claim_at_once() {
     assert_eq!(running.len(), 3);
     support::drop_namespace(&pool, &namespace).await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_sink_satisfies_the_output_contract() {
+    let Some((store, pool, namespace)) = support::fresh("jout").await else {
+        return;
+    };
+    fhir_store_contract::bulk::outputs(&store.outputs()).await;
+    support::drop_namespace(&pool, &namespace).await;
+}

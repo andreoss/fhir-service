@@ -136,6 +136,10 @@ impl RelationalStore {
         crate::jobs::RelationalJobStore::new(self.pool.clone(), self.namespace.clone())
     }
 
+    pub fn outputs(&self) -> crate::bulk::RelationalBulkStore {
+        crate::bulk::RelationalBulkStore::new(self.pool.clone(), self.namespace.clone())
+    }
+
     pub fn with_clock(self, clock: Clock) -> RelationalStore {
         RelationalStore { clock, ..self }
     }
