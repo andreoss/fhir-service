@@ -233,3 +233,81 @@ async fn the_listed_parameters_reach_the_submitted_description() {
         patients["url"]
     );
 }
+
+#[tokio::test]
+async fn a_running_export_reports_how_far_it_has_come() {
+    let held = harness();
+    seeded(&held).await;
+
+    let accepted = request(&held.app, "GET", "/$export", b"").await;
+    let id = submitted(&accepted);
+    let queued = request(&held.app, "GET", &format!("/_jobs/{id}"), b"").await;
+    assert_eq!(queued.status, StatusCode::ACCEPTED);
+    assert_eq!(header(&queued, "x-progress"), "queued");
+
+    let claimed = held
+        .jobs
+        .claim(&fhir_store::Lease::new("one", 5_000))
+        .await
+        .unwrap();
+    assert_eq!(claimed.len(), 1);
+    held.jobs
+        .heartbeat(
+            &id,
+            "one",
+            5_000,
+            Some(fhir_store::JobProgress {
+                done: 1,
+                total: Some(2),
+                detail: Some("Patient".to_owned()),
+            }),
+        )
+        .await
+        .unwrap();
+
+    let running = request(&held.app, "GET", &format!("/_jobs/{id}"), b"").await;
+    assert_eq!(running.status, StatusCode::ACCEPTED);
+    assert_eq!(header(&running, "retry-after"), "1");
+    assert_eq!(header(&running, "x-progress"), "running 1/2 50% Patient");
+}
+
+#[tokio::test]
+async fn a_finished_export_details_the_request_and_itemises_what_it_missed() {
+    let held = harness();
+    seeded(&held).await;
+    held.store
+        .create(fhir_store_contract::fixture::envelope(
+            "Group",
+            "g1",
+            r#""member":[{"entity":{"reference":"Patient/p1"}},{"entity":{"reference":"Patient/p9"}}]"#,
+        ))
+        .await
+        .unwrap();
+
+    let accepted = request(&held.app, "GET", "/Group/g1/$export?_type=Patient", b"").await;
+    let id = submitted(&accepted);
+    work(&held).await;
+
+    let done = request(&held.app, "GET", &format!("/_jobs/{id}"), b"").await;
+    assert_eq!(done.status, StatusCode::OK);
+    let manifest: Value = serde_json::from_str(&done.body).unwrap();
+    assert_eq!(manifest["progress"]["done"], 1);
+    assert_eq!(manifest["progress"]["total"], 1);
+    assert_eq!(manifest["request"]["scope"], "group");
+    assert_eq!(manifest["request"]["id"], "g1");
+    assert_eq!(manifest["request"]["_type"][0], "Patient");
+
+    let errors = manifest["error"].as_array().unwrap();
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0]["type"], "OperationOutcome");
+    assert_eq!(errors[0]["count"], 1);
+    let reported = request(
+        &held.app,
+        "GET",
+        errors[0]["url"].as_str().unwrap().trim_start_matches("http://localhost"),
+        b"",
+    )
+    .await;
+    assert_eq!(reported.status, StatusCode::OK);
+    assert!(reported.body.contains("Patient/p9"), "{}", reported.body);
+}

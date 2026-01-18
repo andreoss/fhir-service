@@ -76,10 +76,23 @@ pub fn status_location(host: &str, id: &JobId) -> String {
 }
 
 fn progress_of(record: &JobRecord) -> String {
-    match record.progress.percent() {
-        Some(percent) => format!("{} {percent}%", record.state.as_str()),
-        None => record.state.as_str().to_owned(),
+    let mut reported = record.state.as_str().to_owned();
+    if let (Some(total), Some(percent)) = (record.progress.total, record.progress.percent()) {
+        reported.push_str(&format!(" {}/{total} {percent}%", record.progress.done));
     }
+    if let Some(detail) = &record.progress.detail {
+        reported.push(' ');
+        reported.push_str(detail);
+    }
+    reported
+}
+
+fn submitted_as(record: &JobRecord) -> Value {
+    record
+        .payload
+        .as_deref()
+        .and_then(|text| serde_json::from_str::<Value>(text).ok())
+        .unwrap_or(Value::Null)
 }
 
 fn manifest(host: &str, record: &JobRecord, files: &[fhir_store::Output]) -> Value {
@@ -109,7 +122,9 @@ fn manifest(host: &str, record: &JobRecord, files: &[fhir_store::Output]) -> Val
         "progress": {
             "done": record.progress.done,
             "total": record.progress.total,
+            "detail": record.progress.detail,
         },
+        "request": submitted_as(record),
         "requiresAccessToken": false,
         "output": listed(false),
         "error": listed(true),
