@@ -58,6 +58,40 @@ async fn current_of(store: &dyn ResourceStore, label: &str) -> Result<Vec<Resour
     Ok(page.entries)
 }
 
+fn positioned(rows: impl IntoIterator<Item = (usize, String)>) -> Vec<Unit> {
+    rows.into_iter()
+        .map(|(position, row)| Unit::new(format!("row {position}"), row))
+        .collect()
+}
+
+fn described(payload: &str) -> Option<Vec<Unit>> {
+    let parsed = serde_json::from_str::<Value>(payload).ok()?;
+    let carried = parsed.as_object()?;
+    if carried.contains_key("resourceType") {
+        return None;
+    }
+    let rows = carried
+        .get("resources")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    Some(positioned(
+        rows.iter()
+            .enumerate()
+            .map(|(position, row)| (position, row.to_string())),
+    ))
+}
+
+fn delimited(payload: &str) -> Vec<Unit> {
+    positioned(
+        payload
+            .lines()
+            .enumerate()
+            .filter(|(_, line)| !line.trim().is_empty())
+            .map(|(position, line)| (position, line.trim().to_owned())),
+    )
+}
+
 pub struct ImportJob {
     store: Arc<dyn ResourceStore>,
     version: FhirVersion,
@@ -76,17 +110,7 @@ impl JobHandler for ImportJob {
     }
 
     async fn plan(&self, job: &JobContext) -> Result<Vec<Unit>, Error> {
-        let payload = body(&job.payload)?;
-        let rows = payload
-            .get("resources")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        Ok(rows
-            .into_iter()
-            .enumerate()
-            .map(|(position, row)| Unit::new(format!("row {position}"), row.to_string()))
-            .collect())
+        Ok(described(&job.payload).unwrap_or_else(|| delimited(&job.payload)))
     }
 
     async fn process(&self, _job: &JobContext, unit: &Unit) -> Result<UnitOutcome, Error> {
