@@ -120,7 +120,7 @@ impl JobHandler for ImportJob {
     }
 
     async fn process(&self, _job: &JobContext, unit: &Unit) -> Result<UnitOutcome, Error> {
-        let envelope = match ResourceEnvelope::parse(self.version, unit.detail.as_bytes()) {
+        let envelope = match ResourceEnvelope::parse_supplied(self.version, unit.detail.as_bytes()) {
             Ok(envelope) => envelope,
             Err(error) => {
                 return Ok(UnitOutcome {

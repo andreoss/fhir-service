@@ -10,7 +10,7 @@ pub mod resource_type;
 pub mod search;
 pub mod version;
 
-pub use envelope::ResourceEnvelope;
+pub use envelope::{with_assigned_meta, ResourceEnvelope, PLACEHOLDER_INSTANT, PLACEHOLDER_VERSION};
 pub use error::Error;
 pub use etag::WeakEtag;
 pub use fhir_version::FhirVersion;

@@ -22,8 +22,6 @@ const FHIR_JSON: &str = "application/fhir+json";
 const IF_NONE_EXIST: &str = "if-none-exist";
 const HARD_DELETE: &str = "_hardDelete";
 const SCOPE: &str = "x-scope";
-const PLACEHOLDER_VERSION: &str = "0";
-const PLACEHOLDER_INSTANT: &str = "1970-01-01T00:00:00Z";
 
 pub struct AppError(Error);
 
@@ -490,17 +488,7 @@ fn write_envelope(
         Some(false) => return Err(Error::InvalidEnvelope("id does not match the request path".to_owned())),
         Some(true) => {}
     }
-    if !object.contains_key("meta") {
-        object.insert("meta".to_owned(), Value::Object(serde_json::Map::new()));
-    }
-    let meta = object
-        .get_mut("meta")
-        .and_then(Value::as_object_mut)
-        .ok_or_else(|| Error::InvalidEnvelope("meta must be an object".to_owned()))?;
-    meta.entry("versionId".to_owned())
-        .or_insert_with(|| Value::String(PLACEHOLDER_VERSION.to_owned()));
-    meta.entry("lastUpdated".to_owned())
-        .or_insert_with(|| Value::String(PLACEHOLDER_INSTANT.to_owned()));
+    fhir_core::with_assigned_meta(&mut value)?;
     let bytes = serde_json::to_vec(&value).map_err(|error| Error::InvalidJson(error.to_string()))?;
     ResourceEnvelope::parse(version, &bytes)
 }

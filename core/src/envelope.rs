@@ -1,5 +1,27 @@
 use crate::{Error, FhirInstant, FhirVersion, ResourceId, ResourceType, VersionId};
 
+pub const PLACEHOLDER_VERSION: &str = "0";
+
+pub const PLACEHOLDER_INSTANT: &str = "1970-01-01T00:00:00Z";
+
+pub fn with_assigned_meta(value: &mut serde_json::Value) -> Result<(), Error> {
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| Error::InvalidEnvelope("expected a JSON object".to_owned()))?;
+    if !object.contains_key("meta") {
+        object.insert("meta".to_owned(), serde_json::Value::Object(serde_json::Map::new()));
+    }
+    let meta = object
+        .get_mut("meta")
+        .and_then(serde_json::Value::as_object_mut)
+        .ok_or_else(|| Error::InvalidEnvelope("meta must be an object".to_owned()))?;
+    meta.entry("versionId".to_owned())
+        .or_insert_with(|| serde_json::Value::String(PLACEHOLDER_VERSION.to_owned()));
+    meta.entry("lastUpdated".to_owned())
+        .or_insert_with(|| serde_json::Value::String(PLACEHOLDER_INSTANT.to_owned()));
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResourceEnvelope {
     version: FhirVersion,
@@ -12,6 +34,15 @@ pub struct ResourceEnvelope {
 }
 
 impl ResourceEnvelope {
+    pub fn parse_supplied(version: FhirVersion, bytes: &[u8]) -> Result<ResourceEnvelope, Error> {
+        let text = std::str::from_utf8(bytes).map_err(|e| Error::InvalidJson(e.to_string()))?;
+        let mut value: serde_json::Value =
+            serde_json::from_str(text).map_err(|e| Error::InvalidJson(e.to_string()))?;
+        with_assigned_meta(&mut value)?;
+        let bytes = serde_json::to_vec(&value).map_err(|e| Error::InvalidJson(e.to_string()))?;
+        ResourceEnvelope::parse(version, &bytes)
+    }
+
     pub fn parse(version: FhirVersion, bytes: &[u8]) -> Result<ResourceEnvelope, Error> {
         let text = std::str::from_utf8(bytes).map_err(|e| Error::InvalidJson(e.to_string()))?;
         let value: serde_json::Value =
@@ -366,6 +397,40 @@ mod tests {
         let text = std::str::from_utf8(stored.raw()).unwrap();
         assert!(text.contains("\"active\":true"));
         assert!(text.contains("\"resourceType\":\"Patient\""));
+    }
+
+    #[test]
+    fn a_supplied_resource_may_leave_the_assigned_metadata_out() {
+        let bare = ResourceEnvelope::parse_supplied(
+            FhirVersion::R4,
+            br#"{"resourceType":"Patient","id":"pt-01","active":true}"#,
+        )
+        .expect("a supplied resource needs no assigned metadata");
+        assert_eq!(bare.version_id().as_str(), PLACEHOLDER_VERSION);
+        assert_eq!(bare.last_updated().as_str(), PLACEHOLDER_INSTANT);
+
+        let held = ResourceEnvelope::parse_supplied(FhirVersion::R4, SAMPLE)
+            .expect("a stored resource keeps what it carries");
+        assert_eq!(
+            held.version_id().as_str(),
+            ResourceEnvelope::parse(FhirVersion::R4, SAMPLE)
+                .unwrap()
+                .version_id()
+                .as_str()
+        );
+        assert!(bare.content_eq(&ResourceEnvelope::parse_supplied(
+            FhirVersion::R4,
+            br#"{"resourceType":"Patient","id":"pt-01","meta":{"versionId":"9"},"active":true}"#
+        )
+        .unwrap()));
+
+        assert!(ResourceEnvelope::parse_supplied(FhirVersion::R4, b"[]").is_err());
+        assert!(ResourceEnvelope::parse_supplied(
+            FhirVersion::R4,
+            br#"{"resourceType":"Patient","id":"pt-01","meta":"no"}"#
+        )
+        .is_err());
+        assert!(ResourceEnvelope::parse_supplied(FhirVersion::R4, b"{ not json").is_err());
     }
 
     #[test]
