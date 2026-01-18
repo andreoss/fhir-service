@@ -315,3 +315,71 @@ async fn a_filter_the_server_does_not_implement_is_refused() {
     assert_eq!(record.state, JobState::Failed);
     assert!(record.outcome.unwrap().contains("nonesuch"));
 }
+
+fn config(id: &str, redacted: &[&str]) -> fhir_core::ResourceEnvelope {
+    let rules: Vec<String> = redacted
+        .iter()
+        .map(|path| format!(r#"{{"name":"redact","valueString":"{path}"}}"#))
+        .collect();
+    fhir_store_contract::fixture::envelope(
+        "Basic",
+        id,
+        &format!(r#""parameter":[{}]"#, rules.join(",")),
+    )
+}
+
+#[tokio::test]
+async fn an_anonymised_export_redacts_what_its_configuration_names() {
+    let store = Arc::new(MemoryStore::default());
+    store.create(patient("p1", "Stone", true)).await.unwrap();
+    store.create(config("anon-1", &["Patient.name", "Patient.birthDate"])).await.unwrap();
+    let sink = Arc::new(MemoryBulkStore::new());
+
+    let record = ran(
+        Arc::clone(&store),
+        Arc::clone(&sink),
+        job("a1"),
+        r#"{"scope":"system","_type":["Patient"],"_anonymizationConfig":"anon-1","_anonymizationConfigEtag":"1","_anonymizationConfigCollectionReference":"Basic"}"#,
+    )
+    .await;
+
+    assert_eq!(record.state, JobState::Completed);
+    let outcome: Value = serde_json::from_str(&record.outcome.unwrap()).unwrap();
+    assert_eq!(outcome["anonymized"], true);
+    assert_eq!(outcome["anonymizationConfig"], "Basic/anon-1");
+    assert_eq!(outcome["anonymizationConfigEtag"], "1");
+    let patients = rows(&sink.read(&job("a1"), "Patient.ndjson").await.unwrap());
+    assert_eq!(patients.len(), 1);
+    assert_eq!(patients[0]["id"], "p1");
+    assert!(patients[0]["name"].is_null(), "{}", patients[0]);
+    assert!(patients[0]["birthDate"].is_null());
+    assert_eq!(patients[0]["active"], true);
+}
+
+#[tokio::test]
+async fn a_configuration_that_moved_on_stops_the_export() {
+    let store = Arc::new(MemoryStore::default());
+    store.create(patient("p1", "Stone", true)).await.unwrap();
+    store.create(config("anon-1", &["Patient.name"])).await.unwrap();
+    store.update(config("anon-1", &["Patient.birthDate"]), None).await.unwrap();
+    let sink = Arc::new(MemoryBulkStore::new());
+
+    let stale = ran(
+        Arc::clone(&store),
+        Arc::clone(&sink),
+        job("a2"),
+        r#"{"scope":"system","_type":["Patient"],"_anonymizationConfig":"anon-1","_anonymizationConfigEtag":"1"}"#,
+    )
+    .await;
+    assert_eq!(stale.state, JobState::Failed);
+    assert!(stale.outcome.unwrap().contains("anon-1"));
+
+    let absent = ran(
+        Arc::clone(&store),
+        Arc::clone(&sink),
+        job("a3"),
+        r#"{"scope":"system","_type":["Patient"],"_anonymizationConfig":"nowhere"}"#,
+    )
+    .await;
+    assert_eq!(absent.state, JobState::Failed);
+}

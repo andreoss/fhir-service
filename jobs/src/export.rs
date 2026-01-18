@@ -53,6 +53,78 @@ fn narrowing(text: &str) -> Result<TypeFilter, Error> {
     })
 }
 
+
+#[derive(Debug, Clone)]
+pub struct Anonymization {
+    pub collection: ResourceType,
+    pub config: ResourceId,
+    pub etag: Option<String>,
+}
+
+impl Anonymization {
+    fn reference(&self) -> String {
+        format!("{}/{}", self.collection.as_str(), self.config.as_str())
+    }
+}
+
+fn anonymization(payload: &Value) -> Result<Option<Anonymization>, Error> {
+    let Some(config) = text(payload, "_anonymizationConfig") else {
+        return Ok(None);
+    };
+    let collection = text(payload, "_anonymizationConfigCollectionReference")
+        .unwrap_or_else(|| "Basic".to_owned());
+    Ok(Some(Anonymization {
+        collection: collection.parse::<ResourceType>()?,
+        config: ResourceId::parse(&config)?,
+        etag: text(payload, "_anonymizationConfigEtag"),
+    }))
+}
+
+fn redactions(body: &Value) -> Vec<String> {
+    fhir_core::search::select(body, "parameter")
+        .into_iter()
+        .flat_map(|parameter| match parameter {
+            Value::Array(items) => items.clone(),
+            other => vec![other.clone()],
+        })
+        .filter(|parameter| parameter.get("name").and_then(Value::as_str) == Some("redact"))
+        .filter_map(|parameter| {
+            parameter
+                .get("valueString")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .collect()
+}
+
+fn redacted(body: &mut Value, resource_type: ResourceType, paths: &[String]) {
+    for path in paths {
+        let (head, rest) = path.split_once('.').unwrap_or(("", path.as_str()));
+        if !head.is_empty() && head != resource_type.as_str() {
+            continue;
+        }
+        remove(body, rest);
+    }
+}
+
+fn remove(body: &mut Value, path: &str) {
+    let Some(map) = body.as_object_mut() else {
+        return;
+    };
+    match path.split_once('.') {
+        None => {
+            map.remove(path);
+        }
+        Some((head, rest)) => {
+            if let Some(nested) = map.get_mut(head) {
+                match nested {
+                    Value::Array(items) => items.iter_mut().for_each(|item| remove(item, rest)),
+                    other => remove(other, rest),
+                }
+            }
+        }
+    }
+}
 #[derive(Debug, Clone)]
 pub struct ExportRequest {
     pub scope: ExportScope,
@@ -62,6 +134,7 @@ pub struct ExportRequest {
     pub since: Option<FhirInstant>,
     pub till: FhirInstant,
     pub container: String,
+    pub anonymization: Option<Anonymization>,
 }
 
 fn text(payload: &Value, name: &str) -> Option<String> {
@@ -151,6 +224,7 @@ impl ExportRequest {
             since,
             till,
             container,
+            anonymization: anonymization(&payload)?,
         })
     }
 
@@ -182,6 +256,22 @@ impl ExportRequest {
                 "_since".to_owned(),
                 Value::String(since.as_str().to_owned()),
             );
+        }
+        if let Some(anonymization) = &self.anonymization {
+            carried.insert(
+                "_anonymizationConfig".to_owned(),
+                Value::String(anonymization.config.as_str().to_owned()),
+            );
+            carried.insert(
+                "_anonymizationConfigCollectionReference".to_owned(),
+                Value::String(anonymization.collection.as_str().to_owned()),
+            );
+            if let Some(etag) = &anonymization.etag {
+                carried.insert(
+                    "_anonymizationConfigEtag".to_owned(),
+                    Value::String(etag.clone()),
+                );
+            }
         }
         carried.insert(
             "_typeFilter".to_owned(),
@@ -348,6 +438,32 @@ impl ExportJob {
         Ok(types)
     }
 
+    async fn rules(&self, request: &ExportRequest) -> Result<Option<Vec<String>>, Error> {
+        let Some(anonymization) = &request.anonymization else {
+            return Ok(None);
+        };
+        let held = snapshot(self.store.as_ref(), anonymization.collection, &request.till)
+            .await?
+            .into_iter()
+            .find(|entry| entry.id() == &anonymization.config)
+            .ok_or_else(|| {
+                Error::InvalidParameter(format!(
+                    "the configuration {:?} is not held",
+                    anonymization.reference()
+                ))
+            })?;
+        if let Some(etag) = &anonymization.etag {
+            if held.version_id().as_str() != etag {
+                return Err(Error::InvalidParameter(format!(
+                    "the configuration {:?} stands at {:?}, not {etag:?}",
+                    anonymization.reference(),
+                    held.version_id().as_str()
+                )));
+            }
+        }
+        Ok(Some(redactions(&body_of(&held)?)))
+    }
+
     async fn roots(&self, request: &ExportRequest) -> Result<Option<Vec<ResourceId>>, Error> {
         match &request.scope {
             ExportScope::System => Ok(None),
@@ -368,6 +484,7 @@ impl JobHandler for ExportJob {
 
     async fn plan(&self, job: &JobContext) -> Result<Vec<Unit>, Error> {
         let request = ExportRequest::parse(&job.payload, &(self.clock)())?;
+        let _ = self.rules(&request).await?;
         Ok(self
             .planned(&request)
             .await?
@@ -385,6 +502,7 @@ impl JobHandler for ExportJob {
         let request = ExportRequest::parse(&unit.detail, &(self.clock)())?;
         let resource_type = unit.label.parse::<ResourceType>()?;
         let roots = self.roots(&request).await?;
+        let rules = self.rules(&request).await?;
         let mut body = Vec::new();
         let mut outcome = UnitOutcome::default();
         for entry in snapshot(self.store.as_ref(), resource_type, &request.till).await? {
@@ -413,6 +531,10 @@ impl JobHandler for ExportJob {
             if !narrowed(&request, resource_type, &entry, &parsed) {
                 continue;
             }
+            let mut parsed = parsed;
+            if let Some(rules) = &rules {
+                redacted(&mut parsed, resource_type, rules);
+            }
             body.extend_from_slice(&serde_json::to_vec(&parsed).unwrap_or_default());
             body.push(b'\n');
             outcome.handled += 1;
@@ -429,6 +551,21 @@ impl JobHandler for ExportJob {
             "transactionTime".to_owned(),
             Value::String(request.till.as_str().to_owned()),
         );
+        if let Some(anonymization) = &request.anonymization {
+            outcome
+                .detail
+                .insert("anonymized".to_owned(), Value::Bool(true));
+            outcome.detail.insert(
+                "anonymizationConfig".to_owned(),
+                Value::String(anonymization.reference()),
+            );
+            if let Some(etag) = &anonymization.etag {
+                outcome.detail.insert(
+                    "anonymizationConfigEtag".to_owned(),
+                    Value::String(etag.clone()),
+                );
+            }
+        }
         Ok(outcome)
     }
 }
