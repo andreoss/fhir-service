@@ -81,6 +81,7 @@ impl Orchestrator {
             match handler.process(&context, unit).await {
                 Ok(outcome) => {
                     summary.handled += outcome.handled;
+                    summary.unchanged += outcome.unchanged;
                     summary.failures.extend(outcome.failures);
                     summary.detail.extend(outcome.detail);
                 }
@@ -108,6 +109,10 @@ fn report(units: u64, summary: &UnitOutcome) -> String {
     let mut report = serde_json::Map::new();
     report.insert("units".to_owned(), serde_json::Value::from(units));
     report.insert("handled".to_owned(), serde_json::Value::from(summary.handled));
+    report.insert(
+        "unchanged".to_owned(),
+        serde_json::Value::from(summary.unchanged),
+    );
     report.insert(
         "failures".to_owned(),
         serde_json::Value::from(summary.failures.clone()),

@@ -20,6 +20,7 @@ impl Unit {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct UnitOutcome {
     pub handled: u64,
+    pub unchanged: u64,
     pub failures: Vec<String>,
     pub detail: serde_json::Map<String, serde_json::Value>,
 }

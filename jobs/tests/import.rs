@@ -16,7 +16,7 @@ fn queue() -> (Arc<MemoryJobStore>, StepTicker) {
 }
 
 fn row(envelope: fhir_core::ResourceEnvelope) -> String {
-    String::from_utf8(envelope.to_json()).expect("a fixture renders as text")
+    String::from_utf8(envelope.raw().to_vec()).expect("a fixture renders as text")
 }
 
 async fn ran(
@@ -97,4 +97,53 @@ async fn a_described_supply_still_carries_its_rows_in_an_array() {
     assert_eq!(outcome["failures"].as_array().unwrap().len(), 1);
     assert!(outcome["failures"][0].as_str().unwrap().starts_with("row 1"));
     assert!(store.read(&id("i2")).await.is_ok());
+}
+
+#[tokio::test]
+async fn a_row_matching_what_is_held_creates_no_version() {
+    let store = Arc::new(MemoryStore::default());
+    let supplied = format!(
+        "{}\n{}\n",
+        row(patient("i3", "Stone", true)),
+        row(observation("o3", "code-1", 3.0, "Patient/i3")),
+    );
+
+    let first = ran(Arc::clone(&store), job("m4"), supplied.clone()).await;
+    let loaded = outcome_of(&first);
+    assert_eq!(loaded["handled"], 2);
+    assert_eq!(loaded["unchanged"], 0);
+    assert_eq!(store.read(&id("i3")).await.unwrap().version_id().as_str(), "1");
+
+    let again = ran(Arc::clone(&store), job("m5"), supplied).await;
+    let repeated = outcome_of(&again);
+    assert_eq!(repeated["units"], 2);
+    assert_eq!(repeated["handled"], 0);
+    assert_eq!(repeated["unchanged"], 2);
+    assert_eq!(repeated["failures"].as_array().unwrap().len(), 0);
+    assert_eq!(store.read(&id("i3")).await.unwrap().version_id().as_str(), "1");
+    assert_eq!(store.read(&id("o3")).await.unwrap().version_id().as_str(), "1");
+}
+
+#[tokio::test]
+async fn a_row_that_moved_on_creates_the_next_version() {
+    let store = Arc::new(MemoryStore::default());
+    let first = ran(
+        Arc::clone(&store),
+        job("m6"),
+        format!("{}\n", row(patient("i4", "Stone", true))),
+    )
+    .await;
+    assert_eq!(outcome_of(&first)["handled"], 1);
+
+    let moved = ran(
+        Arc::clone(&store),
+        job("m7"),
+        format!("{}\n", row(patient("i4", "Rivers", true))),
+    )
+    .await;
+
+    let outcome = outcome_of(&moved);
+    assert_eq!(outcome["handled"], 1);
+    assert_eq!(outcome["unchanged"], 0);
+    assert_eq!(store.read(&id("i4")).await.unwrap().version_id().as_str(), "2");
 }

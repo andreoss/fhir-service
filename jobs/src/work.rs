@@ -101,6 +101,12 @@ impl ImportJob {
     pub fn new(store: Arc<dyn ResourceStore>, version: FhirVersion) -> ImportJob {
         ImportJob { store, version }
     }
+
+    async fn versioned(&self, envelope: ResourceEnvelope) -> Result<bool, Error> {
+        let held = self.store.read(envelope.id()).await?;
+        let stored = self.store.update(envelope, None).await?;
+        Ok(stored.version_id() != held.version_id())
+    }
 }
 
 #[async_trait]
@@ -125,14 +131,17 @@ impl JobHandler for ImportJob {
             }
         };
         let written = match self.store.create(envelope.clone()).await {
-            Ok(_) => Ok(()),
-            Err(Error::Duplicate(_)) => self.store.update(envelope, None).await.map(|_| ()),
+            Ok(_) => Ok(true),
+            Err(Error::Duplicate(_)) => self.versioned(envelope).await,
             Err(error) => Err(error),
         };
         match written {
-            Ok(()) => Ok(UnitOutcome::handled(1)),
+            Ok(true) => Ok(UnitOutcome::handled(1)),
+            Ok(false) => Ok(UnitOutcome {
+                unchanged: 1,
+                ..UnitOutcome::default()
+            }),
             Err(error) => Ok(UnitOutcome {
-                handled: 0,
                 failures: vec![format!("{}: {error}", unit.label)],
                 ..UnitOutcome::default()
             }),
