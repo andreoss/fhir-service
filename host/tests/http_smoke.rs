@@ -875,3 +875,72 @@ fn a_submitted_job_is_cancelled_over_http() {
         polled.status
     );
 }
+
+fn settled(port: u16, path: &str) -> Reply {
+    let mut polled = request(port, "GET", path, &[], &[]);
+    for _ in 0..100 {
+        if polled.status != 202 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+        polled = request(port, "GET", path, &[], &[]);
+    }
+    polled
+}
+
+fn job_path(reply: &Reply) -> String {
+    header(reply, "content-location")
+        .split_once("/_jobs/")
+        .map(|(_, id)| format!("/_jobs/{id}"))
+        .expect("a status location carries an id")
+}
+
+#[test]
+fn newline_delimited_rows_are_imported_and_a_repeat_adds_no_version() {
+    let (child, port) = spawn_server();
+
+    let supplied = format!(
+        "{}\n{{ this is not a resource\n{}\n",
+        String::from_utf8(patient("nd-1", true)).unwrap(),
+        String::from_utf8(patient("nd-2", false)).unwrap(),
+    );
+    let submitted = request(
+        port,
+        "POST",
+        "/$import",
+        &[("Content-Type", "application/fhir+ndjson")],
+        supplied.as_bytes(),
+    );
+    assert_eq!(submitted.status, 202, "submit failed: {}", submitted.body);
+    let first = settled(port, &job_path(&submitted));
+    assert_eq!(first.status, 200, "poll failed: {}", first.body);
+    let loaded: serde_json::Value = serde_json::from_str(&first.body).expect("a manifest is json");
+    assert_eq!(loaded["outcome"]["handled"], 2);
+    assert_eq!(loaded["outcome"]["unchanged"], 0);
+    let failures = loaded["outcome"]["failures"]
+        .as_array()
+        .expect("failures are listed");
+    assert_eq!(failures.len(), 1);
+    assert!(failures[0].as_str().unwrap().starts_with("row 1"), "{failures:?}");
+
+    let stored = request(port, "GET", "/Patient/nd-1", &[], &[]);
+    assert_eq!(stored.status, 200, "read failed: {}", stored.body);
+    assert_eq!(header(&stored, "etag"), "W/\"1\"");
+
+    let again = request(
+        port,
+        "POST",
+        "/$import",
+        &[("Content-Type", "application/fhir+ndjson")],
+        supplied.as_bytes(),
+    );
+    let repeated = settled(port, &job_path(&again));
+    let held: serde_json::Value = serde_json::from_str(&repeated.body).expect("a manifest is json");
+    let unmoved = request(port, "GET", "/Patient/nd-1", &[], &[]);
+    stop(child);
+
+    assert_eq!(held["outcome"]["handled"], 0);
+    assert_eq!(held["outcome"]["unchanged"], 2);
+    assert_eq!(header(&unmoved, "etag"), "W/\"1\"");
+}
+
