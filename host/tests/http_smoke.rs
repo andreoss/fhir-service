@@ -944,3 +944,32 @@ fn newline_delimited_rows_are_imported_and_a_repeat_adds_no_version() {
     assert_eq!(header(&unmoved, "etag"), "W/\"1\"");
 }
 
+#[test]
+fn an_export_manifest_details_the_request_it_answered() {
+    let (child, port) = spawn_server();
+
+    let created = request(port, "POST", "/Patient", &[], &patient("xp-1", true));
+    assert_eq!(created.status, 201, "create failed: {}", created.body);
+
+    let submitted = request(port, "GET", "/Patient/$export?_type=Patient", &[], &[]);
+    assert_eq!(submitted.status, 202, "submit failed: {}", submitted.body);
+    let done = settled(port, &job_path(&submitted));
+    assert_eq!(done.status, 200, "poll failed: {}", done.body);
+    let manifest: serde_json::Value = serde_json::from_str(&done.body).expect("a manifest is json");
+    let file = manifest["output"][0]["url"]
+        .as_str()
+        .expect("an output file is listed")
+        .split_once("/_jobs/")
+        .map(|(_, tail)| format!("/_jobs/{tail}"))
+        .expect("an output url carries a job");
+    let rows = request(port, "GET", &file, &[], &[]);
+    stop(child);
+
+    assert_eq!(manifest["request"]["scope"], "patient");
+    assert_eq!(manifest["request"]["_type"][0], "Patient");
+    assert_eq!(manifest["progress"]["done"], 1);
+    assert_eq!(manifest["progress"]["total"], 1);
+    assert!(manifest["transactionTime"].is_string(), "{manifest}");
+    assert_eq!(rows.status, 200, "output failed: {}", rows.body);
+    assert!(rows.body.contains("xp-1"), "{}", rows.body);
+}
