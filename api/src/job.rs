@@ -22,6 +22,18 @@ const OUTCOME: &str = "OperationOutcome";
 
 const LISTED: [&str; 2] = ["_type", "_typeFilter"];
 
+const ACCEPTED_PARAMS: [&str; 9] = [
+    "_type",
+    "_typeFilter",
+    "_since",
+    "_till",
+    "_outputFormat",
+    "_container",
+    "_anonymizationConfig",
+    "_anonymizationConfigEtag",
+    "_anonymizationConfigCollectionReference",
+];
+
 pub const JOBS: &str = "/_jobs";
 
 pub const RETRY_AFTER: u64 = 1;
@@ -303,10 +315,16 @@ fn described(
         carried.insert("id".to_owned(), Value::String(id.to_owned()));
     }
     for (name, value) in crate::query::pairs(raw) {
+        if !ACCEPTED_PARAMS.contains(&name.as_str()) {
+            return Err(Error::UnsupportedParameter(format!("{name:?}")));
+        }
         if value.trim().is_empty() {
             return Err(Error::UnsupportedParameter(format!(
                 "{name:?} with an empty value"
             )));
+        }
+        if name == "_outputFormat" {
+            fhir_store::output_format(&value)?;
         }
         match LISTED.contains(&name.as_str()) {
             true => {

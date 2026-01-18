@@ -10,7 +10,6 @@ use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-const NDJSON: &str = "application/fhir+ndjson";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExportScope {
@@ -95,13 +94,8 @@ fn resource_types(names: &[String]) -> Result<Vec<ResourceType>, Error> {
 
 fn format_of(payload: &Value) -> Result<String, Error> {
     match text(payload, "_outputFormat").or_else(|| text(payload, "outputFormat")) {
-        None => Ok(NDJSON.to_owned()),
-        Some(found) => match found.replace(' ', "+").as_str() {
-            "ndjson" | "application/ndjson" | "application/fhir+ndjson" => Ok(NDJSON.to_owned()),
-            other => Err(Error::UnsupportedParameter(format!(
-                "_outputFormat {other:?}"
-            ))),
-        },
+        None => Ok(fhir_store::NDJSON.to_owned()),
+        Some(found) => fhir_store::output_format(&found),
     }
 }
 

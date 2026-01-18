@@ -9,7 +9,7 @@ pub mod resource;
 pub mod scope;
 pub mod search;
 
-pub use bulk::{BulkStore, Output};
+pub use bulk::{output_format, BulkStore, Output, NDJSON};
 pub use clock::{system_clock, system_ticker, Clock, StepTicker, Ticker};
 pub use history::{HistoryOrder, HistoryPage, HistoryQuery, HistoryScope};
 pub use job::{

@@ -36,3 +36,14 @@ pub trait BulkStore: Send + Sync {
         Ok(())
     }
 }
+
+pub const NDJSON: &str = "application/fhir+ndjson";
+
+pub fn output_format(raw: &str) -> Result<String, Error> {
+    match raw.replace(' ', "+").as_str() {
+        "ndjson" | "application/ndjson" | "application/fhir+ndjson" => Ok(NDJSON.to_owned()),
+        other => Err(Error::UnsupportedParameter(format!(
+            "_outputFormat {other:?}"
+        ))),
+    }
+}
