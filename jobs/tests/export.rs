@@ -383,3 +383,47 @@ async fn a_configuration_that_moved_on_stops_the_export() {
     .await;
     assert_eq!(absent.state, JobState::Failed);
 }
+
+#[tokio::test]
+async fn a_member_the_record_lacks_is_itemised_in_a_failure_file() {
+    let store = Arc::new(MemoryStore::default());
+    store.create(patient("p1", "Stone", true)).await.unwrap();
+    store
+        .create(fhir_store_contract::fixture::envelope(
+            "Group",
+            "g1",
+            r#""member":[{"entity":{"reference":"Patient/p1"}},{"entity":{"reference":"Patient/p9"}}]"#,
+        ))
+        .await
+        .unwrap();
+    let sink = Arc::new(MemoryBulkStore::new());
+
+    let record = ran(
+        Arc::clone(&store),
+        Arc::clone(&sink),
+        job("e1"),
+        r#"{"scope":"group","id":"g1"}"#,
+    )
+    .await;
+
+    assert_eq!(record.state, JobState::Completed);
+    let outcome: Value = serde_json::from_str(&record.outcome.unwrap()).unwrap();
+    let failures = outcome["failures"].as_array().expect("failures are listed");
+    assert_eq!(failures.len(), 1);
+    assert!(failures[0].as_str().unwrap().contains("p9"), "{failures:?}");
+    let files = sink.list(&job("e1")).await.unwrap();
+    let failure = files
+        .iter()
+        .find(|file| file.kind == "OperationOutcome")
+        .expect("a failure file is written");
+    assert_eq!(failure.count, 1);
+    let reported = rows(&sink.read(&job("e1"), &failure.name).await.unwrap());
+    assert_eq!(reported[0]["resourceType"], "OperationOutcome");
+    assert!(reported[0]["issue"][0]["diagnostics"]
+        .as_str()
+        .unwrap()
+        .contains("p9"));
+    let carried = rows(&sink.read(&job("e1"), "Patient.ndjson").await.unwrap());
+    assert_eq!(carried.len(), 1);
+    assert_eq!(carried[0]["id"], "p1");
+}

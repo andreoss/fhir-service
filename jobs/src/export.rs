@@ -10,6 +10,20 @@ use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+const OUTCOME: &str = "OperationOutcome";
+
+const ROOT: &str = "Patient";
+
+fn itemised(failures: &[String]) -> Vec<u8> {
+    let mut body = Vec::new();
+    for failure in failures {
+        let outcome =
+            fhir_core::OperationOutcome::error(fhir_core::IssueCode::Processing, failure.as_str());
+        body.extend_from_slice(&outcome.to_fhir_json());
+        body.push(b'\n');
+    }
+    body
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExportScope {
@@ -285,6 +299,17 @@ impl ExportRequest {
         Value::Object(carried)
     }
 
+    fn failure_file(&self, resource_type: &ResourceType) -> String {
+        match self.container.is_empty() {
+            true => format!("{}-failures.ndjson", resource_type.as_str()),
+            false => format!(
+                "{}/{}-failures.ndjson",
+                self.container,
+                resource_type.as_str()
+            ),
+        }
+    }
+
     fn file(&self, resource_type: &ResourceType) -> String {
         match self.container.is_empty() {
             true => format!("{}.ndjson", resource_type.as_str()),
@@ -337,7 +362,7 @@ async fn every_type(store: &dyn ResourceStore) -> Result<Vec<ResourceType>, Erro
 }
 
 fn gathered_types() -> Vec<&'static str> {
-    fhir_core::search::compartment::definition("Patient")
+    fhir_core::search::compartment::definition(ROOT)
         .map(|def| def.types())
         .unwrap_or_default()
 }
@@ -391,7 +416,7 @@ fn narrowed(
 }
 
 fn gathered(roots: &[ResourceId], resource_type: ResourceType, body: &Value) -> bool {
-    let kind = match "Patient".parse::<ResourceType>() {
+    let kind = match ROOT.parse::<ResourceType>() {
         Ok(kind) => kind,
         Err(_) => return false,
     };
@@ -505,7 +530,9 @@ impl JobHandler for ExportJob {
         let rules = self.rules(&request).await?;
         let mut body = Vec::new();
         let mut outcome = UnitOutcome::default();
+        let mut held: Vec<String> = Vec::new();
         for entry in snapshot(self.store.as_ref(), resource_type, &request.till).await? {
+            held.push(entry.id().as_str().to_owned());
             let parsed = match body_of(&entry) {
                 Ok(parsed) => parsed,
                 Err(error) => {
@@ -539,6 +566,17 @@ impl JobHandler for ExportJob {
             body.push(b'\n');
             outcome.handled += 1;
         }
+        if let Some(roots) = &roots {
+            if resource_type == ROOT.parse::<ResourceType>()? {
+                for root in roots {
+                    if !held.iter().any(|found| found == root.as_str()) {
+                        outcome
+                            .failures
+                            .push(format!("{ROOT}/{}: the member is not held", root.as_str()));
+                    }
+                }
+            }
+        }
         if outcome.handled > 0 {
             let output = Output::new(
                 request.file(&resource_type),
@@ -546,6 +584,15 @@ impl JobHandler for ExportJob {
                 outcome.handled,
             );
             self.sink.write(&job.id, &output, &body).await?;
+        }
+        if !outcome.failures.is_empty() {
+            let reported = itemised(&outcome.failures);
+            let output = Output::new(
+                request.failure_file(&resource_type),
+                OUTCOME,
+                outcome.failures.len() as u64,
+            );
+            self.sink.write(&job.id, &output, &reported).await?;
         }
         outcome.detail.insert(
             "transactionTime".to_owned(),
