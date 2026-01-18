@@ -211,3 +211,107 @@ async fn a_patient_export_carries_the_compartment_and_a_group_export_its_members
     assert_eq!(observations.len(), 1);
     assert_eq!(observations[0]["id"], "o1");
 }
+
+#[tokio::test]
+async fn a_type_filter_narrows_what_the_export_carries() {
+    let store = Arc::new(MemoryStore::default());
+    store.create(patient("p1", "Stone", true)).await.unwrap();
+    store.create(patient("p2", "Rivers", true)).await.unwrap();
+    store
+        .create(observation("o1", "code-1", 3.0, "Patient/p1"))
+        .await
+        .unwrap();
+    let sink = Arc::new(MemoryBulkStore::new());
+
+    let record = ran(
+        Arc::clone(&store),
+        Arc::clone(&sink),
+        job("f1"),
+        r#"{"scope":"system","_type":["Patient","Observation"],"_typeFilter":["Patient?family=Stone"]}"#,
+    )
+    .await;
+
+    assert_eq!(record.state, JobState::Completed);
+    let patients = rows(&sink.read(&job("f1"), "Patient.ndjson").await.unwrap());
+    assert_eq!(patients.len(), 1);
+    assert_eq!(patients[0]["id"], "p1");
+    let observations = rows(&sink.read(&job("f1"), "Observation.ndjson").await.unwrap());
+    assert_eq!(observations.len(), 1);
+}
+
+#[tokio::test]
+async fn a_window_keeps_what_changed_inside_it() {
+    let hand = Arc::new(Hand {
+        now: Mutex::new("2026-09-06T04:00:00.000Z".to_owned()),
+    });
+    let store = Arc::new(MemoryStore::with_clock(clock(&hand)));
+    store.create(patient("p1", "Stone", true)).await.unwrap();
+    at(&hand, "2026-09-06T08:00:00.000Z");
+    store.create(patient("p2", "Rivers", true)).await.unwrap();
+    let sink = Arc::new(MemoryBulkStore::new());
+
+    let record = ran(
+        Arc::clone(&store),
+        Arc::clone(&sink),
+        job("f2"),
+        r#"{"scope":"system","_type":["Patient"],"_since":"2026-09-06T06:00:00.000Z","_till":"2026-09-06T10:00:00.000Z"}"#,
+    )
+    .await;
+
+    assert_eq!(record.state, JobState::Completed);
+    let patients = rows(&sink.read(&job("f2"), "Patient.ndjson").await.unwrap());
+    assert_eq!(patients.len(), 1);
+    assert_eq!(patients[0]["id"], "p2");
+}
+
+#[tokio::test]
+async fn a_container_names_the_files_and_an_unknown_format_is_refused() {
+    let store = Arc::new(MemoryStore::default());
+    store.create(patient("p1", "Stone", true)).await.unwrap();
+    let sink = Arc::new(MemoryBulkStore::new());
+
+    let named = ran(
+        Arc::clone(&store),
+        Arc::clone(&sink),
+        job("f3"),
+        r#"{"scope":"system","_type":["Patient"],"_container":"nightly","_outputFormat":"application/fhir+ndjson"}"#,
+    )
+    .await;
+    assert_eq!(named.state, JobState::Completed);
+    let listed: Vec<String> = sink
+        .list(&job("f3"))
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|file| file.name)
+        .collect();
+    assert_eq!(listed, vec!["nightly/Patient.ndjson"]);
+
+    let refused = ran(
+        Arc::clone(&store),
+        Arc::clone(&sink),
+        job("f4"),
+        r#"{"scope":"system","_outputFormat":"text/csv"}"#,
+    )
+    .await;
+    assert_eq!(refused.state, JobState::Failed);
+    assert!(refused.outcome.unwrap().contains("_outputFormat"));
+}
+
+#[tokio::test]
+async fn a_filter_the_server_does_not_implement_is_refused() {
+    let store = Arc::new(MemoryStore::default());
+    store.create(patient("p1", "Stone", true)).await.unwrap();
+    let sink = Arc::new(MemoryBulkStore::new());
+
+    let record = ran(
+        Arc::clone(&store),
+        Arc::clone(&sink),
+        job("f5"),
+        r#"{"scope":"system","_type":["Patient"],"_typeFilter":["Patient?nonesuch=1"]}"#,
+    )
+    .await;
+
+    assert_eq!(record.state, JobState::Failed);
+    assert!(record.outcome.unwrap().contains("nonesuch"));
+}

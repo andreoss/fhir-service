@@ -1,6 +1,6 @@
 use crate::handler::{JobContext, JobHandler, Unit, UnitOutcome};
 use async_trait::async_trait;
-use fhir_core::search::Compartment;
+use fhir_core::search::{Compartment, Filter};
 use fhir_core::{Error, FhirInstant, ResourceEnvelope, ResourceId, ResourceType};
 use fhir_store::{
     system_clock, BulkStore, Clock, HistoryOrder, HistoryQuery, HistoryScope, JobKind, Output,
@@ -20,9 +20,47 @@ pub enum ExportScope {
 }
 
 #[derive(Debug, Clone)]
+pub struct TypeFilter {
+    pub resource_type: ResourceType,
+    pub filters: Vec<Filter>,
+}
+
+fn narrowing(text: &str) -> Result<TypeFilter, Error> {
+    let (head, query) = text.split_once('?').unwrap_or((text, ""));
+    let resource_type = head.trim().parse::<ResourceType>()?;
+    let mut filters = Vec::new();
+    for pair in query.split('&').filter(|part| !part.trim().is_empty()) {
+        let (name, raw) = pair.split_once('=').ok_or_else(|| {
+            Error::InvalidParameter(format!("_typeFilter {pair:?} carries no value"))
+        })?;
+        if name.contains(':') || name.contains('.') {
+            return Err(Error::UnsupportedParameter(format!(
+                "_typeFilter {name:?}"
+            )));
+        }
+        let def = fhir_core::search::lookup(Some(resource_type), name).ok_or_else(|| {
+            Error::UnsupportedParameter(format!("_typeFilter {name:?}"))
+        })?;
+        let values = raw
+            .split(',')
+            .filter(|part| !part.is_empty())
+            .map(|part| def.value(part))
+            .collect::<Result<Vec<_>, Error>>()?;
+        filters.push(Filter::new(name, def.target.clone(), values));
+    }
+    Ok(TypeFilter {
+        resource_type,
+        filters,
+    })
+}
+
+#[derive(Debug, Clone)]
 pub struct ExportRequest {
     pub scope: ExportScope,
     pub types: Vec<ResourceType>,
+    pub filters: Vec<TypeFilter>,
+    pub narrowings: Vec<String>,
+    pub since: Option<FhirInstant>,
     pub till: FhirInstant,
     pub container: String,
 }
@@ -102,9 +140,21 @@ impl ExportRequest {
         let container = text(&payload, "_container")
             .or_else(|| text(&payload, "container"))
             .unwrap_or_default();
+        let since = match text(&payload, "_since").or_else(|| text(&payload, "since")) {
+            Some(found) => Some(FhirInstant::parse(&found)?),
+            None => None,
+        };
+        let narrowings = listed(&payload, "_typeFilter");
+        let filters = narrowings
+            .iter()
+            .map(|text| narrowing(text))
+            .collect::<Result<Vec<TypeFilter>, Error>>()?;
         Ok(ExportRequest {
             scope: scope_of(&payload)?,
             types: resource_types(&names)?,
+            filters,
+            narrowings,
+            since,
             till,
             container,
         })
@@ -132,6 +182,21 @@ impl ExportRequest {
         carried.insert(
             "_container".to_owned(),
             Value::String(self.container.clone()),
+        );
+        if let Some(since) = &self.since {
+            carried.insert(
+                "_since".to_owned(),
+                Value::String(since.as_str().to_owned()),
+            );
+        }
+        carried.insert(
+            "_typeFilter".to_owned(),
+            Value::Array(
+                self.narrowings
+                    .iter()
+                    .map(|text| Value::String(text.clone()))
+                    .collect(),
+            ),
         );
         Value::Object(carried)
     }
@@ -217,6 +282,28 @@ async fn members(
         }
     }
     Ok(found)
+}
+
+fn narrowed(
+    request: &ExportRequest,
+    resource_type: ResourceType,
+    entry: &ResourceEnvelope,
+    body: &Value,
+) -> bool {
+    let mut wanted = request
+        .filters
+        .iter()
+        .filter(|found| found.resource_type == resource_type)
+        .peekable();
+    if wanted.peek().is_none() {
+        return true;
+    }
+    wanted.any(|found| {
+        found
+            .filters
+            .iter()
+            .all(|filter| filter.matches(entry.id(), entry.last_updated(), body))
+    })
 }
 
 fn gathered(roots: &[ResourceId], resource_type: ResourceType, body: &Value) -> bool {
@@ -320,6 +407,16 @@ impl JobHandler for ExportJob {
                 .as_ref()
                 .is_some_and(|roots| !gathered(roots, resource_type, &parsed))
             {
+                continue;
+            }
+            if request
+                .since
+                .as_ref()
+                .is_some_and(|since| entry.last_updated().key() < since.key())
+            {
+                continue;
+            }
+            if !narrowed(&request, resource_type, &entry, &parsed) {
                 continue;
             }
             body.extend_from_slice(&serde_json::to_vec(&parsed).unwrap_or_default());

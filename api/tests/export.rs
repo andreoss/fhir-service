@@ -179,3 +179,57 @@ async fn an_unknown_file_of_a_job_is_not_found() {
     let missing = request(&held.app, "GET", "/_jobs/nobody/Patient.ndjson", b"").await;
     assert_eq!(missing.status, StatusCode::NOT_FOUND);
 }
+
+#[tokio::test]
+async fn a_parameter_the_export_does_not_implement_is_refused() {
+    let held = harness();
+    seeded(&held).await;
+
+    let refused = request(&held.app, "GET", "/$export?_nonesuch=1", b"").await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST);
+    assert!(refused.body.contains("_nonesuch"), "{}", refused.body);
+
+    let empty = request(&held.app, "GET", "/$export?_type=", b"").await;
+    assert_eq!(empty.status, StatusCode::BAD_REQUEST);
+
+    let format = request(&held.app, "GET", "/$export?_outputFormat=text/csv", b"").await;
+    assert_eq!(format.status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn the_listed_parameters_reach_the_submitted_description() {
+    let held = harness();
+    seeded(&held).await;
+
+    let accepted = request(
+        &held.app,
+        "GET",
+        "/$export?_type=Patient,Observation&_typeFilter=Patient%3Ffamily%3DStone\
+&_since=2026-09-06T00:00:00.000Z&_till=2026-09-06T12:00:00.000Z\
+&_outputFormat=application/fhir%2Bndjson&_container=nightly",
+        b"",
+    )
+    .await;
+    assert_eq!(accepted.status, StatusCode::ACCEPTED);
+    let id = submitted(&accepted);
+    let held_job = held.jobs.fetch(&id).await.unwrap();
+    let payload: Value = serde_json::from_str(held_job.payload.as_deref().unwrap()).unwrap();
+    assert_eq!(payload["_type"][1], "Observation");
+    assert_eq!(payload["_typeFilter"][0], "Patient?family=Stone");
+    assert_eq!(payload["_since"], "2026-09-06T00:00:00.000Z");
+    assert_eq!(payload["_till"], "2026-09-06T12:00:00.000Z");
+    assert_eq!(payload["_container"], "nightly");
+
+    work(&held).await;
+    let done = request(&held.app, "GET", &format!("/_jobs/{id}"), b"").await;
+    let manifest: Value = serde_json::from_str(&done.body).unwrap();
+    assert_eq!(manifest["transactionTime"], "2026-09-06T12:00:00.000Z");
+    let files = manifest["output"].as_array().unwrap();
+    let patients = files.iter().find(|file| file["type"] == "Patient").unwrap();
+    assert_eq!(patients["count"], 1);
+    assert!(
+        patients["url"].as_str().unwrap().contains("/nightly/"),
+        "{}",
+        patients["url"]
+    );
+}
