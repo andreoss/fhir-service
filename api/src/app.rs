@@ -180,6 +180,10 @@ fn routes() -> Router<AppState> {
                 post(crate::job::submit_type_bulk_update),
             )
             .route("/$reindex", post(crate::job::submit_reindex))
+            .route(
+                "/{type}/{id}/$reindex",
+                post(crate::job::submit_resource_reindex),
+            )
             .route("/_jobs/{id}", get(crate::job::poll).delete(crate::job::cancel))
             .route("/_jobs/{id}/{*name}", get(crate::job::output))
             .fallback(not_found)

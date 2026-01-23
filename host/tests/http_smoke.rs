@@ -1056,3 +1056,40 @@ fn a_bulk_update_patches_a_type_and_reports_its_progress() {
     assert_eq!(header(&read, "etag"), "W/\"2\"");
     assert!(read.body.contains("\"active\":false"), "{}", read.body);
 }
+
+#[test]
+fn a_reindex_of_one_resource_makes_it_findable_again() {
+    let (child, port) = spawn_server();
+
+    request(port, "POST", "/Patient", &[], &live_banded("rx-1", "high"));
+    request(port, "POST", "/Patient", &[], &live_banded("rx-2", "high"));
+    request(
+        port,
+        "POST",
+        "/SearchParameter",
+        &[],
+        &live_definition("sp-r1", "risk-band"),
+    );
+    let backfilled = request(port, "POST", "/SearchParameter/$reindex", &[], &[]);
+    assert_eq!(backfilled.status, 200, "backfill failed: {}", backfilled.body);
+
+    let moved = request(port, "PUT", "/Patient/rx-1", &[], &live_banded("rx-1", "low"));
+    assert_eq!(moved.status, 200, "update failed: {}", moved.body);
+    let stale = request(port, "GET", "/Patient?risk-band=low", &[], &[]);
+
+    let submitted = request(port, "POST", "/Patient/rx-1/$reindex", &[], &[]);
+    assert_eq!(submitted.status, 202, "submit failed: {}", submitted.body);
+    let done = settled(port, &job_path(&submitted));
+    assert_eq!(done.status, 200, "poll failed: {}", done.body);
+    let manifest: serde_json::Value = serde_json::from_str(&done.body).expect("a manifest is json");
+    let after = request(port, "GET", "/Patient?risk-band=low", &[], &[]);
+    let others = request(port, "GET", "/Patient?risk-band=high", &[], &[]);
+    stop(child);
+
+    assert!(stale.body.contains("\"total\":0"), "{}", stale.body);
+    assert_eq!(manifest["request"]["_resource"][0], "Patient/rx-1");
+    assert_eq!(manifest["outcome"]["handled"], 1);
+    assert_eq!(manifest["outcome"]["units"], 1);
+    assert_eq!(ids(&after.body), vec!["rx-1".to_owned()]);
+    assert_eq!(ids(&others.body), vec!["rx-2".to_owned()]);
+}

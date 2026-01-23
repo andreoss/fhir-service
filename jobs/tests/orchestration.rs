@@ -194,6 +194,7 @@ async fn a_reindex_backfills_the_stored_parameters() {
     let (jobs, _ticker) = queue();
     let orchestrator = Orchestrator::new().with(Arc::new(fhir_jobs::ReindexJob::new(
         Arc::clone(&store) as Arc<dyn ResourceStore>,
+        sink(),
     )));
     let record = ran(
         jobs,

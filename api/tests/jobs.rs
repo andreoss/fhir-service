@@ -340,3 +340,28 @@ async fn a_bulk_update_refuses_a_parameter_it_does_not_know() {
 
     assert_eq!(reply.status, StatusCode::BAD_REQUEST);
 }
+
+#[tokio::test]
+async fn a_resource_reindex_names_the_resource_it_was_asked_under() {
+    let (jobs, _ticker) = queue();
+    let app = service(Arc::clone(&jobs) as Arc<dyn JobStore>);
+
+    let reply = request(&app, "POST", "/Patient/p1/$reindex", b"").await;
+
+    assert_eq!(reply.status, StatusCode::ACCEPTED);
+    let record = jobs.fetch(&submitted_id(&reply)).await.unwrap();
+    assert_eq!(record.kind, fhir_store::JobKind::Reindex);
+    assert_eq!(payload_of(&record)["_resource"][0], "Patient/p1");
+}
+
+#[tokio::test]
+async fn a_reindex_carries_the_parameters_it_was_targeted_at() {
+    let (jobs, _ticker) = queue();
+    let app = service(Arc::clone(&jobs) as Arc<dyn JobStore>);
+
+    let reply = request(&app, "POST", "/$reindex?_url=urn:p:band&_type=Patient", b"").await;
+
+    let payload = payload_of(&jobs.fetch(&submitted_id(&reply)).await.unwrap());
+    assert_eq!(payload["_url"][0], "urn:p:band");
+    assert_eq!(payload["_type"][0], "Patient");
+}

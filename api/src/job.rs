@@ -36,6 +36,10 @@ const DELETE_LISTED: [&str; 2] = ["_type", "_exclude"];
 
 const UPDATE_PARAMS: [&str; 3] = ["_type", "_exclude", "_maxCount"];
 
+const REINDEX_PARAMS: [&str; 3] = ["_type", "_url", "_resource"];
+
+const REINDEX_LISTED: [&str; 3] = ["_type", "_url", "_resource"];
+
 const ACCEPTED_PARAMS: [&str; 9] = [
     "_type",
     "_typeFilter",
@@ -246,9 +250,52 @@ pub async fn submit_type_bulk_update(
 pub async fn submit_reindex(
     State(state): State<AppState>,
     headers: HeaderMap,
+    RawQuery(query): RawQuery,
     body: axum::body::Bytes,
 ) -> Response {
-    submit(&state, JobKind::Reindex, &headers, &body).await
+    submit_indexing(&state, None, &headers, query.as_deref(), &body).await
+}
+
+pub async fn submit_resource_reindex(
+    State(state): State<AppState>,
+    Path((resource_type, id)): Path<(String, String)>,
+    headers: HeaderMap,
+    RawQuery(query): RawQuery,
+    body: axum::body::Bytes,
+) -> Response {
+    let reference = format!("{resource_type}/{id}");
+    submit_indexing(
+        &state,
+        Some(&reference),
+        &headers,
+        query.as_deref(),
+        &body,
+    )
+    .await
+}
+
+fn indexing(reference: Option<&str>, raw: Option<&str>, body: &[u8]) -> Result<String, Error> {
+    let mut carried = merged(raw, body, &REINDEX_PARAMS, &REINDEX_LISTED)?;
+    if let Some(reference) = reference {
+        carried.insert(
+            "_resource".to_owned(),
+            Value::Array(vec![Value::String(reference.to_owned())]),
+        );
+    }
+    Ok(Value::Object(carried).to_string())
+}
+
+async fn submit_indexing(
+    state: &AppState,
+    reference: Option<&str>,
+    headers: &HeaderMap,
+    raw: Option<&str>,
+    body: &[u8],
+) -> Response {
+    match indexing(reference, raw, body) {
+        Ok(payload) => submit(state, JobKind::Reindex, headers, payload.as_bytes()).await,
+        Err(error) => AppError::from(error).into_response_now(),
+    }
 }
 
 pub async fn poll(

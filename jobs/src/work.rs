@@ -2,7 +2,7 @@ use crate::handler::{JobContext, JobHandler, Unit, UnitOutcome};
 use crate::{payload, report};
 use async_trait::async_trait;
 use fhir_core::search::ParameterSpec;
-use fhir_core::{Error, FhirVersion, Patch, ResourceEnvelope, ResourceType};
+use fhir_core::{Error, FhirVersion, Patch, ResourceEnvelope, ResourceId, ResourceType};
 use fhir_store::{
     BulkStore, HistoryOrder, HistoryQuery, HistoryScope, JobKind, ResourceStore, SearchQuery,
 };
@@ -47,10 +47,6 @@ async fn every_recorded_type(store: &dyn ResourceStore) -> Result<Vec<ResourceTy
     }
     found.sort_by(|left, right| left.as_str().cmp(right.as_str()));
     Ok(found)
-}
-
-fn body(payload: &str) -> Result<Value, Error> {
-    serde_json::from_str(payload).map_err(|error| Error::InvalidJson(error.to_string()))
 }
 
 
@@ -483,59 +479,53 @@ impl JobHandler for BulkUpdateJob {
 }
 
 
+fn logical(reference: &str) -> Result<ResourceId, Error> {
+    ResourceId::parse(reference.rsplit('/').next().unwrap_or_default())
+}
+
+fn safe(label: &str) -> String {
+    label
+        .chars()
+        .map(|held| match held.is_ascii_alphanumeric() || held == '.' || held == '-' {
+            true => held,
+            false => '-',
+        })
+        .collect()
+}
+
+#[derive(Debug, Clone)]
+pub struct ReindexRequest {
+    pub urls: Vec<String>,
+    pub references: Vec<String>,
+    pub types: Vec<ResourceType>,
+}
+
+impl ReindexRequest {
+    pub fn parse(payload: &str) -> Result<ReindexRequest, Error> {
+        let parsed = payload::body(payload)?;
+        let references = payload::named(&parsed, &["_resource", "resources"]);
+        for reference in &references {
+            logical(reference)?;
+        }
+        Ok(ReindexRequest {
+            urls: payload::named(&parsed, &["_url", "urls"]),
+            references,
+            types: payload::resource_types(&payload::named(&parsed, &["_type", "types"]))?,
+        })
+    }
+}
+
 pub struct ReindexJob {
     store: Arc<dyn ResourceStore>,
+    sink: Arc<dyn BulkStore>,
 }
 
 impl ReindexJob {
-    pub fn new(store: Arc<dyn ResourceStore>) -> ReindexJob {
-        ReindexJob { store }
-    }
-}
-
-#[async_trait]
-impl JobHandler for ReindexJob {
-    fn kind(&self) -> JobKind {
-        JobKind::Reindex
+    pub fn new(store: Arc<dyn ResourceStore>, sink: Arc<dyn BulkStore>) -> ReindexJob {
+        ReindexJob { store, sink }
     }
 
-    async fn plan(&self, job: &JobContext) -> Result<Vec<Unit>, Error> {
-        let parsed = body(&job.payload)?;
-        let urls: Vec<String> = parsed
-            .get("urls")
-            .and_then(Value::as_array)
-            .map(|listed| {
-                listed
-                    .iter()
-                    .filter_map(|value| value.as_str().map(str::to_owned))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let specs = self.specs(&urls).await?;
-        Ok(specs
-            .into_iter()
-            .map(|spec| Unit::new(spec.url.clone(), spec.url))
-            .collect())
-    }
-
-    async fn process(&self, _job: &JobContext, unit: &Unit) -> Result<UnitOutcome, Error> {
-        let specs = self.specs(std::slice::from_ref(&unit.detail)).await?;
-        let reports = self.store.reindex(&specs).await?;
-        let mut outcome = UnitOutcome::default();
-        for report in reports {
-            outcome.handled += report.indexed as u64;
-            for failure in report.failures {
-                outcome
-                    .failures
-                    .push(format!("{}: {}", failure.resource, failure.reason));
-            }
-        }
-        Ok(outcome)
-    }
-}
-
-impl ReindexJob {
-    async fn specs(&self, urls: &[String]) -> Result<Vec<ParameterSpec>, Error> {
+    async fn matching(&self, urls: &[String]) -> Result<Vec<ParameterSpec>, Error> {
         let resource_type = "SearchParameter".parse::<ResourceType>()?;
         let page = self.store.search(&SearchQuery::of_type(resource_type)).await?;
         let mut specs = Vec::new();
@@ -552,5 +542,120 @@ impl ReindexJob {
             specs.push(spec);
         }
         Ok(specs)
+    }
+
+    async fn covered(&self, request: &ReindexRequest) -> Result<Vec<ParameterSpec>, Error> {
+        let mut specs = self.matching(&request.urls).await?;
+        if !request.types.is_empty() {
+            specs.retain(|spec| spec.base.iter().any(|base| request.types.contains(base)));
+        }
+        Ok(specs)
+    }
+
+    async fn one_resource(
+        &self,
+        detail: &Value,
+        reference: &str,
+        outcome: &mut UnitOutcome,
+    ) -> Result<(), Error> {
+        let specs = self.matching(&payload::listed(detail, "urls")).await?;
+        let reports = match self.store.reindex_resource(&specs, &logical(reference)?).await {
+            Ok(reports) => reports,
+            Err(error) => {
+                outcome.failures.push(format!("{reference}: {error}"));
+                return Ok(());
+            }
+        };
+        let mut parameters = 0;
+        for report in reports {
+            if report.indexed > 0 {
+                parameters += 1;
+            }
+            for failure in report.failures {
+                outcome
+                    .failures
+                    .push(format!("{}: {}", failure.resource, failure.reason));
+            }
+        }
+        if parameters > 0 {
+            outcome.handled += 1;
+        }
+        outcome.detail.insert(
+            reference.to_owned(),
+            serde_json::json!({ "parameters": parameters }),
+        );
+        Ok(())
+    }
+
+    async fn one_parameter(&self, url: &str, outcome: &mut UnitOutcome) -> Result<(), Error> {
+        let specs = self.matching(std::slice::from_ref(&url.to_owned())).await?;
+        let reports = self.store.reindex(&specs).await?;
+        let mut indexed = 0;
+        for report in reports {
+            indexed += report.indexed as u64;
+            for failure in report.failures {
+                outcome
+                    .failures
+                    .push(format!("{}: {}", failure.resource, failure.reason));
+            }
+        }
+        outcome.handled += indexed;
+        outcome
+            .detail
+            .insert(url.to_owned(), serde_json::json!({ "indexed": indexed }));
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl JobHandler for ReindexJob {
+    fn kind(&self) -> JobKind {
+        JobKind::Reindex
+    }
+
+    async fn plan(&self, job: &JobContext) -> Result<Vec<Unit>, Error> {
+        let request = ReindexRequest::parse(&job.payload)?;
+        let specs = self.covered(&request).await?;
+        if request.references.is_empty() {
+            return Ok(specs
+                .into_iter()
+                .map(|spec| {
+                    let detail = serde_json::json!({ "url": spec.url });
+                    Unit::new(spec.url, detail.to_string())
+                })
+                .collect());
+        }
+        let urls: Vec<Value> = specs
+            .iter()
+            .map(|spec| Value::String(spec.url.clone()))
+            .collect();
+        Ok(request
+            .references
+            .iter()
+            .map(|reference| {
+                let detail = serde_json::json!({ "resource": reference, "urls": urls });
+                Unit::new(reference.clone(), detail.to_string())
+            })
+            .collect())
+    }
+
+    async fn process(&self, job: &JobContext, unit: &Unit) -> Result<UnitOutcome, Error> {
+        let detail = payload::body(&unit.detail)?;
+        let mut outcome = UnitOutcome::default();
+        match payload::text(&detail, "resource") {
+            Some(reference) => self.one_resource(&detail, &reference, &mut outcome).await?,
+            None => match payload::text(&detail, "url") {
+                Some(url) => self.one_parameter(&url, &mut outcome).await?,
+                None => return Err(Error::InvalidParameter("a reindex unit names nothing".to_owned())),
+            },
+        }
+        report::record_failures(
+            self.sink.as_ref(),
+            &job.id,
+            &report::failure_file("", &safe(&unit.label)),
+            &outcome.failures,
+        )
+        .await?;
+        Ok(outcome)
     }
 }

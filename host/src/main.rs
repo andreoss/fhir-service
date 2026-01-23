@@ -151,10 +151,13 @@ fn spawn_worker(
     version: fhir_core::FhirVersion,
 ) {
     let mut registry = fhir_jobs::Orchestrator::new()
-        .with(Arc::new(fhir_jobs::ImportJob::new(Arc::clone(&store), version)))
-        .with(Arc::new(fhir_jobs::ReindexJob::new(Arc::clone(&store))));
+        .with(Arc::new(fhir_jobs::ImportJob::new(Arc::clone(&store), version)));
     if let Some(sink) = outputs {
         registry = registry
+            .with(Arc::new(fhir_jobs::ReindexJob::new(
+                Arc::clone(&store),
+                Arc::clone(&sink),
+            )))
             .with(Arc::new(fhir_jobs::BulkDeleteJob::new(
                 Arc::clone(&store),
                 Arc::clone(&sink),

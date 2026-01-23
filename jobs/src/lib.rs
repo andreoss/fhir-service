@@ -13,4 +13,5 @@ pub use orchestrator::{Orchestrator, Worker};
 pub use watchdog::{Schedule, Sweep, Watchdog, RETENTION};
 pub use work::{
     BulkDeleteJob, BulkDeleteRequest, BulkUpdateJob, BulkUpdateRequest, ImportJob, ReindexJob,
+    ReindexRequest,
 };
