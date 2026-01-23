@@ -1,10 +1,53 @@
 use crate::handler::{JobContext, JobHandler, Unit, UnitOutcome};
+use crate::{payload, report};
 use async_trait::async_trait;
 use fhir_core::search::ParameterSpec;
 use fhir_core::{Error, FhirVersion, Patch, ResourceEnvelope, ResourceType};
-use fhir_store::{JobKind, ResourceStore, SearchQuery};
+use fhir_store::{
+    BulkStore, HistoryOrder, HistoryQuery, HistoryScope, JobKind, ResourceStore, SearchQuery,
+};
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::sync::Arc;
+
+async fn latest_of(
+    store: &dyn ResourceStore,
+    scope: &HistoryScope,
+) -> Result<Vec<ResourceEnvelope>, Error> {
+    let query = HistoryQuery {
+        order: HistoryOrder::Oldest,
+        ..HistoryQuery::default()
+    };
+    let page = store.history(scope, &query).await?;
+    let mut current: BTreeMap<String, ResourceEnvelope> = BTreeMap::new();
+    for entry in page.entries {
+        current.insert(entry.id().as_str().to_owned(), entry);
+    }
+    Ok(current.into_values().collect())
+}
+
+async fn marked_of(
+    store: &dyn ResourceStore,
+    resource_type: ResourceType,
+) -> Result<Vec<ResourceEnvelope>, Error> {
+    Ok(latest_of(store, &HistoryScope::Type(resource_type))
+        .await?
+        .into_iter()
+        .filter(ResourceEnvelope::is_deleted)
+        .collect())
+}
+
+async fn every_recorded_type(store: &dyn ResourceStore) -> Result<Vec<ResourceType>, Error> {
+    let mut found: Vec<ResourceType> = Vec::new();
+    for entry in latest_of(store, &HistoryScope::System).await? {
+        let resource_type = entry.resource_type();
+        if !found.contains(&resource_type) {
+            found.push(resource_type);
+        }
+    }
+    found.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+    Ok(found)
+}
 
 fn body(payload: &str) -> Result<Value, Error> {
     serde_json::from_str(payload).map_err(|error| Error::InvalidJson(error.to_string()))
@@ -149,13 +192,107 @@ impl JobHandler for ImportJob {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct BulkDeleteRequest {
+    pub types: Vec<ResourceType>,
+    pub excluded: Vec<ResourceType>,
+    pub max_count: Option<u64>,
+    pub hard: bool,
+    pub purge: bool,
+    pub soft_deleted: bool,
+}
+
+impl BulkDeleteRequest {
+    pub fn parse(payload: &str) -> Result<BulkDeleteRequest, Error> {
+        let parsed = payload::body(payload)?;
+        Ok(BulkDeleteRequest {
+            types: payload::resource_types(&payload::named(&parsed, &["_type", "types"]))?,
+            excluded: payload::resource_types(&payload::named(
+                &parsed,
+                &["_exclude", "excluded"],
+            ))?,
+            max_count: payload::count(&parsed, "_maxCount")?,
+            hard: payload::flag(&parsed, "hardDelete"),
+            purge: payload::flag(&parsed, "purgeHistory"),
+            soft_deleted: payload::flag(&parsed, "softDeleted"),
+        })
+    }
+
+    fn to_value(&self, resource_type: &ResourceType, share: Option<u64>) -> Value {
+        let mut carried = serde_json::Map::new();
+        carried.insert(
+            "_type".to_owned(),
+            Value::Array(vec![Value::String(resource_type.as_str().to_owned())]),
+        );
+        if let Some(share) = share {
+            carried.insert("_maxCount".to_owned(), Value::from(share));
+        }
+        carried.insert("hardDelete".to_owned(), Value::Bool(self.hard));
+        carried.insert("purgeHistory".to_owned(), Value::Bool(self.purge));
+        carried.insert("softDeleted".to_owned(), Value::Bool(self.soft_deleted));
+        Value::Object(carried)
+    }
+}
+
 pub struct BulkDeleteJob {
     store: Arc<dyn ResourceStore>,
+    sink: Arc<dyn BulkStore>,
 }
 
 impl BulkDeleteJob {
-    pub fn new(store: Arc<dyn ResourceStore>) -> BulkDeleteJob {
-        BulkDeleteJob { store }
+    pub fn new(store: Arc<dyn ResourceStore>, sink: Arc<dyn BulkStore>) -> BulkDeleteJob {
+        BulkDeleteJob { store, sink }
+    }
+
+    async fn covered(&self, request: &BulkDeleteRequest) -> Result<Vec<ResourceType>, Error> {
+        let mut types = match request.types.is_empty() {
+            false => request.types.clone(),
+            true => match request.soft_deleted {
+                true => every_recorded_type(self.store.as_ref()).await?,
+                false => every_type(self.store.as_ref()).await?,
+            },
+        };
+        types.retain(|found| !request.excluded.contains(found));
+        Ok(types)
+    }
+
+    async fn candidates(
+        &self,
+        request: &BulkDeleteRequest,
+        resource_type: ResourceType,
+    ) -> Result<Vec<ResourceEnvelope>, Error> {
+        match request.soft_deleted {
+            true => marked_of(self.store.as_ref(), resource_type).await,
+            false => {
+                let page = self
+                    .store
+                    .search(&SearchQuery::of_type(resource_type))
+                    .await?;
+                Ok(page.entries)
+            }
+        }
+    }
+
+    async fn remove(
+        &self,
+        request: &BulkDeleteRequest,
+        entry: &ResourceEnvelope,
+    ) -> Result<u64, Error> {
+        let id = entry.id();
+        if request.soft_deleted {
+            return match request.hard || !request.purge {
+                true => self.store.hard_delete(id).await.map(|_| 0),
+                false => self.store.purge_history(id).await.map(|gone| gone as u64),
+            };
+        }
+        if request.hard {
+            return self.store.hard_delete(id).await.map(|_| 0);
+        }
+        self.store.delete(id).await?;
+        match request.purge {
+            true => self.store.purge_history(id).await.map(|gone| gone as u64),
+            false => Ok(0),
+        }
     }
 }
 
@@ -166,21 +303,67 @@ impl JobHandler for BulkDeleteJob {
     }
 
     async fn plan(&self, job: &JobContext) -> Result<Vec<Unit>, Error> {
-        units_per_type(self.store.as_ref(), &job.payload, |_| String::new()).await
+        let request = BulkDeleteRequest::parse(&job.payload)?;
+        let mut left = request.max_count;
+        let mut units = Vec::new();
+        for resource_type in self.covered(&request).await? {
+            let share = match left {
+                None => None,
+                Some(0) => break,
+                Some(budget) => {
+                    let held = self.candidates(&request, resource_type).await?.len() as u64;
+                    let share = held.min(budget);
+                    left = Some(budget - share);
+                    Some(share)
+                }
+            };
+            if share == Some(0) {
+                continue;
+            }
+            units.push(Unit::new(
+                resource_type.as_str().to_owned(),
+                request.to_value(&resource_type, share).to_string(),
+            ));
+        }
+        Ok(units)
     }
 
-    async fn process(&self, _job: &JobContext, unit: &Unit) -> Result<UnitOutcome, Error> {
-        let entries = current_of(self.store.as_ref(), &unit.label).await?;
+    async fn process(&self, job: &JobContext, unit: &Unit) -> Result<UnitOutcome, Error> {
+        let request = BulkDeleteRequest::parse(&unit.detail)?;
+        let resource_type = unit.label.parse::<ResourceType>()?;
+        let cap = request.max_count.unwrap_or(u64::MAX).min(usize::MAX as u64) as usize;
         let mut outcome = UnitOutcome::default();
-        for entry in entries {
-            match self.store.delete(entry.id()).await {
-                Ok(_) => outcome.handled += 1,
+        let mut purged = 0;
+        for entry in self
+            .candidates(&request, resource_type)
+            .await?
+            .into_iter()
+            .take(cap)
+        {
+            match self.remove(&request, &entry).await {
+                Ok(gone) => {
+                    outcome.handled += 1;
+                    purged += gone;
+                }
                 Err(Error::Deleted) | Err(Error::NotFound) => {}
-                Err(error) => outcome
-                    .failures
-                    .push(format!("{}: {error}", entry.id().as_str())),
+                Err(error) => outcome.failures.push(format!(
+                    "{}/{}: {error}",
+                    resource_type.as_str(),
+                    entry.id().as_str()
+                )),
             }
         }
+        report::record_failures(
+            self.sink.as_ref(),
+            &job.id,
+            &report::failure_file("", resource_type.as_str()),
+            &outcome.failures,
+        )
+        .await?;
+        outcome.detail.insert(
+            resource_type.as_str().to_owned(),
+            serde_json::json!({"deleted": outcome.handled, "purged": purged}),
+        );
         Ok(outcome)
     }
 }

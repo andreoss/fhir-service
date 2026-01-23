@@ -1,4 +1,5 @@
 use crate::handler::{JobContext, JobHandler, Unit, UnitOutcome};
+use crate::{payload, report};
 use async_trait::async_trait;
 use fhir_core::search::{Compartment, Filter};
 use fhir_core::{Error, FhirInstant, ResourceEnvelope, ResourceId, ResourceType};
@@ -10,20 +11,7 @@ use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-const OUTCOME: &str = "OperationOutcome";
-
 const ROOT: &str = "Patient";
-
-fn itemised(failures: &[String]) -> Vec<u8> {
-    let mut body = Vec::new();
-    for failure in failures {
-        let outcome =
-            fhir_core::OperationOutcome::error(fhir_core::IssueCode::Processing, failure.as_str());
-        body.extend_from_slice(&outcome.to_fhir_json());
-        body.push(b'\n');
-    }
-    body
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExportScope {
@@ -82,15 +70,15 @@ impl Anonymization {
 }
 
 fn anonymization(payload: &Value) -> Result<Option<Anonymization>, Error> {
-    let Some(config) = text(payload, "_anonymizationConfig") else {
+    let Some(config) = payload::text(payload, "_anonymizationConfig") else {
         return Ok(None);
     };
-    let collection = text(payload, "_anonymizationConfigCollectionReference")
+    let collection = payload::text(payload, "_anonymizationConfigCollectionReference")
         .unwrap_or_else(|| "Basic".to_owned());
     Ok(Some(Anonymization {
         collection: collection.parse::<ResourceType>()?,
         config: ResourceId::parse(&config)?,
-        etag: text(payload, "_anonymizationConfigEtag"),
+        etag: payload::text(payload, "_anonymizationConfigEtag"),
     }))
 }
 
@@ -151,44 +139,16 @@ pub struct ExportRequest {
     pub anonymization: Option<Anonymization>,
 }
 
-fn text(payload: &Value, name: &str) -> Option<String> {
-    payload
-        .get(name)
-        .and_then(Value::as_str)
-        .map(str::to_owned)
-        .filter(|found| !found.trim().is_empty())
-}
-
-fn listed(payload: &Value, name: &str) -> Vec<String> {
-    match payload.get(name) {
-        Some(Value::Array(items)) => items
-            .iter()
-            .filter_map(|item| item.as_str().map(str::to_owned))
-            .collect(),
-        Some(Value::String(text)) => text
-            .split(',')
-            .map(str::trim)
-            .filter(|part| !part.is_empty())
-            .map(str::to_owned)
-            .collect(),
-        _ => Vec::new(),
-    }
-}
-
-fn resource_types(names: &[String]) -> Result<Vec<ResourceType>, Error> {
-    names.iter().map(|name| name.parse::<ResourceType>()).collect()
-}
-
 fn format_of(payload: &Value) -> Result<String, Error> {
-    match text(payload, "_outputFormat").or_else(|| text(payload, "outputFormat")) {
+    match payload::text(payload, "_outputFormat").or_else(|| payload::text(payload, "outputFormat")) {
         None => Ok(fhir_store::NDJSON.to_owned()),
         Some(found) => fhir_store::output_format(&found),
     }
 }
 
 fn scope_of(payload: &Value) -> Result<ExportScope, Error> {
-    let named = text(payload, "scope").unwrap_or_else(|| "system".to_owned());
-    let id = match text(payload, "id") {
+    let named = payload::text(payload, "scope").unwrap_or_else(|| "system".to_owned());
+    let id = match payload::text(payload, "id") {
         Some(found) => Some(ResourceId::parse(&found)?),
         None => None,
     };
@@ -210,29 +170,29 @@ impl ExportRequest {
         let payload: Value = serde_json::from_str(payload)
             .map_err(|error| Error::InvalidJson(error.to_string()))?;
         let _ = format_of(&payload)?;
-        let mut names = listed(&payload, "_type");
+        let mut names = payload::listed(&payload, "_type");
         if names.is_empty() {
-            names = listed(&payload, "types");
+            names = payload::listed(&payload, "types");
         }
-        let till = match text(&payload, "_till").or_else(|| text(&payload, "till")) {
+        let till = match payload::text(&payload, "_till").or_else(|| payload::text(&payload, "till")) {
             Some(found) => FhirInstant::parse(&found)?,
             None => fallback.clone(),
         };
-        let container = text(&payload, "_container")
-            .or_else(|| text(&payload, "container"))
+        let container = payload::text(&payload, "_container")
+            .or_else(|| payload::text(&payload, "container"))
             .unwrap_or_default();
-        let since = match text(&payload, "_since").or_else(|| text(&payload, "since")) {
+        let since = match payload::text(&payload, "_since").or_else(|| payload::text(&payload, "since")) {
             Some(found) => Some(FhirInstant::parse(&found)?),
             None => None,
         };
-        let narrowings = listed(&payload, "_typeFilter");
+        let narrowings = payload::listed(&payload, "_typeFilter");
         let filters = narrowings
             .iter()
             .map(|text| narrowing(text))
             .collect::<Result<Vec<TypeFilter>, Error>>()?;
         Ok(ExportRequest {
             scope: scope_of(&payload)?,
-            types: resource_types(&names)?,
+            types: payload::resource_types(&names)?,
             filters,
             narrowings,
             since,
@@ -585,15 +545,13 @@ impl JobHandler for ExportJob {
             );
             self.sink.write(&job.id, &output, &body).await?;
         }
-        if !outcome.failures.is_empty() {
-            let reported = itemised(&outcome.failures);
-            let output = Output::new(
-                request.failure_file(&resource_type),
-                OUTCOME,
-                outcome.failures.len() as u64,
-            );
-            self.sink.write(&job.id, &output, &reported).await?;
-        }
+        report::record_failures(
+            self.sink.as_ref(),
+            &job.id,
+            &request.failure_file(&resource_type),
+            &outcome.failures,
+        )
+        .await?;
         outcome.detail.insert(
             "transactionTime".to_owned(),
             Value::String(request.till.as_str().to_owned()),

@@ -152,11 +152,15 @@ fn spawn_worker(
 ) {
     let mut registry = fhir_jobs::Orchestrator::new()
         .with(Arc::new(fhir_jobs::ImportJob::new(Arc::clone(&store), version)))
-        .with(Arc::new(fhir_jobs::BulkDeleteJob::new(Arc::clone(&store))))
         .with(Arc::new(fhir_jobs::BulkUpdateJob::new(Arc::clone(&store))))
         .with(Arc::new(fhir_jobs::ReindexJob::new(Arc::clone(&store))));
     if let Some(sink) = outputs {
-        registry = registry.with(Arc::new(fhir_jobs::ExportJob::new(store, sink)));
+        registry = registry
+            .with(Arc::new(fhir_jobs::BulkDeleteJob::new(
+                Arc::clone(&store),
+                Arc::clone(&sink),
+            )))
+            .with(Arc::new(fhir_jobs::ExportJob::new(store, sink)));
     }
     let orchestrator = Arc::new(registry);
     let worker = fhir_jobs::Worker::new(jobs, orchestrator, "host", LEASE_MILLIS);

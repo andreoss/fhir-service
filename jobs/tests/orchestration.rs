@@ -106,7 +106,10 @@ async fn a_bulk_delete_removes_every_matching_resource() {
     let store = seeded().await;
     let (jobs, _ticker) = queue();
     let orchestrator =
-        Orchestrator::new().with(Arc::new(BulkDeleteJob::new(Arc::clone(&store) as Arc<dyn ResourceStore>)));
+        Orchestrator::new().with(Arc::new(BulkDeleteJob::new(
+            Arc::clone(&store) as Arc<dyn ResourceStore>,
+            sink(),
+        )));
     let record = ran(
         jobs,
         orchestrator,

@@ -377,6 +377,7 @@ dependencies = [
 name = "fhir-store-contract"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "fhir-core",
  "fhir-store",
 ]
