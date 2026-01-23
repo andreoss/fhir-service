@@ -1,5 +1,6 @@
 use axum::routing::{get, post};
 use axum::Router;
+use fhir_core::convert::{ApprovedTemplates, Templates};
 use fhir_core::search::Registry;
 use fhir_core::{Error, FhirVersion};
 use fhir_store::ResourceStore;
@@ -27,6 +28,7 @@ pub struct AppState {
     pub registry: Arc<Registry>,
     pub parameters: Arc<tokio::sync::Mutex<()>>,
     pub entries: Arc<tokio::sync::Semaphore>,
+    pub templates: Arc<dyn Templates>,
 }
 
 #[derive(Clone)]
@@ -56,6 +58,7 @@ impl Service {
                 registry: Arc::new(Registry::new()),
                 parameters: Arc::new(tokio::sync::Mutex::new(())),
                 entries: Arc::new(tokio::sync::Semaphore::new(crate::bundle::ENTRIES_AT_ONCE)),
+                templates: Arc::new(ApprovedTemplates::default()),
             },
         }
     }
@@ -82,6 +85,15 @@ impl Service {
         Service {
             state: AppState {
                 entries: Arc::new(tokio::sync::Semaphore::new(limit.max(1))),
+                ..self.state
+            },
+        }
+    }
+
+    pub fn with_templates(self, templates: Arc<dyn Templates>) -> Service {
+        Service {
+            state: AppState {
+                templates,
                 ..self.state
             },
         }
@@ -151,6 +163,7 @@ fn routes() -> Router<AppState> {
             .route("/{type}/{id}/_history/{vid}", get(vread))
             .route("/{type}", get(search_type).post(create).put(conditional_update).delete(conditional_delete).patch(conditional_patch))
             .route("/{type}/{id}/$purge-history", post(purge_history))
+            .route("/$convert-data", post(crate::operation::convert_data))
             .route("/$export", get(crate::job::submit_export).post(crate::job::submit_export))
             .route(
                 "/Patient/$export",
