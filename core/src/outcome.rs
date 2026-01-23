@@ -33,6 +33,7 @@ pub enum IssueCode {
     Duplicate,
     MultipleMatches,
     Processing,
+    Informational,
 }
 
 impl IssueCode {
@@ -48,6 +49,7 @@ impl IssueCode {
             IssueCode::Duplicate => "duplicate",
             IssueCode::MultipleMatches => "multiple-matches",
             IssueCode::Processing => "processing",
+            IssueCode::Informational => "informational",
         }
     }
 
@@ -61,6 +63,7 @@ impl IssueCode {
             IssueCode::NotAllowed => 405,
             IssueCode::MultipleMatches => 412,
             IssueCode::Processing => 500,
+            IssueCode::Informational => 200,
         }
     }
 }

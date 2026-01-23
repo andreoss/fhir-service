@@ -164,6 +164,14 @@ fn routes() -> Router<AppState> {
             .route("/{type}", get(search_type).post(create).put(conditional_update).delete(conditional_delete).patch(conditional_patch))
             .route("/{type}/{id}/$purge-history", post(purge_history))
             .route("/$convert-data", post(crate::operation::convert_data))
+            .route(
+                "/{type}/$validate",
+                get(crate::operation::validate_type).post(crate::operation::validate_type),
+            )
+            .route(
+                "/{type}/{id}/$validate",
+                get(crate::operation::validate_instance).post(crate::operation::validate_instance),
+            )
             .route("/$export", get(crate::job::submit_export).post(crate::job::submit_export))
             .route(
                 "/Patient/$export",

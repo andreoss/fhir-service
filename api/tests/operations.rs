@@ -132,3 +132,88 @@ async fn an_unknown_template_and_input_form_are_refused() {
     assert_eq!(reply.status, StatusCode::BAD_REQUEST);
     assert_eq!(json(&reply)["issue"][0]["code"], "not-supported");
 }
+
+async fn create_patient(app: &Service, id: &str) {
+    let body = format!(r#"{{"resourceType":"Patient","id":"{id}","active":true}}"#);
+    let reply = request(app, "POST", "/Patient", body.as_bytes()).await;
+    assert!(reply.status.is_success(), "{}", reply.body);
+}
+
+#[tokio::test]
+async fn validate_reports_a_submitted_resource_without_storing_it() {
+    let app = service();
+    let body = br#"{"resourceType":"Patient","id":"pt-v1","active":true}"#;
+    let reply = request(&app, "POST", "/Patient/$validate", body).await;
+    assert_eq!(reply.status, StatusCode::OK);
+    let value = json(&reply);
+    assert_eq!(value["resourceType"], "OperationOutcome");
+    assert_eq!(value["issue"][0]["severity"], "information");
+    assert_eq!(request(&app, "GET", "/Patient/pt-v1", &[]).await.status, StatusCode::NOT_FOUND);
+    assert_eq!(json(&request(&app, "GET", "/Patient", &[]).await)["total"], 0);
+}
+
+#[tokio::test]
+async fn validate_reports_a_resource_that_contradicts_its_path() {
+    let app = service();
+    let body = br#"{"resourceType":"Observation","id":"ob-1"}"#;
+    let reply = request(&app, "POST", "/Patient/$validate", body).await;
+    assert_eq!(reply.status, StatusCode::OK);
+    assert_eq!(json(&reply)["issue"][0]["severity"], "error");
+}
+
+#[tokio::test]
+async fn validate_reads_a_stored_resource_and_leaves_its_version() {
+    let app = service();
+    create_patient(&app, "pt-v2").await;
+    let reply = request(&app, "GET", "/Patient/pt-v2/$validate", &[]).await;
+    assert_eq!(reply.status, StatusCode::OK);
+    assert_eq!(json(&reply)["issue"][0]["severity"], "information");
+    let history = request(&app, "GET", "/Patient/pt-v2/_history", &[]).await;
+    assert_eq!(json(&history)["total"], 1);
+}
+
+#[tokio::test]
+async fn validate_checks_a_profile_and_a_narrative() {
+    let app = service();
+    let body = br#"{"resourceType":"Patient","id":"pt-v3","text":{"status":"invented","div":"plain"}}"#;
+    let reply = request(&app, "POST", "/Patient/$validate?profile=http://x/one", body).await;
+    assert_eq!(reply.status, StatusCode::OK);
+    let issues = json(&reply)["issue"].as_array().cloned().unwrap_or_default();
+    assert!(issues.len() >= 3, "{}", reply.body);
+    assert!(issues.iter().all(|issue| issue["severity"] == "error"));
+}
+
+#[tokio::test]
+async fn validate_takes_the_resource_from_an_input_parameters_body() {
+    let app = service();
+    let body = serde_json::to_vec(&serde_json::json!({
+        "resourceType": "Parameters",
+        "parameter": [
+            {"name": "resource", "resource": {"resourceType": "Patient", "id": "pt-v4"}},
+            {"name": "mode", "valueCode": "create"}
+        ]
+    }))
+    .unwrap();
+    let reply = request(&app, "POST", "/Patient/$validate", &body).await;
+    assert_eq!(reply.status, StatusCode::OK);
+    assert_eq!(json(&reply)["issue"][0]["severity"], "warning");
+}
+
+#[tokio::test]
+async fn validate_refuses_a_malformed_body_and_an_unknown_mode() {
+    let app = service();
+    let malformed = request(&app, "POST", "/Patient/$validate", b"not json").await;
+    assert_eq!(malformed.status, StatusCode::BAD_REQUEST);
+    let empty = request(&app, "POST", "/Patient/$validate", &[]).await;
+    assert_eq!(empty.status, StatusCode::BAD_REQUEST);
+    let body = br#"{"resourceType":"Patient","id":"pt-v5"}"#;
+    let mode = request(&app, "POST", "/Patient/$validate?mode=nonesuch", body).await;
+    assert_eq!(mode.status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn validate_reports_an_unknown_stored_resource() {
+    let app = service();
+    let reply = request(&app, "GET", "/Patient/nonesuch/$validate", &[]).await;
+    assert_eq!(reply.status, StatusCode::NOT_FOUND);
+}

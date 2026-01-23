@@ -1,13 +1,15 @@
 use axum::body::Bytes;
-use axum::extract::State;
+use axum::extract::{Path, RawQuery, State};
 use axum::http::header;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use fhir_core::convert::{convert, Conversion, InputType};
-use fhir_core::Error;
+use fhir_core::validate::{validate, Mode, Request as ValidationRequest};
+use fhir_core::{Error, ResourceId, ResourceType};
 use serde_json::Value;
 
 use crate::app::AppState;
+use crate::query::param;
 use crate::handlers::AppError;
 
 const FHIR_JSON: &str = "application/fhir+json";
@@ -89,6 +91,85 @@ pub async fn convert_data(
     Ok(rendered(
         serde_json::to_vec(&converted).map_err(|error| Error::Internal(error.to_string()))?,
     ))
+}
+
+pub async fn validate_type(
+    State(state): State<AppState>,
+    Path(type_name): Path<String>,
+    RawQuery(query): RawQuery,
+    body: Bytes,
+) -> Result<Response, AppError> {
+    let resource_type = type_name.parse::<ResourceType>()?;
+    validated(&state, Some(resource_type), None, query.as_deref(), &body).await
+}
+
+pub async fn validate_instance(
+    State(state): State<AppState>,
+    Path((type_name, id_text)): Path<(String, String)>,
+    RawQuery(query): RawQuery,
+    body: Bytes,
+) -> Result<Response, AppError> {
+    let resource_type = type_name.parse::<ResourceType>()?;
+    let id = id_text.parse::<ResourceId>()?;
+    validated(&state, Some(resource_type), Some(id), query.as_deref(), &body).await
+}
+
+async fn validated(
+    state: &AppState,
+    resource_type: Option<ResourceType>,
+    id: Option<ResourceId>,
+    query: Option<&str>,
+    body: &[u8],
+) -> Result<Response, AppError> {
+    let submitted = submitted(body)?;
+    let mut profile = param(query, "profile");
+    let mut mode = param(query, "mode");
+    let value = match submitted {
+        Some(Value::Object(ref object)) if object.get("resourceType") == Some(&Value::String("Parameters".to_owned())) => {
+            let held = Value::Object(object.clone());
+            profile = profile.or_else(|| value_of(&held, "profile"));
+            mode = mode.or_else(|| value_of(&held, "mode"));
+            resource_of(&held, "resource").cloned()
+        }
+        Some(value) => Some(value),
+        None => None,
+    };
+    let mode = match mode {
+        Some(text) => text.parse::<Mode>()?,
+        None => Mode::Update,
+    };
+    let body = match (value, &id) {
+        (Some(value), _) => value,
+        (None, Some(id)) => {
+            let stored = state.store.read(id).await?;
+            if stored.is_deleted() {
+                return Err(Error::Deleted.into());
+            }
+            serde_json::from_slice(stored.raw())
+                .map_err(|error| Error::InvalidJson(error.to_string()))?
+        }
+        (None, None) if mode == Mode::Delete => Value::Null,
+        (None, None) => {
+            return Err(Error::InvalidParameter("no resource to validate".to_owned()).into())
+        }
+    };
+    let report = validate(&ValidationRequest {
+        resource_type,
+        id,
+        profile: profile.as_deref(),
+        mode,
+        body: &body,
+    });
+    Ok(rendered(report.to_fhir_json()))
+}
+
+fn submitted(body: &[u8]) -> Result<Option<Value>, Error> {
+    if body.iter().all(u8::is_ascii_whitespace) {
+        return Ok(None);
+    }
+    serde_json::from_slice(body)
+        .map(Some)
+        .map_err(|error| Error::InvalidJson(error.to_string()))
 }
 
 pub(crate) fn rendered(body: Vec<u8>) -> Response {
