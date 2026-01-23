@@ -73,3 +73,57 @@ pub fn resource_types(names: &[String]) -> Result<Vec<ResourceType>, Error> {
 pub fn flagged(payload: &Value, names: &[&str]) -> bool {
     names.iter().any(|name| flag(payload, name))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parsed(text: &str) -> Value {
+        serde_json::from_str(text).expect("the fixture is json")
+    }
+
+    #[test]
+    fn a_count_is_read_from_a_number_or_from_text() {
+        let held = parsed(r#"{"a":3,"b":"4","c":null}"#);
+        assert_eq!(count(&held, "a").unwrap(), Some(3));
+        assert_eq!(count(&held, "b").unwrap(), Some(4));
+        assert_eq!(count(&held, "c").unwrap(), None);
+        assert_eq!(count(&held, "missing").unwrap(), None);
+    }
+
+    #[test]
+    fn a_count_that_is_not_a_count_is_refused() {
+        let held = parsed(r#"{"a":"many","b":-2,"c":[1]}"#);
+        assert!(count(&held, "a").is_err());
+        assert!(count(&held, "b").is_err());
+        assert!(count(&held, "c").is_err());
+    }
+
+    #[test]
+    fn a_flag_holds_whether_it_arrived_as_text_or_as_a_value() {
+        let held = parsed(r#"{"a":true,"b":"TRUE","c":"no","d":1}"#);
+        assert!(flag(&held, "a"));
+        assert!(flag(&held, "b"));
+        assert!(!flag(&held, "c"));
+        assert!(!flag(&held, "d"));
+        assert!(flagged(&held, &["c", "a"]));
+        assert!(!flagged(&held, &["c", "missing"]));
+    }
+
+    #[test]
+    fn the_first_spelling_that_carries_names_wins() {
+        let held = parsed(r#"{"_type":["Patient"],"types":["Observation"],"text":"a, b"}"#);
+        assert_eq!(named(&held, &["_type", "types"]), vec!["Patient"]);
+        assert_eq!(named(&held, &["types"]), vec!["Observation"]);
+        assert!(named(&held, &["nothing"]).is_empty());
+        assert_eq!(listed(&held, "text"), vec!["a", "b"]);
+        assert_eq!(text(&held, "text").as_deref(), Some("a, b"));
+        assert_eq!(text(&held, "_type"), None);
+    }
+
+    #[test]
+    fn a_body_that_is_not_json_is_refused() {
+        assert!(body("{ not json").is_err());
+        assert!(body("{}").is_ok());
+    }
+}
