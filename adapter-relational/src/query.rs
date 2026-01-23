@@ -588,3 +588,80 @@ fn flatten(element: &Value, out: &mut Vec<String>) {
         Value::Object(_) | Value::Null => {}
     }
 }
+
+pub async fn reindex_resource(
+    store: &RelationalStore,
+    specs: &[ParameterSpec],
+    id: &fhir_core::ResourceId,
+) -> Result<Vec<IndexReport>, Error> {
+    let statement = format!(
+        "select {COLUMNS} from {} where resource_id = $1 and is_current",
+        store.table("resource")
+    );
+    let binds = [Bind::Text(id.as_str().to_owned())];
+    let row = store
+        .perhaps(&statement, &binds, "reading a resource to index")
+        .await?
+        .ok_or(Error::NotFound)?;
+    let envelope = envelope_of(&row)?;
+    let surrogate: i64 = row
+        .try_get("surrogate_id")
+        .map_err(|error| faulted("reading a resource to index", error))?;
+    let body = body_of(&envelope)?;
+    let mut reports = Vec::new();
+    for spec in specs {
+        let mut report = IndexReport::empty(&spec.url);
+        report.backfilled = store
+            .reported(&spec.url)
+            .map(|held| held.backfilled)
+            .unwrap_or_default();
+        if !spec.base.contains(&envelope.resource_type()) {
+            reports.push(report);
+            continue;
+        }
+        for table in INDEX_TABLES {
+            let statement = format!(
+                "delete from {} where surrogate_id = $1 and param = $2",
+                store.table(table)
+            );
+            let binds = [Bind::Big(surrogate), Bind::Text(spec.url.clone())];
+            store
+                .ran(&statement, &binds, "clearing an index entry")
+                .await?;
+        }
+        if envelope.is_deleted() {
+            reports.push(report);
+            continue;
+        }
+        match checked(spec, &body) {
+            Err(reason) => report.failures.push(IndexFailure {
+                resource: reference_of(&envelope),
+                reason,
+            }),
+            Ok(()) => {
+                let rows = rows_of(&envelope, &body, &[std::sync::Arc::clone(&spec.def)]);
+                let values = rows.tokens.iter().filter(|row| row.slot == MAIN).count()
+                    + rows.texts.iter().filter(|row| row.slot == MAIN).count()
+                    + rows.numbers.len()
+                    + rows.dates.len()
+                    + rows.quantities.len()
+                    + rows.references.len()
+                    + rows.uris.len();
+                if values > 0 {
+                    report.indexed = 1;
+                    report.values = values;
+                    report.overflow = rows
+                        .tokens
+                        .iter()
+                        .filter(|row| row.code_tail.is_some())
+                        .count();
+                }
+                let mut work = store.work().await?;
+                store.index(work.conn()?, surrogate, &rows).await?;
+                work.done().await?;
+            }
+        }
+        reports.push(report);
+    }
+    Ok(reports)
+}

@@ -675,4 +675,5 @@ async fn the_shared_search_contract_holds_over_this_adapter() {
     fhir_store_contract::search::ordering(&store()).await;
     fhir_store_contract::search::linking(&store()).await;
     fhir_store_contract::search::composites(&store()).await;
+    fhir_store_contract::search::targeted_index(&store()).await;
 }

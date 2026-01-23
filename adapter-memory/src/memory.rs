@@ -357,6 +357,15 @@ fn indexed(indexes: &IndexMap, url: &str, id: &ResourceId) -> Vec<Value> {
         .unwrap_or_default()
 }
 
+fn recounted(index: &mut ParamIndex) {
+    index.report.indexed = index.entries.len();
+    index.report.values = index.entries.values().map(Vec::len).sum();
+    index.report.overflow = index
+        .entries
+        .values()
+        .map(|elements| overflowing(elements))
+        .sum();
+}
 fn overflowing(elements: &[Value]) -> usize {
     elements
         .iter()
@@ -651,6 +660,58 @@ impl ResourceStore for MemoryStore {
             index.report.backfilled = true;
             reports.push(index.report.clone());
             indexes.insert(spec.url.clone(), index);
+        }
+        Ok(reports)
+    }
+
+    async fn reindex_resource(
+        &self,
+        specs: &[ParameterSpec],
+        id: &ResourceId,
+    ) -> Result<Vec<IndexReport>, Error> {
+        let guard = self
+            .inner
+            .read()
+            .map_err(|_| Error::Internal("store lock poisoned".to_owned()))?;
+        let current = guard
+            .get(id)
+            .and_then(|versions| versions.last())
+            .ok_or(Error::NotFound)?;
+        let body = body_of(current)?;
+        let mut indexes = self
+            .indexes
+            .write()
+            .map_err(|_| Error::Internal("index lock poisoned".to_owned()))?;
+        let mut reports = Vec::new();
+        for spec in specs {
+            let mut report = IndexReport::empty(&spec.url);
+            let Some(index) = indexes.get_mut(&spec.url) else {
+                reports.push(report);
+                continue;
+            };
+            report.backfilled = index.report.backfilled;
+            if !spec.base.contains(&current.resource_type()) {
+                reports.push(report);
+                continue;
+            }
+            index.entries.remove(current.id());
+            if !current.is_deleted() {
+                match extracted(spec, &body) {
+                    Ok(elements) if elements.is_empty() => {}
+                    Ok(elements) => {
+                        report.indexed = 1;
+                        report.values = elements.len();
+                        report.overflow = overflowing(&elements);
+                        index.entries.insert(current.id().clone(), elements);
+                    }
+                    Err(reason) => report.failures.push(IndexFailure {
+                        resource: reference_of(current),
+                        reason,
+                    }),
+                }
+            }
+            recounted(index);
+            reports.push(report);
         }
         Ok(reports)
     }

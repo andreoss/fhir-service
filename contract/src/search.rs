@@ -444,3 +444,89 @@ pub async fn composites(store: &dyn fhir_store::ResourceStore) {
     assert!(store.search(&mismatched).await.unwrap().entries.is_empty());
     let _ = SearchValue::Missing(true);
 }
+
+fn band(id: &str, code: &str) -> fhir_core::ResourceEnvelope {
+    crate::fixture::envelope(
+        "Patient",
+        id,
+        &format!(r#""extension":[{{"url":"urn:e:band","valueCode":"{code}"}}]"#),
+    )
+}
+
+fn band_spec() -> fhir_core::search::ParameterSpec {
+    fhir_core::search::ParameterSpec::parse(&serde_json::json!({
+        "resourceType": "SearchParameter",
+        "url": "urn:p:band",
+        "status": "active",
+        "code": "band",
+        "base": ["Patient"],
+        "type": "token",
+        "expression": "Patient.extension.valueCode"
+    }))
+    .expect("the suite definition is valid")
+}
+
+pub async fn targeted_index(store: &dyn fhir_store::ResourceStore) {
+    let spec = band_spec();
+    store.create(band("t1", "high")).await.unwrap();
+    store.create(band("t2", "low")).await.unwrap();
+    store.index_parameter(&spec).await.unwrap();
+    store.reindex(std::slice::from_ref(&spec)).await.unwrap();
+
+    let banded = |code: &str| fhir_store::SearchQuery {
+        filters: vec![fhir_core::search::Filter {
+            index: Some("urn:p:band".to_owned()),
+            ..fhir_core::search::Filter::new(
+                "band",
+                fhir_core::search::Target::path(["extension.valueCode"]),
+                vec![fhir_core::search::SearchValue::parse(
+                    fhir_core::search::ValueType::Token,
+                    code,
+                )
+                .unwrap()],
+            )
+        }],
+        ..fhir_store::SearchQuery::of_type("Patient".parse().expect("a known type"))
+    };
+    let found = |page: fhir_store::SearchPage| -> Vec<String> {
+        page.entries
+            .iter()
+            .map(|entry| entry.id().as_str().to_owned())
+            .collect()
+    };
+    assert_eq!(found(store.search(&banded("high")).await.unwrap()), vec!["t1"]);
+
+    store.update(band("t1", "low"), None).await.unwrap();
+    let reports = store
+        .reindex_resource(std::slice::from_ref(&spec), &crate::fixture::id("t1"))
+        .await
+        .unwrap();
+    assert_eq!(reports.len(), 1);
+    assert_eq!(reports[0].url, "urn:p:band");
+    assert_eq!(reports[0].indexed, 1);
+    assert_eq!(reports[0].values, 1);
+    assert!(reports[0].failures.is_empty());
+
+    assert!(store.search(&banded("high")).await.unwrap().entries.is_empty());
+    let mut low = found(store.search(&banded("low")).await.unwrap());
+    low.sort();
+    assert_eq!(low, vec!["t1", "t2"]);
+
+    let other = crate::fixture::observation("t3", "code-1", 3.0, "Patient/t1");
+    store.create(other).await.unwrap();
+    let untouched = store
+        .reindex_resource(std::slice::from_ref(&spec), &crate::fixture::id("t3"))
+        .await
+        .unwrap();
+    assert_eq!(untouched[0].indexed, 0);
+    assert_eq!(
+        found(store.search(&banded("low")).await.unwrap()).len(),
+        2,
+        "a resource outside the parameter changed the index"
+    );
+
+    let missing = store
+        .reindex_resource(std::slice::from_ref(&spec), &crate::fixture::id("nobody"))
+        .await;
+    assert!(matches!(missing, Err(fhir_core::Error::NotFound)), "{missing:?}");
+}

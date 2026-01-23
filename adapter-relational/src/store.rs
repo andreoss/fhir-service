@@ -909,6 +909,14 @@ impl ResourceStore for RelationalStore {
         crate::query::reindex(self, specs).await
     }
 
+    async fn reindex_resource(
+        &self,
+        specs: &[ParameterSpec],
+        id: &ResourceId,
+    ) -> Result<Vec<IndexReport>, Error> {
+        crate::query::reindex_resource(self, specs, id).await
+    }
+
     fn index_report(&self, url: &str) -> Option<IndexReport> {
         self.reported(url)
     }

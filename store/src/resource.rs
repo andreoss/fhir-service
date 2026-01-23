@@ -61,6 +61,17 @@ pub trait ResourceStore: Send + Sync {
         ))
     }
 
+    async fn reindex_resource(
+        &self,
+        specs: &[ParameterSpec],
+        id: &ResourceId,
+    ) -> Result<Vec<IndexReport>, Error> {
+        let _ = (specs, id);
+        Err(Error::UnsupportedParameter(
+            "this store holds no parameter index".to_owned(),
+        ))
+    }
+
     fn index_report(&self, url: &str) -> Option<IndexReport> {
         let _ = url;
         None

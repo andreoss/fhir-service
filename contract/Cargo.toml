@@ -6,4 +6,5 @@ edition = "2021"
 [dependencies]
 async-trait = "0.1"
 fhir-core = { path = "../core" }
+serde_json = "1"
 fhir-store = { path = "../store" }

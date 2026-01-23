@@ -24,6 +24,7 @@ group!(qualifiers, fhir_store_contract::search::qualifiers);
 group!(ordering, fhir_store_contract::search::ordering);
 group!(linking, fhir_store_contract::search::linking);
 group!(composites, fhir_store_contract::search::composites);
+group!(targeted_index, fhir_store_contract::search::targeted_index);
 
 group!(atomicity, fhir_store_contract::atomicity);
 group!(scoped_search, fhir_store_contract::scoped_search);

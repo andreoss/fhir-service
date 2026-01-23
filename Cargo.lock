@@ -380,6 +380,7 @@ dependencies = [
  "async-trait",
  "fhir-core",
  "fhir-store",
+ "serde_json",
 ]
 
 [[package]]
