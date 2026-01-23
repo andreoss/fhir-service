@@ -215,3 +215,78 @@ async fn a_service_without_a_queue_refuses_a_submission() {
 
     assert_eq!(reply.status, StatusCode::NOT_IMPLEMENTED);
 }
+
+fn payload_of(record: &fhir_store::JobRecord) -> serde_json::Value {
+    serde_json::from_str(record.payload.as_deref().expect("a job carries a payload"))
+        .expect("the payload is an object")
+}
+
+#[tokio::test]
+async fn a_type_scoped_bulk_delete_carries_the_type_it_was_asked_under() {
+    let (jobs, _ticker) = queue();
+    let app = service(Arc::clone(&jobs) as Arc<dyn JobStore>);
+
+    let reply = request(
+        &app,
+        "POST",
+        "/Patient/$bulk-delete?hardDelete=true&_maxCount=5",
+        b"",
+    )
+    .await;
+
+    assert_eq!(reply.status, StatusCode::ACCEPTED);
+    let record = jobs.fetch(&submitted_id(&reply)).await.unwrap();
+    assert_eq!(record.kind, fhir_store::JobKind::BulkDelete);
+    let payload = payload_of(&record);
+    assert_eq!(payload["_type"][0], "Patient");
+    assert_eq!(payload["hardDelete"], "true");
+    assert_eq!(payload["_maxCount"], "5");
+    assert_eq!(payload["softDeleted"], false);
+}
+
+#[tokio::test]
+async fn a_delete_of_the_soft_deleted_is_marked_as_such() {
+    let (jobs, _ticker) = queue();
+    let app = service(Arc::clone(&jobs) as Arc<dyn JobStore>);
+
+    let reply = request(&app, "POST", "/Patient/$bulk-delete-soft-deleted", b"").await;
+
+    assert_eq!(reply.status, StatusCode::ACCEPTED);
+    let payload = payload_of(&jobs.fetch(&submitted_id(&reply)).await.unwrap());
+    assert_eq!(payload["softDeleted"], true);
+    assert_eq!(payload["_type"][0], "Patient");
+
+    let system = request(&app, "POST", "/$bulk-delete-soft-deleted", b"").await;
+    let carried = payload_of(&jobs.fetch(&submitted_id(&system)).await.unwrap());
+    assert_eq!(carried["softDeleted"], true);
+    assert_eq!(carried["_type"], serde_json::Value::Null);
+}
+
+#[tokio::test]
+async fn excluded_types_are_carried_as_a_list() {
+    let (jobs, _ticker) = queue();
+    let app = service(Arc::clone(&jobs) as Arc<dyn JobStore>);
+
+    let reply = request(
+        &app,
+        "POST",
+        "/$bulk-delete?_exclude=Observation,Group",
+        b"",
+    )
+    .await;
+
+    let payload = payload_of(&jobs.fetch(&submitted_id(&reply)).await.unwrap());
+    assert_eq!(payload["_exclude"][0], "Observation");
+    assert_eq!(payload["_exclude"][1], "Group");
+}
+
+#[tokio::test]
+async fn a_bulk_delete_refuses_a_parameter_it_does_not_know() {
+    let (jobs, _ticker) = queue();
+    let app = service(Arc::clone(&jobs) as Arc<dyn JobStore>);
+
+    let reply = request(&app, "POST", "/$bulk-delete?_wrong=1", b"").await;
+
+    assert_eq!(reply.status, StatusCode::BAD_REQUEST);
+    assert!(reply.body.contains("OperationOutcome"), "{}", reply.body);
+}

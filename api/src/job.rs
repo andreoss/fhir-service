@@ -22,6 +22,16 @@ const OUTCOME: &str = "OperationOutcome";
 
 const LISTED: [&str; 2] = ["_type", "_typeFilter"];
 
+const DELETE_PARAMS: [&str; 5] = [
+    "_type",
+    "_exclude",
+    "_maxCount",
+    "hardDelete",
+    "purgeHistory",
+];
+
+const DELETE_LISTED: [&str; 2] = ["_type", "_exclude"];
+
 const ACCEPTED_PARAMS: [&str; 9] = [
     "_type",
     "_typeFilter",
@@ -197,9 +207,10 @@ pub async fn submit_import(
 pub async fn submit_bulk_delete(
     State(state): State<AppState>,
     headers: HeaderMap,
+    RawQuery(query): RawQuery,
     body: axum::body::Bytes,
 ) -> Response {
-    submit(&state, JobKind::BulkDelete, &headers, &body).await
+    submit_removal(&state, None, false, &headers, query.as_deref(), &body).await
 }
 
 pub async fn submit_bulk_update(
@@ -310,12 +321,12 @@ pub async fn output(
     }
 }
 
-fn described(
-    scope: &str,
-    id: Option<&str>,
+fn merged(
     raw: Option<&str>,
     body: &[u8],
-) -> Result<String, Error> {
+    accepted: &[&str],
+    listed: &[&str],
+) -> Result<serde_json::Map<String, Value>, Error> {
     let mut payload = match std::str::from_utf8(body) {
         Ok(text) if !text.trim().is_empty() => serde_json::from_str::<Value>(text)
             .map_err(|error| Error::InvalidJson(error.to_string()))?,
@@ -324,13 +335,9 @@ fn described(
     };
     let carried = payload
         .as_object_mut()
-        .ok_or_else(|| Error::InvalidJson("an export is described by an object".to_owned()))?;
-    carried.insert("scope".to_owned(), Value::String(scope.to_owned()));
-    if let Some(id) = id {
-        carried.insert("id".to_owned(), Value::String(id.to_owned()));
-    }
+        .ok_or_else(|| Error::InvalidJson("a request is described by an object".to_owned()))?;
     for (name, value) in crate::query::pairs(raw) {
-        if !ACCEPTED_PARAMS.contains(&name.as_str()) {
+        if !accepted.contains(&name.as_str()) {
             return Err(Error::UnsupportedParameter(format!("{name:?}")));
         }
         if value.trim().is_empty() {
@@ -341,7 +348,7 @@ fn described(
         if name == "_outputFormat" {
             fhir_store::output_format(&value)?;
         }
-        match LISTED.contains(&name.as_str()) {
+        match listed.contains(&name.as_str()) {
             true => {
                 let items = value
                     .split(',')
@@ -354,13 +361,103 @@ fn described(
             false => carried.insert(name, Value::String(value)),
         };
     }
+    Ok(carried.clone())
+}
+
+fn described(
+    scope: &str,
+    id: Option<&str>,
+    raw: Option<&str>,
+    body: &[u8],
+) -> Result<String, Error> {
+    let mut carried = merged(raw, body, &ACCEPTED_PARAMS, &LISTED)?;
+    carried.insert("scope".to_owned(), Value::String(scope.to_owned()));
+    if let Some(id) = id {
+        carried.insert("id".to_owned(), Value::String(id.to_owned()));
+    }
     if !carried.contains_key("_till") {
         carried.insert(
             "_till".to_owned(),
             Value::String(fhir_store::system_clock()().as_str().to_owned()),
         );
     }
-    Ok(Value::Object(carried.clone()).to_string())
+    Ok(Value::Object(carried).to_string())
+}
+
+fn removal(
+    resource_type: Option<&str>,
+    soft_deleted: bool,
+    raw: Option<&str>,
+    body: &[u8],
+) -> Result<String, Error> {
+    let mut carried = merged(raw, body, &DELETE_PARAMS, &DELETE_LISTED)?;
+    if let Some(resource_type) = resource_type {
+        carried.insert(
+            "_type".to_owned(),
+            Value::Array(vec![Value::String(resource_type.to_owned())]),
+        );
+    }
+    carried.insert("softDeleted".to_owned(), Value::Bool(soft_deleted));
+    Ok(Value::Object(carried).to_string())
+}
+
+async fn submit_removal(
+    state: &AppState,
+    resource_type: Option<&str>,
+    soft_deleted: bool,
+    headers: &HeaderMap,
+    raw: Option<&str>,
+    body: &[u8],
+) -> Response {
+    match removal(resource_type, soft_deleted, raw, body) {
+        Ok(payload) => submit(state, JobKind::BulkDelete, headers, payload.as_bytes()).await,
+        Err(error) => AppError::from(error).into_response_now(),
+    }
+}
+
+pub async fn submit_type_bulk_delete(
+    State(state): State<AppState>,
+    Path(resource_type): Path<String>,
+    headers: HeaderMap,
+    RawQuery(query): RawQuery,
+    body: axum::body::Bytes,
+) -> Response {
+    submit_removal(
+        &state,
+        Some(&resource_type),
+        false,
+        &headers,
+        query.as_deref(),
+        &body,
+    )
+    .await
+}
+
+pub async fn submit_bulk_delete_soft_deleted(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    RawQuery(query): RawQuery,
+    body: axum::body::Bytes,
+) -> Response {
+    submit_removal(&state, None, true, &headers, query.as_deref(), &body).await
+}
+
+pub async fn submit_type_bulk_delete_soft_deleted(
+    State(state): State<AppState>,
+    Path(resource_type): Path<String>,
+    headers: HeaderMap,
+    RawQuery(query): RawQuery,
+    body: axum::body::Bytes,
+) -> Response {
+    submit_removal(
+        &state,
+        Some(&resource_type),
+        true,
+        &headers,
+        query.as_deref(),
+        &body,
+    )
+    .await
 }
 
 async fn submit_export_scope(

@@ -162,6 +162,18 @@ fn routes() -> Router<AppState> {
             )
             .route("/$import", post(crate::job::submit_import))
             .route("/$bulk-delete", post(crate::job::submit_bulk_delete))
+            .route(
+                "/{type}/$bulk-delete",
+                post(crate::job::submit_type_bulk_delete),
+            )
+            .route(
+                "/$bulk-delete-soft-deleted",
+                post(crate::job::submit_bulk_delete_soft_deleted),
+            )
+            .route(
+                "/{type}/$bulk-delete-soft-deleted",
+                post(crate::job::submit_type_bulk_delete_soft_deleted),
+            )
             .route("/$bulk-update", post(crate::job::submit_bulk_update))
             .route("/$reindex", post(crate::job::submit_reindex))
             .route("/_jobs/{id}", get(crate::job::poll).delete(crate::job::cancel))
