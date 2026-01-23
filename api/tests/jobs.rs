@@ -290,3 +290,53 @@ async fn a_bulk_delete_refuses_a_parameter_it_does_not_know() {
     assert_eq!(reply.status, StatusCode::BAD_REQUEST);
     assert!(reply.body.contains("OperationOutcome"), "{}", reply.body);
 }
+
+#[tokio::test]
+async fn a_type_scoped_bulk_update_carries_the_patch_it_was_given() {
+    let (jobs, _ticker) = queue();
+    let app = service(Arc::clone(&jobs) as Arc<dyn JobStore>);
+
+    let reply = request(
+        &app,
+        "POST",
+        "/Patient/$bulk-update?_maxCount=3",
+        br#"[{"op":"replace","path":"/active","value":false}]"#,
+    )
+    .await;
+
+    assert_eq!(reply.status, StatusCode::ACCEPTED);
+    let record = jobs.fetch(&submitted_id(&reply)).await.unwrap();
+    assert_eq!(record.kind, fhir_store::JobKind::BulkUpdate);
+    let payload = payload_of(&record);
+    assert_eq!(payload["_type"][0], "Patient");
+    assert_eq!(payload["_maxCount"], "3");
+    assert_eq!(payload["patch"][0]["op"], "replace");
+}
+
+#[tokio::test]
+async fn a_bulk_update_described_by_an_object_keeps_its_own_patch() {
+    let (jobs, _ticker) = queue();
+    let app = service(Arc::clone(&jobs) as Arc<dyn JobStore>);
+
+    let reply = request(
+        &app,
+        "POST",
+        "/$bulk-update?_exclude=Observation",
+        br#"{"patch":[{"op":"add","path":"/language","value":"en"}]}"#,
+    )
+    .await;
+
+    let payload = payload_of(&jobs.fetch(&submitted_id(&reply)).await.unwrap());
+    assert_eq!(payload["patch"][0]["op"], "add");
+    assert_eq!(payload["_exclude"][0], "Observation");
+}
+
+#[tokio::test]
+async fn a_bulk_update_refuses_a_parameter_it_does_not_know() {
+    let (jobs, _ticker) = queue();
+    let app = service(Arc::clone(&jobs) as Arc<dyn JobStore>);
+
+    let reply = request(&app, "POST", "/$bulk-update?_since=2026", b"[]").await;
+
+    assert_eq!(reply.status, StatusCode::BAD_REQUEST);
+}

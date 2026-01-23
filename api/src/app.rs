@@ -175,6 +175,10 @@ fn routes() -> Router<AppState> {
                 post(crate::job::submit_type_bulk_delete_soft_deleted),
             )
             .route("/$bulk-update", post(crate::job::submit_bulk_update))
+            .route(
+                "/{type}/$bulk-update",
+                post(crate::job::submit_type_bulk_update),
+            )
             .route("/$reindex", post(crate::job::submit_reindex))
             .route("/_jobs/{id}", get(crate::job::poll).delete(crate::job::cancel))
             .route("/_jobs/{id}/{*name}", get(crate::job::output))

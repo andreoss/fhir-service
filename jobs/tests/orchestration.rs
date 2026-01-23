@@ -128,7 +128,10 @@ async fn a_bulk_update_patches_every_matching_resource() {
     let store = seeded().await;
     let (jobs, _ticker) = queue();
     let orchestrator =
-        Orchestrator::new().with(Arc::new(BulkUpdateJob::new(Arc::clone(&store) as Arc<dyn ResourceStore>)));
+        Orchestrator::new().with(Arc::new(BulkUpdateJob::new(
+            Arc::clone(&store) as Arc<dyn ResourceStore>,
+            sink(),
+        )));
     let payload = r#"{"types":["Patient"],"patch":[{"op":"replace","path":"/active","value":false}]}"#;
     let record = ran(
         jobs,

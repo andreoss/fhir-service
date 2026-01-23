@@ -1014,3 +1014,45 @@ fn a_bulk_delete_caps_what_it_removes_and_then_clears_the_marked() {
     assert_eq!(after.status, 404, "read said {}", after.body);
     assert_eq!(history.status, 404, "history said {}", history.body);
 }
+
+#[test]
+fn a_bulk_update_patches_a_type_and_reports_its_progress() {
+    let (child, port) = spawn_server();
+
+    request(port, "POST", "/Patient", &[], &patient("bu-1", true));
+    request(port, "POST", "/Patient", &[], &patient("bu-2", true));
+
+    let submitted = request(
+        port,
+        "POST",
+        "/Patient/$bulk-update",
+        &[("Content-Type", "application/json-patch+json")],
+        br#"[{"op":"replace","path":"/active","value":false}]"#,
+    );
+    assert_eq!(submitted.status, 202, "submit failed: {}", submitted.body);
+    let done = settled(port, &job_path(&submitted));
+    assert_eq!(done.status, 200, "poll failed: {}", done.body);
+    let manifest: serde_json::Value = serde_json::from_str(&done.body).expect("a manifest is json");
+
+    let repeated = request(
+        port,
+        "POST",
+        "/Patient/$bulk-update",
+        &[("Content-Type", "application/json-patch+json")],
+        br#"[{"op":"replace","path":"/active","value":false}]"#,
+    );
+    let again = settled(port, &job_path(&repeated));
+    let unmoved: serde_json::Value = serde_json::from_str(&again.body).expect("a manifest is json");
+    let read = request(port, "GET", "/Patient/bu-1", &[], &[]);
+    stop(child);
+
+    assert_eq!(manifest["outcome"]["handled"], 2);
+    assert_eq!(manifest["outcome"]["Patient"]["patched"], 2);
+    assert_eq!(manifest["progress"]["done"], 1);
+    assert_eq!(manifest["progress"]["total"], 1);
+    assert_eq!(unmoved["outcome"]["handled"], 0);
+    assert_eq!(unmoved["outcome"]["unchanged"], 2);
+    assert_eq!(read.status, 200, "read failed: {}", read.body);
+    assert_eq!(header(&read, "etag"), "W/\"2\"");
+    assert!(read.body.contains("\"active\":false"), "{}", read.body);
+}

@@ -53,18 +53,6 @@ fn body(payload: &str) -> Result<Value, Error> {
     serde_json::from_str(payload).map_err(|error| Error::InvalidJson(error.to_string()))
 }
 
-fn types_of(payload: &Value) -> Result<Vec<ResourceType>, Error> {
-    let Some(listed) = payload.get("types").and_then(Value::as_array) else {
-        return Ok(Vec::new());
-    };
-    listed
-        .iter()
-        .map(|value| match value.as_str() {
-            Some(name) => name.parse::<ResourceType>(),
-            None => Err(Error::InvalidResourceType(value.to_string())),
-        })
-        .collect()
-}
 
 async fn every_type(store: &dyn ResourceStore) -> Result<Vec<ResourceType>, Error> {
     let page = store.search(&SearchQuery::default()).await?;
@@ -79,21 +67,6 @@ async fn every_type(store: &dyn ResourceStore) -> Result<Vec<ResourceType>, Erro
     Ok(found)
 }
 
-async fn units_per_type(
-    store: &dyn ResourceStore,
-    payload: &str,
-    detail: impl Fn(&ResourceType) -> String,
-) -> Result<Vec<Unit>, Error> {
-    let payload = body(payload)?;
-    let mut types = types_of(&payload)?;
-    if types.is_empty() {
-        types = every_type(store).await?;
-    }
-    Ok(types
-        .into_iter()
-        .map(|resource_type| Unit::new(resource_type.as_str().to_owned(), detail(&resource_type)))
-        .collect())
-}
 
 async fn current_of(store: &dyn ResourceStore, label: &str) -> Result<Vec<ResourceEnvelope>, Error> {
     let resource_type = label.parse::<ResourceType>()?;
@@ -368,13 +341,67 @@ impl JobHandler for BulkDeleteJob {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct BulkUpdateRequest {
+    pub types: Vec<ResourceType>,
+    pub excluded: Vec<ResourceType>,
+    pub max_count: Option<u64>,
+    pub patch: String,
+}
+
+impl BulkUpdateRequest {
+    pub fn parse(payload: &str) -> Result<BulkUpdateRequest, Error> {
+        let parsed = payload::body(payload)?;
+        let supplied = parsed
+            .get("patch")
+            .ok_or_else(|| Error::InvalidPatch("no patch was supplied".to_owned()))?
+            .to_string();
+        Patch::parse(supplied.as_bytes())?;
+        Ok(BulkUpdateRequest {
+            types: payload::resource_types(&payload::named(&parsed, &["_type", "types"]))?,
+            excluded: payload::resource_types(&payload::named(
+                &parsed,
+                &["_exclude", "excluded"],
+            ))?,
+            max_count: payload::count(&parsed, "_maxCount")?,
+            patch: supplied,
+        })
+    }
+
+    fn to_value(&self, resource_type: &ResourceType, share: Option<u64>) -> Value {
+        let mut carried = serde_json::Map::new();
+        carried.insert(
+            "_type".to_owned(),
+            Value::Array(vec![Value::String(resource_type.as_str().to_owned())]),
+        );
+        if let Some(share) = share {
+            carried.insert("_maxCount".to_owned(), Value::from(share));
+        }
+        carried.insert(
+            "patch".to_owned(),
+            serde_json::from_str(&self.patch).unwrap_or(Value::Null),
+        );
+        Value::Object(carried)
+    }
+}
+
 pub struct BulkUpdateJob {
     store: Arc<dyn ResourceStore>,
+    sink: Arc<dyn BulkStore>,
 }
 
 impl BulkUpdateJob {
-    pub fn new(store: Arc<dyn ResourceStore>) -> BulkUpdateJob {
-        BulkUpdateJob { store }
+    pub fn new(store: Arc<dyn ResourceStore>, sink: Arc<dyn BulkStore>) -> BulkUpdateJob {
+        BulkUpdateJob { store, sink }
+    }
+
+    async fn covered(&self, request: &BulkUpdateRequest) -> Result<Vec<ResourceType>, Error> {
+        let mut types = match request.types.is_empty() {
+            false => request.types.clone(),
+            true => every_type(self.store.as_ref()).await?,
+        };
+        types.retain(|found| !request.excluded.contains(found));
+        Ok(types)
     }
 }
 
@@ -385,38 +412,76 @@ impl JobHandler for BulkUpdateJob {
     }
 
     async fn plan(&self, job: &JobContext) -> Result<Vec<Unit>, Error> {
-        let parsed = body(&job.payload)?;
-        let patch = parsed
-            .get("patch")
-            .ok_or_else(|| Error::InvalidPatch("no patch was supplied".to_owned()))?;
-        Patch::parse(patch.to_string().as_bytes())?;
-        let carried = patch.to_string();
-        units_per_type(self.store.as_ref(), &job.payload, move |_| carried.clone()).await
+        let request = BulkUpdateRequest::parse(&job.payload)?;
+        let mut left = request.max_count;
+        let mut units = Vec::new();
+        for resource_type in self.covered(&request).await? {
+            let share = match left {
+                None => None,
+                Some(0) => break,
+                Some(budget) => {
+                    let held = current_of(self.store.as_ref(), resource_type.as_str())
+                        .await?
+                        .len() as u64;
+                    let share = held.min(budget);
+                    left = Some(budget - share);
+                    Some(share)
+                }
+            };
+            if share == Some(0) {
+                continue;
+            }
+            units.push(Unit::new(
+                resource_type.as_str().to_owned(),
+                request.to_value(&resource_type, share).to_string(),
+            ));
+        }
+        Ok(units)
     }
 
-    async fn process(&self, _job: &JobContext, unit: &Unit) -> Result<UnitOutcome, Error> {
-        let patch = Patch::parse(unit.detail.as_bytes())?;
-        let entries = current_of(self.store.as_ref(), &unit.label).await?;
+    async fn process(&self, job: &JobContext, unit: &Unit) -> Result<UnitOutcome, Error> {
+        let request = BulkUpdateRequest::parse(&unit.detail)?;
+        let patch = Patch::parse(request.patch.as_bytes())?;
+        let resource_type = unit.label.parse::<ResourceType>()?;
+        let cap = request.max_count.unwrap_or(u64::MAX).min(usize::MAX as u64) as usize;
         let mut outcome = UnitOutcome::default();
-        for entry in entries {
+        for entry in current_of(self.store.as_ref(), &unit.label)
+            .await?
+            .into_iter()
+            .take(cap)
+        {
             let patched = patch
                 .apply(entry.raw())
                 .and_then(|bytes| ResourceEnvelope::parse(entry.version(), &bytes));
-            match patched {
-                Ok(envelope) => match self.store.update(envelope, None).await {
-                    Ok(_) => outcome.handled += 1,
-                    Err(error) => outcome
-                        .failures
-                        .push(format!("{}: {error}", entry.id().as_str())),
-                },
-                Err(error) => outcome
-                    .failures
-                    .push(format!("{}: {error}", entry.id().as_str())),
+            let written = match patched {
+                Ok(envelope) => self.store.update(envelope, None).await,
+                Err(error) => Err(error),
+            };
+            match written {
+                Ok(stored) if stored.version_id() == entry.version_id() => outcome.unchanged += 1,
+                Ok(_) => outcome.handled += 1,
+                Err(error) => outcome.failures.push(format!(
+                    "{}/{}: {error}",
+                    resource_type.as_str(),
+                    entry.id().as_str()
+                )),
             }
         }
+        report::record_failures(
+            self.sink.as_ref(),
+            &job.id,
+            &report::failure_file("", resource_type.as_str()),
+            &outcome.failures,
+        )
+        .await?;
+        outcome.detail.insert(
+            resource_type.as_str().to_owned(),
+            serde_json::json!({"patched": outcome.handled, "unchanged": outcome.unchanged}),
+        );
         Ok(outcome)
     }
 }
+
 
 pub struct ReindexJob {
     store: Arc<dyn ResourceStore>,

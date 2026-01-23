@@ -34,6 +34,8 @@ const DELETE_PARAMS: [&str; 7] = [
 
 const DELETE_LISTED: [&str; 2] = ["_type", "_exclude"];
 
+const UPDATE_PARAMS: [&str; 3] = ["_type", "_exclude", "_maxCount"];
+
 const ACCEPTED_PARAMS: [&str; 9] = [
     "_type",
     "_typeFilter",
@@ -218,9 +220,27 @@ pub async fn submit_bulk_delete(
 pub async fn submit_bulk_update(
     State(state): State<AppState>,
     headers: HeaderMap,
+    RawQuery(query): RawQuery,
     body: axum::body::Bytes,
 ) -> Response {
-    submit(&state, JobKind::BulkUpdate, &headers, &body).await
+    submit_patching(&state, None, &headers, query.as_deref(), &body).await
+}
+
+pub async fn submit_type_bulk_update(
+    State(state): State<AppState>,
+    Path(resource_type): Path<String>,
+    headers: HeaderMap,
+    RawQuery(query): RawQuery,
+    body: axum::body::Bytes,
+) -> Response {
+    submit_patching(
+        &state,
+        Some(&resource_type),
+        &headers,
+        query.as_deref(),
+        &body,
+    )
+    .await
 }
 
 pub async fn submit_reindex(
@@ -401,6 +421,52 @@ fn removal(
     }
     carried.insert("softDeleted".to_owned(), Value::Bool(soft_deleted));
     Ok(Value::Object(carried).to_string())
+}
+
+fn supplied(body: &[u8]) -> Result<Value, Error> {
+    match std::str::from_utf8(body) {
+        Ok(text) if !text.trim().is_empty() => {
+            serde_json::from_str(text).map_err(|error| Error::InvalidJson(error.to_string()))
+        }
+        Ok(_) => Ok(Value::Null),
+        Err(error) => Err(Error::InvalidJson(error.to_string())),
+    }
+}
+
+fn patching(
+    resource_type: Option<&str>,
+    raw: Option<&str>,
+    body: &[u8],
+) -> Result<String, Error> {
+    let held = supplied(body)?;
+    let describes = matches!(&held, Value::Object(map) if map.contains_key("patch"));
+    let mut carried = match describes {
+        true => merged(raw, body, &UPDATE_PARAMS, &DELETE_LISTED)?,
+        false => merged(raw, b"", &UPDATE_PARAMS, &DELETE_LISTED)?,
+    };
+    if !describes && !held.is_null() {
+        carried.insert("patch".to_owned(), held);
+    }
+    if let Some(resource_type) = resource_type {
+        carried.insert(
+            "_type".to_owned(),
+            Value::Array(vec![Value::String(resource_type.to_owned())]),
+        );
+    }
+    Ok(Value::Object(carried).to_string())
+}
+
+async fn submit_patching(
+    state: &AppState,
+    resource_type: Option<&str>,
+    headers: &HeaderMap,
+    raw: Option<&str>,
+    body: &[u8],
+) -> Response {
+    match patching(resource_type, raw, body) {
+        Ok(payload) => submit(state, JobKind::BulkUpdate, headers, payload.as_bytes()).await,
+        Err(error) => AppError::from(error).into_response_now(),
+    }
 }
 
 async fn submit_removal(
