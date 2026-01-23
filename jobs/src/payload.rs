@@ -69,3 +69,7 @@ pub fn resource_types(names: &[String]) -> Result<Vec<ResourceType>, Error> {
         .map(|name| name.parse::<ResourceType>())
         .collect()
 }
+
+pub fn flagged(payload: &Value, names: &[&str]) -> bool {
+    names.iter().any(|name| flag(payload, name))
+}

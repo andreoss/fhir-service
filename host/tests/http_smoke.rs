@@ -973,3 +973,44 @@ fn an_export_manifest_details_the_request_it_answered() {
     assert_eq!(rows.status, 200, "output failed: {}", rows.body);
     assert!(rows.body.contains("xp-1"), "{}", rows.body);
 }
+
+#[test]
+fn a_bulk_delete_caps_what_it_removes_and_then_clears_the_marked() {
+    let (child, port) = spawn_server();
+
+    request(port, "POST", "/Patient", &[], &patient("bd-1", true));
+    request(port, "POST", "/Patient", &[], &patient("bd-2", false));
+
+    let capped = request(port, "POST", "/Patient/$bulk-delete?_maxCount=1", &[], &[]);
+    assert_eq!(capped.status, 202, "submit failed: {}", capped.body);
+    let first = settled(port, &job_path(&capped));
+    assert_eq!(first.status, 200, "poll failed: {}", first.body);
+    let report: serde_json::Value = serde_json::from_str(&first.body).expect("a manifest is json");
+    assert_eq!(report["outcome"]["handled"], 1);
+    assert_eq!(report["outcome"]["Patient"]["deleted"], 1);
+
+    let rest = request(port, "POST", "/Patient/$bulk-delete", &[], &[]);
+    let second = settled(port, &job_path(&rest));
+    let cleared: serde_json::Value =
+        serde_json::from_str(&second.body).expect("a manifest is json");
+    assert_eq!(cleared["outcome"]["handled"], 1);
+
+    let marked = request(port, "GET", "/Patient/bd-1", &[], &[]);
+    let purged = request(
+        port,
+        "POST",
+        "/Patient/$bulk-delete-soft-deleted?_hardDelete=true",
+        &[],
+        &[],
+    );
+    let third = settled(port, &job_path(&purged));
+    let gone: serde_json::Value = serde_json::from_str(&third.body).expect("a manifest is json");
+    let after = request(port, "GET", "/Patient/bd-1", &[], &[]);
+    let history = request(port, "GET", "/Patient/bd-1/_history/1", &[], &[]);
+    stop(child);
+
+    assert_eq!(marked.status, 410, "a marked resource reads as gone");
+    assert_eq!(gone["outcome"]["handled"], 2);
+    assert_eq!(after.status, 404, "read said {}", after.body);
+    assert_eq!(history.status, 404, "history said {}", history.body);
+}

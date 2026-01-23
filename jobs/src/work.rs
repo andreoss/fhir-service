@@ -212,9 +212,9 @@ impl BulkDeleteRequest {
                 &["_exclude", "excluded"],
             ))?,
             max_count: payload::count(&parsed, "_maxCount")?,
-            hard: payload::flag(&parsed, "hardDelete"),
-            purge: payload::flag(&parsed, "purgeHistory"),
-            soft_deleted: payload::flag(&parsed, "softDeleted"),
+            hard: payload::flagged(&parsed, &["_hardDelete", "hardDelete"]),
+            purge: payload::flagged(&parsed, &["_purgeHistory", "purgeHistory"]),
+            soft_deleted: payload::flagged(&parsed, &["_softDeleted", "softDeleted"]),
         })
     }
 

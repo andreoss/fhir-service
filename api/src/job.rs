@@ -22,12 +22,14 @@ const OUTCOME: &str = "OperationOutcome";
 
 const LISTED: [&str; 2] = ["_type", "_typeFilter"];
 
-const DELETE_PARAMS: [&str; 5] = [
+const DELETE_PARAMS: [&str; 7] = [
     "_type",
     "_exclude",
     "_maxCount",
     "hardDelete",
     "purgeHistory",
+    "_hardDelete",
+    "_purgeHistory",
 ];
 
 const DELETE_LISTED: [&str; 2] = ["_type", "_exclude"];
