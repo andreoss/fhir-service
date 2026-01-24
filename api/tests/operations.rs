@@ -217,3 +217,127 @@ async fn validate_reports_an_unknown_stored_resource() {
     let reply = request(&app, "GET", "/Patient/nonesuch/$validate", &[]).await;
     assert_eq!(reply.status, StatusCode::NOT_FOUND);
 }
+
+fn stepping_service() -> Service {
+    let step = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let clock = Arc::new(move || {
+        let minute = step.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        FhirInstant::parse(&format!("2026-09-06T04:{minute:02}:00.000Z")).unwrap()
+    });
+    let store = MemoryStore::with_clock(clock);
+    Service::new(Arc::new(store), FhirVersion::R4, Vec::new())
+}
+
+async fn create(app: &Service, resource: serde_json::Value) {
+    let kind = resource["resourceType"].as_str().unwrap().to_owned();
+    let body = serde_json::to_vec(&resource).unwrap();
+    let reply = request(app, "POST", &format!("/{kind}"), &body).await;
+    assert!(reply.status.is_success(), "{}", reply.body);
+}
+
+fn observation(id: &str, patient: &str) -> serde_json::Value {
+    serde_json::json!({
+        "resourceType": "Observation",
+        "id": id,
+        "status": "final",
+        "subject": {"reference": format!("Patient/{patient}")}
+    })
+}
+
+fn ids(value: &Value) -> Vec<String> {
+    value["entry"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|entry| entry["resource"]["id"].as_str().map(str::to_owned))
+        .collect()
+}
+
+#[tokio::test]
+async fn everything_gathers_the_patient_and_its_compartment() {
+    let app = service();
+    create(&app, serde_json::json!({"resourceType": "Patient", "id": "pt-e1"})).await;
+    create(&app, serde_json::json!({"resourceType": "Patient", "id": "pt-e2"})).await;
+    create(&app, observation("ob-e1", "pt-e1")).await;
+    create(&app, observation("ob-e2", "pt-e2")).await;
+    let reply = request(&app, "GET", "/Patient/pt-e1/$everything", &[]).await;
+    assert_eq!(reply.status, StatusCode::OK);
+    let value = json(&reply);
+    assert_eq!(value["type"], "searchset");
+    let gathered = ids(&value);
+    assert!(gathered.contains(&"pt-e1".to_owned()), "{gathered:?}");
+    assert!(gathered.contains(&"ob-e1".to_owned()), "{gathered:?}");
+    assert!(!gathered.contains(&"ob-e2".to_owned()), "{gathered:?}");
+    assert!(!gathered.contains(&"pt-e2".to_owned()), "{gathered:?}");
+}
+
+#[tokio::test]
+async fn everything_answers_the_same_over_post() {
+    let app = service();
+    create(&app, serde_json::json!({"resourceType": "Patient", "id": "pt-e3"})).await;
+    let got = request(&app, "GET", "/Patient/pt-e3/$everything", &[]).await;
+    let posted = request(&app, "POST", "/Patient/pt-e3/$everything", &[]).await;
+    assert_eq!(posted.status, StatusCode::OK);
+    assert_eq!(ids(&json(&got)), ids(&json(&posted)));
+}
+
+#[tokio::test]
+async fn everything_narrows_by_type_and_time() {
+    let app = stepping_service();
+    create(&app, serde_json::json!({"resourceType": "Patient", "id": "pt-e4"})).await;
+    create(&app, observation("ob-e4", "pt-e4")).await;
+    let typed = request(&app, "GET", "/Patient/pt-e4/$everything?_type=Observation", &[]).await;
+    assert_eq!(ids(&json(&typed)), vec!["ob-e4".to_owned()]);
+    let since = request(
+        &app,
+        "GET",
+        "/Patient/pt-e4/$everything?_since=2026-09-06T04:01:00Z",
+        &[],
+    )
+    .await;
+    assert_eq!(ids(&json(&since)), vec!["ob-e4".to_owned()]);
+    let till = request(
+        &app,
+        "GET",
+        "/Patient/pt-e4/$everything?_till=2026-09-06T04:00:30Z",
+        &[],
+    )
+    .await;
+    assert_eq!(ids(&json(&till)), vec!["pt-e4".to_owned()]);
+}
+
+#[tokio::test]
+async fn everything_pages_through_search_continuation_tokens() {
+    let app = service();
+    create(&app, serde_json::json!({"resourceType": "Patient", "id": "pt-e5"})).await;
+    create(&app, observation("ob-e5", "pt-e5")).await;
+    let first = request(&app, "GET", "/Patient/pt-e5/$everything?_count=1", &[]).await;
+    let value = json(&first);
+    assert_eq!(value["total"], 2);
+    assert_eq!(ids(&value).len(), 1);
+    let next = value["link"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|link| link["relation"] == "next")
+        .map(|link| link["url"].as_str().unwrap().to_owned())
+        .expect("a next link");
+    assert!(next.contains("ct="), "{next}");
+    let path = next.split_once("localhost").unwrap().1.to_owned();
+    let second = request(&app, "GET", &path, &[]).await;
+    assert_eq!(ids(&json(&second)).len(), 1);
+    assert_ne!(ids(&json(&second)), ids(&value));
+}
+
+#[tokio::test]
+async fn everything_refuses_an_unknown_patient_and_parameter() {
+    let app = service();
+    let missing = request(&app, "GET", "/Patient/nonesuch/$everything", &[]).await;
+    assert_eq!(missing.status, StatusCode::NOT_FOUND);
+    create(&app, serde_json::json!({"resourceType": "Patient", "id": "pt-e6"})).await;
+    let unknown = request(&app, "GET", "/Patient/pt-e6/$everything?nonesuch=1", &[]).await;
+    assert_eq!(unknown.status, StatusCode::BAD_REQUEST);
+    let typed = request(&app, "GET", "/Patient/pt-e6/$everything?_type=Medication", &[]).await;
+    assert_eq!(typed.status, StatusCode::BAD_REQUEST);
+}

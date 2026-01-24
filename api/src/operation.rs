@@ -1,15 +1,18 @@
 use axum::body::Bytes;
 use axum::extract::{Path, RawQuery, State};
-use axum::http::header;
+use axum::http::header::{self, HeaderMap};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use fhir_core::convert::{convert, Conversion, InputType};
 use fhir_core::validate::{validate, Mode, Request as ValidationRequest};
+use fhir_core::search::{Compartment, Filter};
 use fhir_core::{Error, ResourceId, ResourceType};
+use fhir_store::SearchQuery;
 use serde_json::Value;
 
 use crate::app::AppState;
 use crate::query::param;
+use crate::search::{ResultControl, SearchRequest, CONTROL};
 use crate::handlers::AppError;
 
 const FHIR_JSON: &str = "application/fhir+json";
@@ -170,6 +173,93 @@ fn submitted(body: &[u8]) -> Result<Option<Value>, Error> {
     serde_json::from_slice(body)
         .map(Some)
         .map_err(|error| Error::InvalidJson(error.to_string()))
+}
+
+const EVERYTHING_PARAMS: [&str; 3] = ["_since", "_till", "_type"];
+
+pub async fn everything(
+    State(state): State<AppState>,
+    Path(id_text): Path<String>,
+    RawQuery(query): RawQuery,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    let root = "Patient".parse::<ResourceType>()?;
+    let id = id_text.parse::<ResourceId>()?;
+    let stored = state.store.read(&id).await?;
+    if stored.resource_type() != root || stored.is_deleted() {
+        return Err(Error::NotFound.into());
+    }
+    let def = fhir_core::search::compartment::definition(root.as_str())
+        .ok_or_else(|| Error::UnsupportedParameter("compartment \"Patient\"".to_owned()))?;
+    accepts(query.as_deref(), &EVERYTHING_PARAMS)?;
+    let gathered = def
+        .types()
+        .iter()
+        .map(|name| name.parse::<ResourceType>())
+        .collect::<Result<Vec<ResourceType>, Error>>()?;
+    let types = match param(query.as_deref(), "_type") {
+        None => gathered,
+        Some(text) => {
+            let wanted = listed(&text)?;
+            if let Some(refused) = wanted.iter().find(|kind| !gathered.contains(kind)) {
+                return Err(Error::UnsupportedParameter(format!(
+                    "_type {:?} is not gathered around a patient",
+                    refused.as_str()
+                ))
+                .into());
+            }
+            wanted
+        }
+    };
+    let control = ResultControl::parse(query.as_deref())?;
+    let request = SearchRequest {
+        query: SearchQuery {
+            types,
+            filters: window(&state, query.as_deref())?,
+            compartment: Some(Compartment { kind: root, id }),
+            count: control.count,
+            offset: control.offset,
+            total: control.total,
+            ..SearchQuery::default()
+        },
+        summary: control.summary,
+        elements: control.elements,
+    };
+    let path = format!("/{}/{}/$everything", root.as_str(), id_text);
+    crate::handlers::respond_page(&state, request, path, query, &headers).await
+}
+
+fn window(state: &AppState, query: Option<&str>) -> Result<Vec<Filter>, Error> {
+    let mut filters = Vec::new();
+    for (name, comparator) in [("_since", "ge"), ("_till", "le")] {
+        let Some(text) = param(query, name) else { continue };
+        let def = state
+            .registry
+            .searchable(None, "_lastUpdated")?
+            .ok_or_else(|| Error::UnsupportedParameter(format!("{name:?}")))?;
+        let value = def
+            .value_with(&fhir_core::search::Modifier::None, &format!("{comparator}{text}"))
+            .map_err(|_| Error::InvalidParameter(format!("{name} {text:?}")))?;
+        filters.push(Filter::new(name, def.target.clone(), vec![value]));
+    }
+    Ok(filters)
+}
+
+fn listed(raw: &str) -> Result<Vec<ResourceType>, Error> {
+    raw.split(',')
+        .filter(|part| !part.is_empty())
+        .map(str::parse::<ResourceType>)
+        .collect()
+}
+
+fn accepts(query: Option<&str>, allowed: &[&str]) -> Result<(), Error> {
+    for (name, _) in crate::query::pairs(query) {
+        let known = allowed.contains(&name.as_str()) || CONTROL.contains(&name.as_str());
+        if !known {
+            return Err(Error::UnsupportedParameter(format!("{name:?}")));
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn rendered(body: Vec<u8>) -> Response {

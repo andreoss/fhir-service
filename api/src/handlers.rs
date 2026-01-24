@@ -732,7 +732,7 @@ async fn respond_search(
     respond_page(state, request, path, query, headers).await
 }
 
-async fn respond_page(
+pub(crate) async fn respond_page(
     state: &AppState,
     mut request: SearchRequest,
     path: String,

@@ -163,6 +163,10 @@ fn routes() -> Router<AppState> {
             .route("/{type}/{id}/_history/{vid}", get(vread))
             .route("/{type}", get(search_type).post(create).put(conditional_update).delete(conditional_delete).patch(conditional_patch))
             .route("/{type}/{id}/$purge-history", post(purge_history))
+            .route(
+                "/Patient/{id}/$everything",
+                get(crate::operation::everything).post(crate::operation::everything),
+            )
             .route("/$convert-data", post(crate::operation::convert_data))
             .route(
                 "/{type}/$validate",

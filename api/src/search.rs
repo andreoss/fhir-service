@@ -11,7 +11,7 @@ use crate::history::Summary;
 use crate::query::{pairs, param};
 use crate::token::{decode, encode, scope, scope_of, with_token};
 
-const CONTROL: [&str; 9] = [
+pub(crate) const CONTROL: [&str; 9] = [
     "_hardDelete",
     "_format",
     "_pretty",
@@ -85,21 +85,32 @@ impl SearchRequest {
         raw: Option<&str>,
     ) -> Result<SearchRequest, Error> {
         let mut query = parse_query(registry, base_type, raw)?;
+        let control = ResultControl::parse(raw)?;
+        query.sort = sort_of(registry, base_type, raw)?;
+        query.total = control.total;
+        query.count = control.count;
+        query.offset = control.offset;
+        Ok(SearchRequest {
+            query,
+            summary: control.summary,
+            elements: control.elements,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResultControl {
+    pub count: usize,
+    pub offset: usize,
+    pub summary: Summary,
+    pub elements: Vec<String>,
+    pub total: TotalMode,
+}
+
+impl ResultControl {
+    pub fn parse(raw: Option<&str>) -> Result<ResultControl, Error> {
         let summary = summary_of(raw)?;
         rendering(raw)?;
-        query.sort = sort_of(registry, base_type, raw)?;
-        query.total = match summary {
-            Summary::Count => TotalMode::Accurate,
-            _ => total_of(raw)?,
-        };
-        query.count = match summary {
-            Summary::Count => 0,
-            _ => count_of(raw)?,
-        };
-        query.offset = match param(raw, "ct") {
-            Some(text) => decode(&text, &scope(raw))?,
-            None => 0,
-        };
         let elements = param(raw, "_elements")
             .map(|text| {
                 text.split(',')
@@ -108,10 +119,21 @@ impl SearchRequest {
                     .collect()
             })
             .unwrap_or_default();
-        Ok(SearchRequest {
-            query,
+        Ok(ResultControl {
+            count: match summary {
+                Summary::Count => 0,
+                _ => count_of(raw)?,
+            },
+            offset: match param(raw, "ct") {
+                Some(text) => decode(&text, &scope(raw))?,
+                None => 0,
+            },
             summary,
             elements,
+            total: match summary {
+                Summary::Count => TotalMode::Accurate,
+                _ => total_of(raw)?,
+            },
         })
     }
 }
