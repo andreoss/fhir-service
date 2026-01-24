@@ -29,6 +29,7 @@ pub struct AppState {
     pub parameters: Arc<tokio::sync::Mutex<()>>,
     pub entries: Arc<tokio::sync::Semaphore>,
     pub templates: Arc<dyn Templates>,
+    pub terminology: Arc<dyn fhir_store::Terminology>,
 }
 
 #[derive(Clone)]
@@ -48,9 +49,11 @@ impl Service {
         version: FhirVersion,
         dependencies: Vec<Dependency>,
     ) -> Service {
+        let terminology = Arc::new(crate::terminology::StoredTerminology::new(Arc::clone(&store)));
         Service {
             state: AppState {
                 store,
+                terminology,
                 jobs: None,
                 outputs: None,
                 version,
@@ -85,6 +88,15 @@ impl Service {
         Service {
             state: AppState {
                 entries: Arc::new(tokio::sync::Semaphore::new(limit.max(1))),
+                ..self.state
+            },
+        }
+    }
+
+    pub fn with_terminology(self, terminology: Arc<dyn fhir_store::Terminology>) -> Service {
+        Service {
+            state: AppState {
+                terminology,
                 ..self.state
             },
         }
@@ -182,6 +194,10 @@ fn routes() -> Router<AppState> {
             .route(
                 "/DocumentReference/$docref",
                 get(crate::operation::docref_query).post(crate::operation::docref_body),
+            )
+            .route(
+                "/ValueSet/$expand",
+                get(crate::operation::expand_query).post(crate::operation::expand_body),
             )
             .route("/$convert-data", post(crate::operation::convert_data))
             .route(

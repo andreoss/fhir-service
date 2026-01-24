@@ -4,6 +4,7 @@ use axum::http::header::{self, HeaderMap};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use fhir_core::convert::{convert, Conversion, InputType};
+use fhir_core::terminology::{expansion_json, ExpansionRequest};
 use fhir_core::validate::{validate, Mode, Request as ValidationRequest};
 use fhir_core::search::{Compartment, Filter};
 use fhir_core::{Error, ResourceId, ResourceType};
@@ -511,6 +512,101 @@ async fn documents(
     let request = SearchRequest::parse(&state.registry, Some(resource_type), Some(&raw))?;
     let path = format!("/{resource_type}/$docref");
     crate::handlers::respond_page(state, request, path, Some(raw), headers).await
+}
+
+const EXPAND_PARAMS: [&str; 11] = [
+    "url",
+    "filter",
+    "count",
+    "offset",
+    "date",
+    "activeOnly",
+    "displayLanguage",
+    "includeDesignations",
+    "designations",
+    "excludeNested",
+    "valueSetVersion",
+];
+
+const SYSTEM_VERSION: &str = "system-version";
+
+pub async fn expand_query(
+    State(state): State<AppState>,
+    RawQuery(query): RawQuery,
+) -> Result<Response, AppError> {
+    let asked = crate::query::pairs(query.as_deref());
+    accepts(query.as_deref(), &[&EXPAND_PARAMS[..], &[SYSTEM_VERSION]].concat())?;
+    expanded(&state, &asked).await
+}
+
+pub async fn expand_body(
+    State(state): State<AppState>,
+    body: Bytes,
+) -> Result<Response, AppError> {
+    let input = parameters(&body)?;
+    let mut asked = Vec::new();
+    for name in EXPAND_PARAMS.iter().chain([SYSTEM_VERSION].iter()) {
+        for value in values_of(&input, name) {
+            asked.push(((*name).to_owned(), value));
+        }
+    }
+    expanded(&state, &asked).await
+}
+
+async fn expanded(state: &AppState, asked: &[(String, String)]) -> Result<Response, AppError> {
+    let held = |name: &str| {
+        asked
+            .iter()
+            .find(|(held, _)| held == name)
+            .map(|(_, value)| value.clone())
+    };
+    let url = held("url").ok_or_else(|| Error::InvalidParameter("\"url\" is missing".to_owned()))?;
+    let request = ExpansionRequest {
+        filter: held("filter"),
+        count: match held("count") {
+            None => None,
+            Some(text) => Some(
+                text.parse::<usize>()
+                    .map_err(|_| Error::InvalidParameter(format!("count {text:?}")))?,
+            ),
+        },
+        offset: match held("offset") {
+            None => 0,
+            Some(text) => text
+                .parse::<usize>()
+                .map_err(|_| Error::InvalidParameter(format!("offset {text:?}")))?,
+        },
+        date: held("date"),
+        active_only: flag(held("activeOnly").as_deref())?,
+        display_language: held("displayLanguage"),
+        designations: flag(held("includeDesignations").as_deref())?
+            || flag(held("designations").as_deref())?,
+        exclude_nested: flag(held("excludeNested").as_deref())?,
+        system_versions: asked
+            .iter()
+            .filter(|(name, _)| name == SYSTEM_VERSION)
+            .map(|(_, value)| match value.split_once('|') {
+                Some((system, version)) => Ok((system.to_owned(), version.to_owned())),
+                None => Err(Error::InvalidParameter(format!(
+                    "{SYSTEM_VERSION} {value:?}"
+                ))),
+            })
+            .collect::<Result<Vec<(String, String)>, Error>>()?,
+        value_set_version: held("valueSetVersion"),
+    };
+    let expansion = state.terminology.expand(&url, &request).await?;
+    let body = expansion_json(&expansion, &request);
+    Ok(rendered(
+        serde_json::to_vec(&body).map_err(|error| Error::Internal(error.to_string()))?,
+    ))
+}
+
+fn flag(value: Option<&str>) -> Result<bool, Error> {
+    match value {
+        None | Some("false") => Ok(false),
+        Some("true") => Ok(true),
+        Some(other) => Err(Error::InvalidParameter(format!("{other:?} is not a flag"))),
+    }
 }
 
 pub(crate) fn rendered(body: Vec<u8>) -> Response {

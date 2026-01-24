@@ -9,6 +9,7 @@ pub mod operation;
 pub mod parameter;
 pub mod query;
 pub mod search;
+pub mod terminology;
 pub mod token;
 
 pub use app::{AppState, Bound, Dependency, Service};
@@ -19,3 +20,4 @@ pub use job::{status_location, JOBS, RETRY_AFTER};
 pub use operation::{parameters, resource_of, value_of, values_of};
 pub use parameter::{install, status_of, uninstall};
 pub use search::{parse_query, search_bundle, SearchRequest};
+pub use terminology::StoredTerminology;

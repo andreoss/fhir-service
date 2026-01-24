@@ -8,6 +8,7 @@ pub mod plan;
 pub mod resource;
 pub mod scope;
 pub mod search;
+pub mod terminology;
 
 pub use bulk::{output_format, BulkStore, Output, NDJSON};
 pub use clock::{system_clock, system_ticker, Clock, StepTicker, Ticker};
@@ -21,3 +22,4 @@ pub use plan::{Plan, PlanCache, PlanKey, PlanStat, REGRESSION_FACTOR};
 pub use resource::{ResourceStore, SearchParam, SearchParams};
 pub use scope::StoreScope;
 pub use search::{SearchPage, SearchQuery, SortDirection, SortKey, TotalMode};
+pub use terminology::{Subsumption, Terminology};

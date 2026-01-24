@@ -113,6 +113,16 @@ impl Filter {
         }
     }
 
+    pub fn expanded(&self, values: &[SearchValue]) -> Filter {
+        Filter {
+            name: self.name.clone(),
+            target: self.target.clone(),
+            modifier: Modifier::None,
+            values: values.to_vec(),
+            index: self.index.clone(),
+        }
+    }
+
     pub fn code_sets(&self) -> Vec<String> {
         match self.modifier {
             Modifier::In | Modifier::NotIn => self

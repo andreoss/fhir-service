@@ -135,7 +135,7 @@ fn a_display_language_and_designations_are_honoured() {
     let expansion = expand(&set(), &systems, &request).unwrap();
     let top = expansion.concepts.iter().find(|held| held.code == "top").unwrap();
     assert_eq!(top.display.as_deref(), Some("Boven"));
-    let rendered = expansion_json(&set(), &expansion, &request);
+    let rendered = expansion_json(&expansion, &request);
     assert_eq!(rendered["expansion"]["contains"][0]["designation"][0]["value"], "Boven");
     assert_eq!(rendered["resourceType"], "ValueSet");
     assert_eq!(rendered["expansion"]["total"], 4);

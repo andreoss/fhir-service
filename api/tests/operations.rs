@@ -688,3 +688,150 @@ async fn docref_refuses_a_request_without_a_patient_or_beyond_the_server() {
     .await;
     assert_eq!(unknown.status, StatusCode::BAD_REQUEST);
 }
+
+fn code_system() -> serde_json::Value {
+    serde_json::json!({
+        "resourceType": "CodeSystem",
+        "id": "cs-1",
+        "url": "urn:cs",
+        "version": "1.0",
+        "concept": [{
+            "code": "top",
+            "display": "Top",
+            "designation": [{"language": "nl", "value": "Boven"}],
+            "concept": [
+                {"code": "mid", "display": "Middle", "concept": [{"code": "leaf", "display": "Leaf"}]},
+                {"code": "old", "display": "Old", "property": [{"code": "status", "valueCode": "retired"}]}
+            ]
+        }]
+    })
+}
+
+fn value_set() -> serde_json::Value {
+    serde_json::json!({
+        "resourceType": "ValueSet",
+        "id": "vs-1",
+        "url": "urn:vs",
+        "version": "2.0",
+        "status": "active",
+        "compose": {"include": [{"system": "urn:cs"}]}
+    })
+}
+
+fn codes(value: &Value) -> Vec<String> {
+    value["expansion"]["contains"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|held| held["code"].as_str().map(str::to_owned))
+        .collect()
+}
+
+async fn terminology_service() -> Service {
+    let app = service();
+    create(&app, code_system()).await;
+    create(&app, value_set()).await;
+    app
+}
+
+#[tokio::test]
+async fn expand_answers_the_codes_of_a_value_set() {
+    let app = terminology_service().await;
+    let reply = request(&app, "GET", "/ValueSet/$expand?url=urn:vs&excludeNested=true", &[]).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    let value = json(&reply);
+    assert_eq!(value["resourceType"], "ValueSet");
+    assert_eq!(value["expansion"]["total"], 4);
+    assert_eq!(
+        codes(&value),
+        vec!["top".to_owned(), "mid".to_owned(), "leaf".to_owned(), "old".to_owned()]
+    );
+}
+
+#[tokio::test]
+async fn expand_narrows_by_filter_paging_and_activity() {
+    let app = terminology_service().await;
+    let filtered = json(
+        &request(&app, "GET", "/ValueSet/$expand?url=urn:vs&filter=lea&excludeNested=true", &[]).await,
+    );
+    assert_eq!(codes(&filtered), vec!["leaf".to_owned()]);
+    let paged = json(
+        &request(
+            &app,
+            "GET",
+            "/ValueSet/$expand?url=urn:vs&excludeNested=true&count=2&offset=1",
+            &[],
+        )
+        .await,
+    );
+    assert_eq!(paged["expansion"]["offset"], 1);
+    assert_eq!(codes(&paged).len(), 2);
+    let active = json(
+        &request(
+            &app,
+            "GET",
+            "/ValueSet/$expand?url=urn:vs&excludeNested=true&activeOnly=true",
+            &[],
+        )
+        .await,
+    );
+    assert!(!codes(&active).contains(&"old".to_owned()));
+}
+
+#[tokio::test]
+async fn expand_honours_language_designations_and_nesting() {
+    let app = terminology_service().await;
+    let reply = request(
+        &app,
+        "GET",
+        "/ValueSet/$expand?url=urn:vs&displayLanguage=nl&includeDesignations=true",
+        &[],
+    )
+    .await;
+    let value = json(&reply);
+    assert_eq!(value["expansion"]["contains"][0]["display"], "Boven");
+    assert_eq!(value["expansion"]["contains"][0]["designation"][0]["value"], "Boven");
+    assert_eq!(value["expansion"]["contains"][0]["contains"][0]["code"], "mid");
+}
+
+#[tokio::test]
+async fn expand_answers_the_same_over_a_parameters_body() {
+    let app = terminology_service().await;
+    let got = json(&request(&app, "GET", "/ValueSet/$expand?url=urn:vs&excludeNested=true", &[]).await);
+    let body = serde_json::to_vec(&serde_json::json!({
+        "resourceType": "Parameters",
+        "parameter": [
+            {"name": "url", "valueUri": "urn:vs"},
+            {"name": "excludeNested", "valueBoolean": true}
+        ]
+    }))
+    .unwrap();
+    let posted = request(&app, "POST", "/ValueSet/$expand", &body).await;
+    assert_eq!(posted.status, StatusCode::OK, "{}", posted.body);
+    assert_eq!(codes(&json(&posted)), codes(&got));
+}
+
+#[tokio::test]
+async fn expand_reports_failures_as_outcomes() {
+    let app = terminology_service().await;
+    let unknown = request(&app, "GET", "/ValueSet/$expand?url=urn:nonesuch", &[]).await;
+    assert_eq!(unknown.status, StatusCode::NOT_FOUND);
+    assert_eq!(json(&unknown)["resourceType"], "OperationOutcome");
+    let without = request(&app, "GET", "/ValueSet/$expand", &[]).await;
+    assert_eq!(without.status, StatusCode::BAD_REQUEST);
+    let count = request(&app, "GET", "/ValueSet/$expand?url=urn:vs&count=many", &[]).await;
+    assert_eq!(count.status, StatusCode::BAD_REQUEST);
+    let version = request(&app, "GET", "/ValueSet/$expand?url=urn:vs&valueSetVersion=9.9", &[]).await;
+    assert_eq!(version.status, StatusCode::NOT_FOUND);
+    let pinned = request(
+        &app,
+        "GET",
+        "/ValueSet/$expand?url=urn:vs&system-version=urn:cs|9.9",
+        &[],
+    )
+    .await;
+    assert_eq!(pinned.status, StatusCode::BAD_REQUEST);
+    let date = request(&app, "GET", "/ValueSet/$expand?url=urn:vs&nonesuch=1", &[]).await;
+    assert_eq!(date.status, StatusCode::BAD_REQUEST);
+}

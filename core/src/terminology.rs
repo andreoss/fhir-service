@@ -36,6 +36,11 @@ pub struct ExpansionRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Expansion {
+    pub id: Option<String>,
+    pub url: Option<String>,
+    pub version: Option<String>,
+    pub name: Option<String>,
+    pub status: Option<String>,
     pub total: usize,
     pub offset: usize,
     pub concepts: Vec<Coding>,
@@ -208,6 +213,11 @@ pub fn expand(
         .take(request.count.unwrap_or(usize::MAX))
         .collect();
     Ok(Expansion {
+        id: text_of(set, "id"),
+        url: text_of(set, "url"),
+        version: text_of(set, "version"),
+        name: text_of(set, "name"),
+        status: text_of(set, "status"),
         total,
         offset: request.offset,
         concepts: paged,
@@ -389,21 +399,31 @@ fn rendered(concept: &Coding, request: &ExpansionRequest) -> Coding {
     }
 }
 
+fn text_of(set: &Value, name: &str) -> Option<String> {
+    set.get(name).and_then(Value::as_str).map(str::to_owned)
+}
+
 fn counted(held: &[Coding]) -> usize {
     held.iter()
         .map(|concept| 1 + counted(&concept.contains))
         .sum()
 }
 
-pub fn expansion_json(set: &Value, expansion: &Expansion, request: &ExpansionRequest) -> Value {
+pub fn expansion_json(expansion: &Expansion, request: &ExpansionRequest) -> Value {
     let mut body = Map::new();
     body.insert(
         "resourceType".to_owned(),
         Value::String("ValueSet".to_owned()),
     );
-    for name in ["id", "url", "version", "name", "status"] {
-        if let Some(found) = set.get(name) {
-            body.insert(name.to_owned(), found.clone());
+    for (name, held) in [
+        ("id", &expansion.id),
+        ("url", &expansion.url),
+        ("version", &expansion.version),
+        ("name", &expansion.name),
+        ("status", &expansion.status),
+    ] {
+        if let Some(found) = held {
+            body.insert(name.to_owned(), Value::String(found.clone()));
         }
     }
     let mut held = Map::new();
