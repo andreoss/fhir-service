@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use fhir_core::search::{Filter, Modifier, Target};
+use fhir_core::search::{Criterion, Filter, Modifier, Target};
 use fhir_core::terminology::{ancestors, descendants, expand, Coding, Expansion, ExpansionRequest};
 use fhir_core::{Error, ResourceType, SearchValue};
 use fhir_store::{ResourceStore, SearchQuery, Subsumption, Terminology};
@@ -118,3 +118,36 @@ fn coded(concept: Coding) -> SearchValue {
     })
 }
 
+
+pub async fn resolve(
+    terminology: &dyn Terminology,
+    query: &mut SearchQuery,
+) -> Result<(), Error> {
+    for filter in &mut query.filters {
+        if let Some(found) = subsumed(terminology, filter).await? {
+            *filter = found;
+        }
+    }
+    for chain in &mut query.chains {
+        walked(terminology, &mut chain.next).await?;
+    }
+    Ok(())
+}
+
+async fn walked(
+    terminology: &dyn Terminology,
+    criterion: &mut Criterion,
+) -> Result<(), Error> {
+    let mut pending = vec![criterion];
+    while let Some(held) = pending.pop() {
+        match held {
+            Criterion::Direct(filter) => {
+                if let Some(found) = subsumed(terminology, filter).await? {
+                    *filter = found;
+                }
+            }
+            Criterion::Linked(chain) => pending.push(&mut chain.next),
+        }
+    }
+    Ok(())
+}

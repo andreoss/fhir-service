@@ -835,3 +835,59 @@ async fn expand_reports_failures_as_outcomes() {
     let date = request(&app, "GET", "/ValueSet/$expand?url=urn:vs&nonesuch=1", &[]).await;
     assert_eq!(date.status, StatusCode::BAD_REQUEST);
 }
+
+fn coded(id: &str, system: Option<&str>, code: &str) -> serde_json::Value {
+    let coding = match system {
+        Some(system) => serde_json::json!({"system": system, "code": code}),
+        None => serde_json::json!({"code": code}),
+    };
+    serde_json::json!({
+        "resourceType": "Observation",
+        "id": id,
+        "status": "final",
+        "code": {"coding": [coding]}
+    })
+}
+
+async fn found(app: &Service, uri: &str) -> Vec<String> {
+    let reply = request(app, "GET", uri, &[]).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    let mut held = ids(&json(&reply));
+    held.sort();
+    held
+}
+
+#[tokio::test]
+async fn subsumption_modifiers_resolve_through_the_terminology() {
+    let app = service();
+    create(&app, code_system()).await;
+    create(&app, coded("ob-s1", Some("urn:cs"), "leaf")).await;
+    create(&app, coded("ob-s2", Some("urn:cs"), "top")).await;
+    assert_eq!(
+        found(&app, "/Observation?code:below=urn:cs%7Cmid").await,
+        vec!["ob-s1".to_owned()]
+    );
+    assert_eq!(
+        found(&app, "/Observation?code:above=urn:cs%7Cmid").await,
+        vec!["ob-s2".to_owned()]
+    );
+    assert!(found(&app, "/Observation?code:below=urn:cs%7Cleaf")
+        .await
+        .contains(&"ob-s1".to_owned()));
+}
+
+#[tokio::test]
+async fn a_code_no_system_defines_is_compared_as_it_stands() {
+    let app = service();
+    create(&app, code_system()).await;
+    create(&app, coded("ob-s3", None, "a.b.c")).await;
+    assert_eq!(
+        found(&app, "/Observation?code:below=a.b").await,
+        vec!["ob-s3".to_owned()]
+    );
+    assert!(found(&app, "/Observation?code:below=a.d").await.is_empty());
+    assert_eq!(
+        found(&app, "/Observation?code:above=a.b.c.d").await,
+        vec!["ob-s3".to_owned()]
+    );
+}

@@ -397,6 +397,7 @@ async fn related(
         ..request.query
     };
     crate::handlers::confine(&mut selection, crate::handlers::grant_of(headers)?)?;
+    crate::terminology::resolve(state.terminology.as_ref(), &mut selection).await?;
     let found = state.store.search(&selection).await?;
     let total = found.included.len();
     let entries: Vec<fhir_core::ResourceEnvelope> = found
