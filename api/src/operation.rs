@@ -262,6 +262,100 @@ fn accepts(query: Option<&str>, allowed: &[&str]) -> Result<(), Error> {
     Ok(())
 }
 
+pub async fn member_match(
+    State(state): State<AppState>,
+    body: Bytes,
+) -> Result<Response, AppError> {
+    let input = parameters(&body)?;
+    let submitted = resource_of(&input, "MemberPatient").ok_or_else(|| {
+        Error::InvalidParameter("\"MemberPatient\" is missing".to_owned())
+    })?;
+    let identifiers = identifiers(submitted);
+    if identifiers.is_empty() {
+        return Err(Error::InvalidParameter(
+            "the submitted member carries no identifier".to_owned(),
+        )
+        .into());
+    }
+    let patient = "Patient".parse::<ResourceType>()?;
+    let def = state
+        .registry
+        .searchable(Some(patient), "identifier")?
+        .ok_or_else(|| Error::UnsupportedParameter("\"identifier\"".to_owned()))?;
+    let values = identifiers
+        .iter()
+        .map(|text| def.value_with(&fhir_core::search::Modifier::None, text))
+        .collect::<Result<Vec<fhir_core::SearchValue>, Error>>()?;
+    let query = SearchQuery {
+        types: vec![patient],
+        filters: vec![Filter::new("identifier", def.target.clone(), values)],
+        ..SearchQuery::default()
+    };
+    let page = state.store.search(&query).await?;
+    let birth_date = submitted.get("birthDate").and_then(Value::as_str);
+    let mut candidates: Vec<&fhir_core::ResourceEnvelope> = Vec::new();
+    for found in &page.entries {
+        let body: Value = serde_json::from_slice(found.raw())
+            .map_err(|error| Error::InvalidJson(error.to_string()))?;
+        let agrees = match (birth_date, body.get("birthDate").and_then(Value::as_str)) {
+            (Some(asked), Some(held)) => asked == held,
+            _ => true,
+        };
+        if agrees {
+            candidates.push(found);
+        }
+    }
+    let matched = match candidates.len() {
+        1 => candidates[0],
+        0 => {
+            return Err(Error::NoMatch("no member matched the submitted patient".to_owned()).into())
+        }
+        _ => {
+            return Err(Error::NoMatch(
+                "the submitted patient matched more than one member".to_owned(),
+            )
+            .into())
+        }
+    };
+    let stored: Value = serde_json::from_slice(matched.raw())
+        .map_err(|error| Error::InvalidJson(error.to_string()))?;
+    let identifier = stored
+        .get("identifier")
+        .and_then(Value::as_array)
+        .and_then(|items| items.first())
+        .cloned()
+        .unwrap_or(Value::Null);
+    let answer = serde_json::json!({
+        "resourceType": "Parameters",
+        "parameter": [
+            {"name": "MemberIdentifier", "valueIdentifier": identifier},
+            {"name": "MemberPatient", "resource": stored}
+        ]
+    });
+    Ok(rendered(
+        serde_json::to_vec(&answer).map_err(|error| Error::Internal(error.to_string()))?,
+    ))
+}
+
+fn identifiers(patient: &Value) -> Vec<String> {
+    patient
+        .get("identifier")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|held| {
+                    let value = held.get("value").and_then(Value::as_str)?;
+                    Some(match held.get("system").and_then(Value::as_str) {
+                        Some(system) => format!("{system}|{value}"),
+                        None => value.to_owned(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 pub(crate) fn rendered(body: Vec<u8>) -> Response {
     (
         StatusCode::OK,

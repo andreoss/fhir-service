@@ -341,3 +341,108 @@ async fn everything_refuses_an_unknown_patient_and_parameter() {
     let typed = request(&app, "GET", "/Patient/pt-e6/$everything?_type=Medication", &[]).await;
     assert_eq!(typed.status, StatusCode::BAD_REQUEST);
 }
+
+fn member(id: &str, system: &str, value: &str, birth: &str) -> serde_json::Value {
+    serde_json::json!({
+        "resourceType": "Patient",
+        "id": id,
+        "identifier": [{"system": system, "value": value}],
+        "birthDate": birth
+    })
+}
+
+fn match_body(patient: serde_json::Value) -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({
+        "resourceType": "Parameters",
+        "parameter": [
+            {"name": "MemberPatient", "resource": patient},
+            {"name": "CoverageToMatch", "resource": {"resourceType": "Coverage", "id": "cv-1"}}
+        ]
+    }))
+    .unwrap()
+}
+
+#[tokio::test]
+async fn member_match_returns_the_identifier_of_the_matched_member() {
+    let app = service();
+    create(&app, member("pt-m1", "urn:mrn", "42", "1980-04-01")).await;
+    let asked = member("submitted", "urn:mrn", "42", "1980-04-01");
+    let reply = request(&app, "POST", "/Patient/$member-match", &match_body(asked)).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    let value = json(&reply);
+    assert_eq!(value["resourceType"], "Parameters");
+    let identifier = value["parameter"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["name"] == "MemberIdentifier")
+        .cloned()
+        .expect("a member identifier");
+    assert_eq!(identifier["valueIdentifier"]["value"], "42");
+    assert_eq!(identifier["valueIdentifier"]["system"], "urn:mrn");
+    let matched = value["parameter"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["name"] == "MemberPatient")
+        .cloned()
+        .expect("the matched patient");
+    assert_eq!(matched["resource"]["id"], "pt-m1");
+}
+
+#[tokio::test]
+async fn member_match_reports_no_match_explicitly() {
+    let app = service();
+    create(&app, member("pt-m2", "urn:mrn", "43", "1980-04-01")).await;
+    let asked = member("submitted", "urn:mrn", "nonesuch", "1980-04-01");
+    let reply = request(&app, "POST", "/Patient/$member-match", &match_body(asked)).await;
+    assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY);
+    let value = json(&reply);
+    assert_eq!(value["resourceType"], "OperationOutcome");
+    assert_eq!(value["issue"][0]["code"], "business-rule");
+}
+
+#[tokio::test]
+async fn member_match_refuses_a_member_that_is_not_unique() {
+    let app = service();
+    create(&app, member("pt-m3", "urn:mrn", "44", "1980-04-01")).await;
+    create(&app, member("pt-m4", "urn:mrn", "44", "1990-01-01")).await;
+    let asked = serde_json::json!({
+        "resourceType": "Patient",
+        "identifier": [{"system": "urn:mrn", "value": "44"}]
+    });
+    let reply = request(&app, "POST", "/Patient/$member-match", &match_body(asked)).await;
+    assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[tokio::test]
+async fn member_match_separates_members_by_birth_date() {
+    let app = service();
+    create(&app, member("pt-m5", "urn:mrn", "45", "1980-04-01")).await;
+    create(&app, member("pt-m6", "urn:mrn", "45", "1990-01-01")).await;
+    let asked = member("submitted", "urn:mrn", "45", "1990-01-01");
+    let reply = request(&app, "POST", "/Patient/$member-match", &match_body(asked)).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    let value = json(&reply);
+    let matched = value["parameter"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["name"] == "MemberPatient")
+        .cloned()
+        .unwrap();
+    assert_eq!(matched["resource"]["id"], "pt-m6");
+}
+
+#[tokio::test]
+async fn member_match_refuses_a_request_without_a_member() {
+    let app = service();
+    let empty = serde_json::to_vec(&serde_json::json!({"resourceType": "Parameters"})).unwrap();
+    let reply = request(&app, "POST", "/Patient/$member-match", &empty).await;
+    assert_eq!(reply.status, StatusCode::BAD_REQUEST);
+    let unidentified = match_body(serde_json::json!({"resourceType": "Patient", "id": "x"}));
+    let without = request(&app, "POST", "/Patient/$member-match", &unidentified).await;
+    assert_eq!(without.status, StatusCode::BAD_REQUEST);
+    let wrong = request(&app, "POST", "/Patient/$member-match", b"{}").await;
+    assert_eq!(wrong.status, StatusCode::BAD_REQUEST);
+}

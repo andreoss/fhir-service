@@ -34,6 +34,7 @@ pub enum IssueCode {
     MultipleMatches,
     Processing,
     Informational,
+    BusinessRule,
 }
 
 impl IssueCode {
@@ -50,6 +51,7 @@ impl IssueCode {
             IssueCode::MultipleMatches => "multiple-matches",
             IssueCode::Processing => "processing",
             IssueCode::Informational => "informational",
+            IssueCode::BusinessRule => "business-rule",
         }
     }
 
@@ -64,6 +66,7 @@ impl IssueCode {
             IssueCode::MultipleMatches => 412,
             IssueCode::Processing => 500,
             IssueCode::Informational => 200,
+            IssueCode::BusinessRule => 422,
         }
     }
 }
