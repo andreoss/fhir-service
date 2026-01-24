@@ -209,6 +209,27 @@ pub fn search_bundle(
     summary: Summary,
     elements: &[String],
 ) -> Vec<u8> {
+    bundle_of(base, self_url, page, summary, elements, "match")
+}
+
+pub fn includes_bundle(
+    base: &str,
+    self_url: &str,
+    page: &SearchPage,
+    summary: Summary,
+    elements: &[String],
+) -> Vec<u8> {
+    bundle_of(base, self_url, page, summary, elements, "include")
+}
+
+fn bundle_of(
+    base: &str,
+    self_url: &str,
+    page: &SearchPage,
+    summary: Summary,
+    elements: &[String],
+    mode: &str,
+) -> Vec<u8> {
     let mut links = vec![serde_json::json!({ "relation": "self", "url": self_url })];
     let consumed = page.offset + page.entries.len();
     if page.total.is_some_and(|total| consumed < total) && !page.entries.is_empty() {
@@ -228,7 +249,7 @@ pub fn search_bundle(
     let mut rendered: Vec<Value> = page
         .entries
         .iter()
-        .map(|found| entry(base, found, "match", summary, elements))
+        .map(|found| entry(base, found, mode, summary, elements))
         .collect();
     rendered.extend(
         page.included

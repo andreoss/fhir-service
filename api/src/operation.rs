@@ -356,6 +356,74 @@ fn identifiers(patient: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
+pub async fn includes_type(
+    State(state): State<AppState>,
+    Path(type_name): Path<String>,
+    RawQuery(query): RawQuery,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    let resource_type = type_name.parse::<ResourceType>()?;
+    let path = format!("/{resource_type}/$includes");
+    related(&state, Some(resource_type), path, query, &headers).await
+}
+
+pub async fn includes_system(
+    State(state): State<AppState>,
+    RawQuery(query): RawQuery,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    related(&state, None, "/$includes".to_owned(), query, &headers).await
+}
+
+async fn related(
+    state: &AppState,
+    base_type: Option<ResourceType>,
+    path: String,
+    query: Option<String>,
+    headers: &HeaderMap,
+) -> Result<Response, AppError> {
+    let request = SearchRequest::parse(&state.registry, base_type, query.as_deref())?;
+    if request.query.includes.is_empty() {
+        return Err(Error::InvalidParameter(
+            "the operation needs an include".to_owned(),
+        )
+        .into());
+    }
+    let control = ResultControl::parse(query.as_deref())?;
+    let mut selection = SearchQuery {
+        count: usize::MAX,
+        offset: 0,
+        ..request.query
+    };
+    crate::handlers::confine(&mut selection, crate::handlers::grant_of(headers)?)?;
+    let found = state.store.search(&selection).await?;
+    let total = found.included.len();
+    let entries: Vec<fhir_core::ResourceEnvelope> = found
+        .included
+        .into_iter()
+        .skip(control.offset)
+        .take(control.count)
+        .collect();
+    let page = fhir_store::SearchPage {
+        entries,
+        included: Vec::new(),
+        total: Some(total),
+        offset: control.offset,
+    };
+    let base = format!("http://{}", crate::handlers::host_from(headers));
+    let self_url = match query.as_deref() {
+        Some(raw) if !raw.is_empty() => format!("{base}{path}?{raw}"),
+        _ => format!("{base}{path}"),
+    };
+    Ok(rendered(crate::search::includes_bundle(
+        &base,
+        &self_url,
+        &page,
+        control.summary,
+        &control.elements,
+    )))
+}
+
 pub(crate) fn rendered(body: Vec<u8>) -> Response {
     (
         StatusCode::OK,

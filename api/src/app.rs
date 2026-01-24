@@ -171,6 +171,14 @@ fn routes() -> Router<AppState> {
                 "/Patient/$member-match",
                 post(crate::operation::member_match),
             )
+            .route(
+                "/$includes",
+                get(crate::operation::includes_system).post(crate::operation::includes_system),
+            )
+            .route(
+                "/{type}/$includes",
+                get(crate::operation::includes_type).post(crate::operation::includes_type),
+            )
             .route("/$convert-data", post(crate::operation::convert_data))
             .route(
                 "/{type}/$validate",

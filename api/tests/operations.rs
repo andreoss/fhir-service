@@ -446,3 +446,127 @@ async fn member_match_refuses_a_request_without_a_member() {
     let wrong = request(&app, "POST", "/Patient/$member-match", b"{}").await;
     assert_eq!(wrong.status, StatusCode::BAD_REQUEST);
 }
+
+async fn request_with(
+    app: &Service,
+    method: &str,
+    uri: &str,
+    headers: &[(&str, &str)],
+    body: &[u8],
+) -> Reply {
+    let mut builder = Request::builder().method(method).uri(uri).header("host", "localhost");
+    for (name, value) in headers {
+        builder = builder.header(*name, *value);
+    }
+    let response = app
+        .router()
+        .oneshot(builder.body(Body::from(body.to_vec())).unwrap())
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = http_body_util::BodyExt::collect(response.into_body())
+        .await
+        .unwrap()
+        .to_bytes();
+    Reply {
+        status,
+        body: String::from_utf8_lossy(&bytes).into_owned(),
+    }
+}
+
+fn modes(value: &Value) -> Vec<String> {
+    value["entry"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|entry| entry["search"]["mode"].as_str().map(str::to_owned))
+        .collect()
+}
+
+#[tokio::test]
+async fn includes_answers_with_the_related_resources_only() {
+    let app = service();
+    create(&app, serde_json::json!({"resourceType": "Patient", "id": "pt-i1"})).await;
+    create(&app, observation("ob-i1", "pt-i1")).await;
+    let reply = request(
+        &app,
+        "GET",
+        "/Observation/$includes?_id=ob-i1&_include=Observation:subject",
+        &[],
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    let value = json(&reply);
+    assert_eq!(value["type"], "searchset");
+    assert_eq!(ids(&value), vec!["pt-i1".to_owned()]);
+    assert_eq!(modes(&value), vec!["include".to_owned()]);
+    assert_eq!(value["total"], 1);
+}
+
+#[tokio::test]
+async fn includes_pages_through_a_continuation_token() {
+    let app = service();
+    create(&app, serde_json::json!({"resourceType": "Patient", "id": "pt-i2"})).await;
+    create(&app, serde_json::json!({"resourceType": "Patient", "id": "pt-i3"})).await;
+    create(&app, observation("ob-i2", "pt-i2")).await;
+    create(&app, observation("ob-i3", "pt-i3")).await;
+    let first = request(
+        &app,
+        "GET",
+        "/Observation/$includes?_include=Observation:subject&_count=1",
+        &[],
+    )
+    .await;
+    let value = json(&first);
+    assert_eq!(value["total"], 2);
+    assert_eq!(ids(&value).len(), 1);
+    let next = value["link"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|link| link["relation"] == "next")
+        .map(|link| link["url"].as_str().unwrap().to_owned())
+        .expect("a next link");
+    let path = next.split_once("localhost").unwrap().1.to_owned();
+    let second = json(&request(&app, "GET", &path, &[]).await);
+    assert_eq!(ids(&second).len(), 1);
+    assert_ne!(ids(&second), ids(&value));
+    assert!(second["link"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|link| link["relation"] != "next"));
+}
+
+#[tokio::test]
+async fn includes_stays_inside_the_grant() {
+    let app = service();
+    create(&app, serde_json::json!({"resourceType": "Patient", "id": "pt-i4"})).await;
+    create(&app, observation("ob-i4", "pt-i4")).await;
+    let reply = request_with(
+        &app,
+        "GET",
+        "/Observation/$includes?_include=Observation:subject",
+        &[("x-scope", "types=Observation")],
+        &[],
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert!(ids(&json(&reply)).is_empty());
+}
+
+#[tokio::test]
+async fn includes_needs_an_include_and_rejects_the_unknown() {
+    let app = service();
+    let without = request(&app, "GET", "/Observation/$includes", &[]).await;
+    assert_eq!(without.status, StatusCode::BAD_REQUEST);
+    let unknown = request(
+        &app,
+        "GET",
+        "/Observation/$includes?nonesuch=1&_include=Observation:subject",
+        &[],
+    )
+    .await;
+    assert_eq!(unknown.status, StatusCode::BAD_REQUEST);
+}

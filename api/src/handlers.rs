@@ -426,7 +426,7 @@ fn etag(envelope: &ResourceEnvelope) -> String {
     WeakEtag::from(envelope.version_id()).to_string()
 }
 
-fn host_from(headers: &HeaderMap) -> &str {
+pub(crate) fn host_from(headers: &HeaderMap) -> &str {
     headers
         .get(header::HOST)
         .and_then(|value| value.to_str().ok())
@@ -700,7 +700,7 @@ fn rendered(body: Vec<u8>) -> Response {
         .into_response()
 }
 
-fn grant_of(headers: &HeaderMap) -> Result<Option<Grant>, Error> {
+pub(crate) fn grant_of(headers: &HeaderMap) -> Result<Option<Grant>, Error> {
     match headers.get(SCOPE) {
         None => Ok(None),
         Some(value) => {
@@ -712,7 +712,7 @@ fn grant_of(headers: &HeaderMap) -> Result<Option<Grant>, Error> {
     }
 }
 
-fn confine(query: &mut SearchQuery, grant: Option<Grant>) -> Result<(), Error> {
+pub(crate) fn confine(query: &mut SearchQuery, grant: Option<Grant>) -> Result<(), Error> {
     let Some(grant) = grant else { return Ok(()) };
     if let Some(refused) = query.types.iter().find(|kind| !grant.admits(**kind)) {
         return Err(Error::Forbidden(format!("type {:?}", refused.as_str())));
