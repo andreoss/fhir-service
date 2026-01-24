@@ -424,6 +424,95 @@ async fn related(
     )))
 }
 
+const DOCREF_PARAMS: [&str; 5] = ["patient", "start", "end", "type", "on-demand"];
+
+pub async fn docref_query(
+    State(state): State<AppState>,
+    RawQuery(query): RawQuery,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    let asked = from_query(query.as_deref())?;
+    documents(&state, asked, &headers).await
+}
+
+pub async fn docref_body(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, AppError> {
+    let asked = match body.iter().all(u8::is_ascii_whitespace) {
+        true => from_query(None)?,
+        false => from_parameters(&parameters(&body)?)?,
+    };
+    documents(&state, asked, &headers).await
+}
+
+fn from_query(query: Option<&str>) -> Result<Vec<(String, String)>, Error> {
+    accepts(query, &DOCREF_PARAMS)?;
+    Ok(crate::query::pairs(query))
+}
+
+fn from_parameters(input: &Value) -> Result<Vec<(String, String)>, Error> {
+    let mut asked = Vec::new();
+    for name in DOCREF_PARAMS.iter().chain(CONTROL.iter()) {
+        for value in values_of(input, name) {
+            asked.push(((*name).to_owned(), value));
+        }
+    }
+    for held in values_of(input, "_include") {
+        asked.push(("_include".to_owned(), held));
+    }
+    Ok(asked)
+}
+
+async fn documents(
+    state: &AppState,
+    asked: Vec<(String, String)>,
+    headers: &HeaderMap,
+) -> Result<Response, AppError> {
+    let held = |name: &str| {
+        asked
+            .iter()
+            .find(|(held, _)| held == name)
+            .map(|(_, value)| value.clone())
+    };
+    let patient = held("patient")
+        .ok_or_else(|| Error::InvalidParameter("\"patient\" is missing".to_owned()))?;
+    if held("on-demand").is_some_and(|value| value.eq_ignore_ascii_case("true")) {
+        return Err(Error::UnsupportedParameter(
+            "\"on-demand\" generation".to_owned(),
+        )
+        .into());
+    }
+    let mut selection: Vec<(String, String)> = vec![(
+        "patient".to_owned(),
+        patient.rsplit('/').next().unwrap_or(&patient).to_owned(),
+    )];
+    if let Some(start) = held("start") {
+        selection.push(("date".to_owned(), format!("ge{start}")));
+    }
+    if let Some(end) = held("end") {
+        selection.push(("date".to_owned(), format!("le{end}")));
+    }
+    if let Some(kind) = held("type") {
+        selection.push(("type".to_owned(), kind));
+    }
+    for (name, value) in &asked {
+        if CONTROL.contains(&name.as_str()) || name == "_include" {
+            selection.push((name.clone(), value.clone()));
+        }
+    }
+    let raw = selection
+        .iter()
+        .map(|(name, value)| format!("{name}={value}"))
+        .collect::<Vec<String>>()
+        .join("&");
+    let resource_type = "DocumentReference".parse::<ResourceType>()?;
+    let request = SearchRequest::parse(&state.registry, Some(resource_type), Some(&raw))?;
+    let path = format!("/{resource_type}/$docref");
+    crate::handlers::respond_page(state, request, path, Some(raw), headers).await
+}
+
 pub(crate) fn rendered(body: Vec<u8>) -> Response {
     (
         StatusCode::OK,

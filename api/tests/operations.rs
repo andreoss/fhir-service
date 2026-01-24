@@ -570,3 +570,121 @@ async fn includes_needs_an_include_and_rejects_the_unknown() {
     .await;
     assert_eq!(unknown.status, StatusCode::BAD_REQUEST);
 }
+
+fn document(id: &str, patient: &str, date: &str, code: &str) -> serde_json::Value {
+    serde_json::json!({
+        "resourceType": "DocumentReference",
+        "id": id,
+        "status": "current",
+        "type": {"coding": [{"system": "urn:doc", "code": code}]},
+        "subject": {"reference": format!("Patient/{patient}")},
+        "date": date
+    })
+}
+
+fn docref_body(pairs: &[(&str, &str)]) -> Vec<u8> {
+    let parameter: Vec<serde_json::Value> = pairs
+        .iter()
+        .map(|(name, value)| serde_json::json!({"name": name, "valueString": value}))
+        .collect();
+    serde_json::to_vec(&serde_json::json!({
+        "resourceType": "Parameters",
+        "parameter": parameter
+    }))
+    .unwrap()
+}
+
+#[tokio::test]
+async fn docref_answers_the_documents_of_one_patient() {
+    let app = service();
+    create(&app, serde_json::json!({"resourceType": "Patient", "id": "pt-d1"})).await;
+    create(&app, document("dr-d1", "pt-d1", "2026-03-01", "note")).await;
+    create(&app, document("dr-d2", "pt-d2", "2026-03-01", "note")).await;
+    let reply = request(&app, "GET", "/DocumentReference/$docref?patient=pt-d1", &[]).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    let value = json(&reply);
+    assert_eq!(value["type"], "searchset");
+    assert_eq!(ids(&value), vec!["dr-d1".to_owned()]);
+}
+
+#[tokio::test]
+async fn docref_answers_the_same_over_get_and_post() {
+    let app = service();
+    create(&app, serde_json::json!({"resourceType": "Patient", "id": "pt-d3"})).await;
+    create(&app, document("dr-d3", "pt-d3", "2026-03-01", "note")).await;
+    create(&app, document("dr-d4", "pt-d3", "2026-06-01", "summary")).await;
+    let uri = "/DocumentReference/$docref?patient=pt-d3&start=2026-05-01&type=urn:doc|summary";
+    let got = json(&request(&app, "GET", uri, &[]).await);
+    let posted = request(
+        &app,
+        "POST",
+        "/DocumentReference/$docref",
+        &docref_body(&[
+            ("patient", "pt-d3"),
+            ("start", "2026-05-01"),
+            ("type", "urn:doc|summary"),
+        ]),
+    )
+    .await;
+    assert_eq!(posted.status, StatusCode::OK, "{}", posted.body);
+    let posted = json(&posted);
+    assert_eq!(ids(&got), vec!["dr-d4".to_owned()]);
+    assert_eq!(ids(&got), ids(&posted));
+    assert_eq!(got["total"], posted["total"]);
+    assert_eq!(got["link"], posted["link"]);
+}
+
+#[tokio::test]
+async fn docref_narrows_by_the_end_of_the_window() {
+    let app = service();
+    create(&app, serde_json::json!({"resourceType": "Patient", "id": "pt-d5"})).await;
+    create(&app, document("dr-d5", "pt-d5", "2026-03-01", "note")).await;
+    create(&app, document("dr-d6", "pt-d5", "2026-06-01", "note")).await;
+    let uri = "/DocumentReference/$docref?patient=Patient/pt-d5&end=2026-04-01";
+    assert_eq!(ids(&json(&request(&app, "GET", uri, &[]).await)), vec!["dr-d5".to_owned()]);
+}
+
+#[tokio::test]
+async fn docref_pages_like_a_search() {
+    let app = service();
+    create(&app, serde_json::json!({"resourceType": "Patient", "id": "pt-d7"})).await;
+    create(&app, document("dr-d7", "pt-d7", "2026-03-01", "note")).await;
+    create(&app, document("dr-d8", "pt-d7", "2026-06-01", "note")).await;
+    let first = json(&request(&app, "GET", "/DocumentReference/$docref?patient=pt-d7&_count=1", &[]).await);
+    assert_eq!(first["total"], 2);
+    let next = first["link"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|link| link["relation"] == "next")
+        .map(|link| link["url"].as_str().unwrap().to_owned())
+        .expect("a next link");
+    let path = next.split_once("localhost").unwrap().1.to_owned();
+    let second = json(&request(&app, "GET", &path, &[]).await);
+    assert_eq!(ids(&second).len(), 1);
+    assert_ne!(ids(&second), ids(&first));
+}
+
+#[tokio::test]
+async fn docref_refuses_a_request_without_a_patient_or_beyond_the_server() {
+    let app = service();
+    let without = request(&app, "GET", "/DocumentReference/$docref", &[]).await;
+    assert_eq!(without.status, StatusCode::BAD_REQUEST);
+    let demanded = request(
+        &app,
+        "GET",
+        "/DocumentReference/$docref?patient=pt-d9&on-demand=true",
+        &[],
+    )
+    .await;
+    assert_eq!(demanded.status, StatusCode::BAD_REQUEST);
+    assert_eq!(json(&demanded)["issue"][0]["code"], "not-supported");
+    let unknown = request(
+        &app,
+        "GET",
+        "/DocumentReference/$docref?patient=pt-d9&nonesuch=1",
+        &[],
+    )
+    .await;
+    assert_eq!(unknown.status, StatusCode::BAD_REQUEST);
+}

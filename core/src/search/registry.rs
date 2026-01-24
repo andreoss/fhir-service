@@ -363,6 +363,16 @@ const RISK_ASSESSMENT: &[StaticDef] = &[
     refers("subject", &["subject"], &["Patient", "Group"]),
 ];
 
+const DOCUMENT_REFERENCE: &[StaticDef] = &[
+    def("identifier", ValueType::Token, &["identifier"]),
+    sorted("date", ValueType::Date, &["date"]),
+    def("status", ValueType::Token, &["status"]),
+    def("type", ValueType::Token, &["type"]),
+    def("category", ValueType::Token, &["category"]),
+    refers("patient", &["subject"], &["Patient"]),
+    refers("subject", &["subject"], &["Patient", "Group", "Practitioner"]),
+];
+
 const VALUE_SET: &[StaticDef] = &[
     def("identifier", ValueType::Token, &["identifier"]),
     sorted("name", ValueType::String, &["name"]),
@@ -381,6 +391,7 @@ fn per_type(resource_type: ResourceType) -> &'static [StaticDef] {
         "Practitioner" => PRACTITIONER,
         "RiskAssessment" => RISK_ASSESSMENT,
         "ValueSet" => VALUE_SET,
+        "DocumentReference" => DOCUMENT_REFERENCE,
         _ => &[],
     }
 }
@@ -390,7 +401,7 @@ type Definitions = Vec<(Option<&'static str>, Arc<ParamDef>)>;
 fn definitions() -> &'static Definitions {
     static DEFINITIONS: OnceLock<Definitions> = OnceLock::new();
     DEFINITIONS.get_or_init(|| {
-        const TYPES: [&str; 8] = [
+        const TYPES: [&str; 9] = [
             "Patient",
             "Observation",
             "Encounter",
@@ -399,6 +410,7 @@ fn definitions() -> &'static Definitions {
             "Practitioner",
             "RiskAssessment",
             "ValueSet",
+            "DocumentReference",
         ];
         let mut all: Definitions = COMMON
             .iter()

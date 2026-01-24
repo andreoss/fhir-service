@@ -179,6 +179,10 @@ fn routes() -> Router<AppState> {
                 "/{type}/$includes",
                 get(crate::operation::includes_type).post(crate::operation::includes_type),
             )
+            .route(
+                "/DocumentReference/$docref",
+                get(crate::operation::docref_query).post(crate::operation::docref_body),
+            )
             .route("/$convert-data", post(crate::operation::convert_data))
             .route(
                 "/{type}/$validate",
