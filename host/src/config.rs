@@ -1,3 +1,4 @@
+use fhir_api::Authorization;
 use fhir_core::{Error, FhirVersion};
 use std::collections::BTreeMap;
 use std::fmt;
@@ -15,6 +16,12 @@ pub const ENV_BACKEND: &str = "FHIR_BACKEND";
 pub const ENV_VERSION: &str = "FHIR_VERSION";
 pub const ENV_DATABASE_URL: &str = "FHIR_DATABASE_URL";
 pub const ENV_DATA_DIR: &str = "FHIR_DATA_DIR";
+pub const ENV_AUTH_ISSUER: &str = "FHIR_AUTH_ISSUER";
+pub const ENV_AUTH_AUTHORIZE: &str = "FHIR_AUTH_AUTHORIZE";
+pub const ENV_AUTH_TOKEN: &str = "FHIR_AUTH_TOKEN";
+pub const ENV_AUTH_INTROSPECT: &str = "FHIR_AUTH_INTROSPECT";
+pub const ENV_AUTH_SCOPES: &str = "FHIR_AUTH_SCOPES";
+pub const ENV_AUTH_CAPABILITIES: &str = "FHIR_AUTH_CAPABILITIES";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Backend {
@@ -55,6 +62,43 @@ pub struct Config {
     pub version: FhirVersion,
     pub database_url: String,
     pub data_dir: Option<PathBuf>,
+    pub authorization: Option<Authorization>,
+}
+
+fn listed(env: &BTreeMap<String, String>, key: &str) -> Vec<String> {
+    get(env, key)
+        .map(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|part| !part.is_empty())
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn authorization(env: &BTreeMap<String, String>) -> Result<Option<Authorization>, Error> {
+    let Some(issuer) = get(env, ENV_AUTH_ISSUER) else {
+        return Ok(None);
+    };
+    let authorize = get(env, ENV_AUTH_AUTHORIZE).ok_or_else(|| {
+        Error::Config(format!(
+            "{ENV_AUTH_AUTHORIZE} is required once {ENV_AUTH_ISSUER} is set"
+        ))
+    })?;
+    let token = get(env, ENV_AUTH_TOKEN).ok_or_else(|| {
+        Error::Config(format!(
+            "{ENV_AUTH_TOKEN} is required once {ENV_AUTH_ISSUER} is set"
+        ))
+    })?;
+    let mut active = Authorization::new(issuer, authorize, token)
+        .with_scopes(listed(env, ENV_AUTH_SCOPES))
+        .with_capabilities(listed(env, ENV_AUTH_CAPABILITIES));
+    if let Some(endpoint) = get(env, ENV_AUTH_INTROSPECT) {
+        active = active.with_introspection(endpoint);
+    }
+    Ok(Some(active))
 }
 
 impl Config {
@@ -112,6 +156,7 @@ impl Config {
             version,
             database_url,
             data_dir,
+            authorization: authorization(env)?,
         })
     }
 }
@@ -120,8 +165,15 @@ impl fmt::Display for Config {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "backend={} version={} bind={} data_dir={:?} database_url=redacted",
-            self.backend, self.version, self.bind, self.data_dir
+            "backend={} version={} bind={} data_dir={:?} database_url=redacted authorization={}",
+            self.backend,
+            self.version,
+            self.bind,
+            self.data_dir,
+            match self.authorization {
+                Some(_) => "active",
+                None => "none",
+            }
         )
     }
 }
@@ -136,6 +188,42 @@ mod tests {
 
     fn env_empty() -> BTreeMap<String, String> {
         BTreeMap::new()
+    }
+
+    #[test]
+    fn an_unset_issuer_leaves_the_instance_unsecured() {
+        let config = Config::parse(&env_empty()).expect("defaults must parse");
+        assert_eq!(config.authorization, None);
+    }
+
+    #[test]
+    fn an_issuer_without_its_endpoints_fails_fast() {
+        let mut env = env_empty();
+        env.insert(ENV_AUTH_ISSUER.to_owned(), "https://issuer.example.org".to_owned());
+        let error = Config::parse(&env).expect_err("a half-set authorization must fail");
+        assert!(matches!(error, Error::Config(_)));
+        assert!(error.to_string().contains(ENV_AUTH_AUTHORIZE));
+        env.insert(ENV_AUTH_AUTHORIZE.to_owned(), "https://issuer.example.org/a".to_owned());
+        let error = Config::parse(&env).expect_err("a missing token endpoint must fail");
+        assert!(error.to_string().contains(ENV_AUTH_TOKEN));
+    }
+
+    #[test]
+    fn the_configured_authorization_is_the_one_reported() {
+        let mut env = env_empty();
+        env.insert(ENV_AUTH_ISSUER.to_owned(), "https://issuer.example.org".to_owned());
+        env.insert(ENV_AUTH_AUTHORIZE.to_owned(), "https://issuer.example.org/a".to_owned());
+        env.insert(ENV_AUTH_TOKEN.to_owned(), "https://issuer.example.org/t".to_owned());
+        env.insert(ENV_AUTH_INTROSPECT.to_owned(), "https://issuer.example.org/i".to_owned());
+        env.insert(ENV_AUTH_SCOPES.to_owned(), "system/*.read, system/*.write".to_owned());
+        env.insert(ENV_AUTH_CAPABILITIES.to_owned(), "client-confidential-symmetric".to_owned());
+        let config = Config::parse(&env).expect("a complete authorization must parse");
+        let active = config.authorization.clone().expect("authorization must be active");
+        assert_eq!(active.issuer, "https://issuer.example.org");
+        assert_eq!(active.introspect.as_deref(), Some("https://issuer.example.org/i"));
+        assert_eq!(active.scopes, vec!["system/*.read".to_owned(), "system/*.write".to_owned()]);
+        assert_eq!(active.capabilities, vec!["client-confidential-symmetric".to_owned()]);
+        assert!(config.to_string().contains("authorization=active"));
     }
 
     #[test]

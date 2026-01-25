@@ -318,6 +318,9 @@ pub fn statement(state: &AppState, base: &str) -> Value {
         .collect();
     let mut rest = Map::new();
     rest.insert("mode".to_owned(), json!("server"));
+    if let Some(security) = crate::smart::security(state) {
+        rest.insert("security".to_owned(), security);
+    }
     rest.insert("interaction".to_owned(), coded(&system_interactions()));
     rest.insert("searchParam".to_owned(), common_entries());
     rest.insert("operation".to_owned(), Value::Array(system));

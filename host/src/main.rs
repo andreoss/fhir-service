@@ -36,6 +36,9 @@ async fn run() -> Result<(), Error> {
         check: store_dependency,
     }];
     let mut service = Service::started(Arc::clone(&store), config.version, dependencies).await?;
+    if let Some(authorization) = config.authorization.clone() {
+        service = service.with_authorization(authorization);
+    }
     if let Some(outputs) = &outputs {
         service = service.with_outputs(Arc::clone(outputs));
     }

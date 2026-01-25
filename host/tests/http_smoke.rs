@@ -1186,3 +1186,89 @@ fn live_extended_operations_answer() {
     assert_eq!(unknown.status, 404);
     assert_eq!(ids(&below.body), vec!["ob-o1".to_owned()]);
 }
+
+fn spawn_authorized() -> (Child, u16) {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_fhir-host"))
+        .env("FHIR_BACKEND", "memory")
+        .env("FHIR_BIND", "127.0.0.1:0")
+        .env("FHIR_VERSION", "R4")
+        .env("FHIR_AUTH_ISSUER", "https://issuer.example.org")
+        .env("FHIR_AUTH_AUTHORIZE", "https://issuer.example.org/authorize")
+        .env("FHIR_AUTH_TOKEN", "https://issuer.example.org/token")
+        .env("FHIR_AUTH_SCOPES", "system/*.read,system/*.write")
+        .env_remove("FHIR_DATABASE_URL")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to spawn binary");
+    let stdout = child.stdout.take().expect("missing stdout");
+    let mut line = String::new();
+    BufReader::new(stdout)
+        .read_line(&mut line)
+        .expect("failed to read the announced address");
+    match line.trim().rsplit_once(':').and_then(|(_, port)| port.parse().ok()) {
+        Some(port) => (child, port),
+        None => {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("server did not announce an address, said {line:?}");
+        }
+    }
+}
+
+#[test]
+fn live_conformance_is_served_from_the_running_routes() {
+    let (child, port) = spawn_server();
+    let statement = request(port, "GET", "/metadata", &[], &[]);
+    let definitions = request(port, "GET", "/OperationDefinition", &[], &[]);
+    let export = request(port, "GET", "/OperationDefinition/export", &[], &[]);
+    let unknown = request(port, "GET", "/OperationDefinition/nonesuch", &[], &[]);
+    let discovery = request(port, "GET", "/.well-known/smart-configuration", &[], &[]);
+    stop(child);
+
+    assert_eq!(statement.status, 200, "metadata failed: {}", statement.body);
+    let value: serde_json::Value = serde_json::from_str(&statement.body).unwrap();
+    assert_eq!(value["resourceType"], "CapabilityStatement");
+    assert_eq!(value["fhirVersion"], "4.0.1");
+    assert!(value["rest"][0]["security"].is_null());
+    let patient = value["rest"][0]["resource"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["type"] == "Patient")
+        .expect("Patient must be listed")
+        .clone();
+    assert!(patient["searchParam"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|param| param["name"] == "birthdate"));
+
+    assert_eq!(definitions.status, 200);
+    assert_eq!(export.status, 200);
+    let exported: serde_json::Value = serde_json::from_str(&export.body).unwrap();
+    assert_eq!(exported["resourceType"], "OperationDefinition");
+    assert_eq!(exported["code"], "export");
+    assert_eq!(unknown.status, 404);
+    assert_eq!(discovery.status, 404);
+}
+
+#[test]
+fn live_discovery_matches_the_configured_authorization() {
+    let (child, port) = spawn_authorized();
+    let discovery = request(port, "GET", "/.well-known/smart-configuration", &[], &[]);
+    let statement = request(port, "GET", "/metadata", &[], &[]);
+    stop(child);
+
+    assert_eq!(discovery.status, 200, "discovery failed: {}", discovery.body);
+    let document: serde_json::Value = serde_json::from_str(&discovery.body).unwrap();
+    assert_eq!(document["issuer"], "https://issuer.example.org");
+    assert_eq!(document["token_endpoint"], "https://issuer.example.org/token");
+    assert_eq!(document["scopes_supported"][0], "system/*.read");
+
+    let value: serde_json::Value = serde_json::from_str(&statement.body).unwrap();
+    assert_eq!(
+        value["rest"][0]["security"]["service"][0]["coding"][0]["code"],
+        "SMART-on-FHIR"
+    );
+}

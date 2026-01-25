@@ -10,6 +10,7 @@ use tokio::net::TcpListener;
 
 use crate::capability::capability;
 use crate::definition::{operation_definition, operation_definitions};
+use crate::smart::configuration;
 use crate::handlers::{
     compartment_definition, compartment_definitions, compartment_search, conditional_delete,
     conditional_patch, conditional_update, create, delete_instance, health,
@@ -32,6 +33,7 @@ pub struct AppState {
     pub entries: Arc<tokio::sync::Semaphore>,
     pub templates: Arc<dyn Templates>,
     pub terminology: Arc<dyn fhir_store::Terminology>,
+    pub authorization: Option<Arc<crate::smart::Authorization>>,
 }
 
 #[derive(Clone)]
@@ -64,6 +66,7 @@ impl Service {
                 parameters: Arc::new(tokio::sync::Mutex::new(())),
                 entries: Arc::new(tokio::sync::Semaphore::new(crate::bundle::ENTRIES_AT_ONCE)),
                 templates: Arc::new(ApprovedTemplates::default()),
+                authorization: None,
             },
         }
     }
@@ -99,6 +102,15 @@ impl Service {
         Service {
             state: AppState {
                 terminology,
+                ..self.state
+            },
+        }
+    }
+
+    pub fn with_authorization(self, authorization: crate::smart::Authorization) -> Service {
+        Service {
+            state: AppState {
+                authorization: Some(Arc::new(authorization)),
                 ..self.state
             },
         }
@@ -211,6 +223,7 @@ fn entries() -> Vec<Entry> {
         entry("/", BOTH, get(search_system).post(crate::bundle::process)),
         entry("/health", READ, get(health)),
         entry("/metadata", READ, get(capability)),
+        entry("/.well-known/smart-configuration", READ, get(configuration)),
         entry(
             "/SearchParameter/$status",
             &[Verb::Get, Verb::Post, Verb::Put],

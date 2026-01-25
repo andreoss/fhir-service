@@ -357,3 +357,69 @@ async fn a_required_parameter_is_one_the_handler_insists_on() {
         assert_eq!(status, StatusCode::BAD_REQUEST, "{name} must be required");
     }
 }
+
+fn authorized() -> Service {
+    service(FhirVersion::R4).with_authorization(
+        fhir_api::Authorization::new(
+            "https://issuer.example.org",
+            "https://issuer.example.org/authorize",
+            "https://issuer.example.org/token",
+        )
+        .with_introspection("https://issuer.example.org/introspect")
+        .with_scopes(vec!["system/*.read".to_owned(), "system/*.write".to_owned()])
+        .with_capabilities(vec!["client-confidential-symmetric".to_owned()]),
+    )
+}
+
+#[tokio::test]
+async fn an_unsecured_instance_publishes_no_discovery_document() {
+    let app = service(FhirVersion::R4);
+    let (status, body) = reply(&app, "GET", "/.well-known/smart-configuration", b"").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(body.contains("OperationOutcome"));
+    let statement = statement(&app).await;
+    assert!(statement["rest"][0].get("security").is_none());
+}
+
+#[tokio::test]
+async fn discovery_reports_the_authorization_the_instance_runs_under() {
+    let app = authorized();
+    let (status, body) = reply(&app, "GET", "/.well-known/smart-configuration", b"").await;
+    assert_eq!(status, StatusCode::OK);
+    let document: Value = serde_json::from_str(&body).expect("the document must be json");
+    assert_eq!(document["issuer"], "https://issuer.example.org");
+    assert_eq!(
+        document["authorization_endpoint"],
+        "https://issuer.example.org/authorize"
+    );
+    assert_eq!(document["token_endpoint"], "https://issuer.example.org/token");
+    assert_eq!(
+        document["introspection_endpoint"],
+        "https://issuer.example.org/introspect"
+    );
+    assert_eq!(document["scopes_supported"][0], "system/*.read");
+    assert_eq!(document["capabilities"][0], "client-confidential-symmetric");
+}
+
+#[tokio::test]
+async fn the_statement_carries_the_addresses_discovery_publishes() {
+    let app = authorized();
+    let (_, body) = reply(&app, "GET", "/.well-known/smart-configuration", b"").await;
+    let document: Value = serde_json::from_str(&body).unwrap();
+    let statement = statement(&app).await;
+    let security = &statement["rest"][0]["security"];
+    assert_eq!(
+        security["service"][0]["coding"][0]["code"],
+        "SMART-on-FHIR"
+    );
+    let uris = security["extension"][0]["extension"].as_array().unwrap();
+    let held = |name: &str| {
+        uris.iter()
+            .find(|item| item["url"] == name)
+            .map(|item| item["valueUri"].clone())
+            .unwrap_or(Value::Null)
+    };
+    assert_eq!(held("authorize"), document["authorization_endpoint"]);
+    assert_eq!(held("token"), document["token_endpoint"]);
+    assert_eq!(held("introspect"), document["introspection_endpoint"]);
+}
