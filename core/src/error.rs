@@ -24,6 +24,7 @@ pub enum Error {
     UnsupportedParameter(String),
     Forbidden(String),
     NoMatch(String),
+    Unauthenticated(String),
 }
 
 impl Error {
@@ -89,6 +90,10 @@ impl Error {
             Error::Forbidden(message) => {
                 OperationOutcome::error(IssueCode::Forbidden, format!("out of scope: {message}"))
             }
+            Error::Unauthenticated(message) => OperationOutcome::error(
+                IssueCode::Login,
+                format!("not authenticated: {message}"),
+            ),
             Error::NoMatch(message) => {
                 OperationOutcome::error(IssueCode::BusinessRule, message.clone())
             }
@@ -119,6 +124,7 @@ impl fmt::Display for Error {
             Error::InvalidParameter(message) => write!(f, "invalid parameter: {message}"),
             Error::UnsupportedParameter(message) => write!(f, "unsupported parameter: {message}"),
             Error::Forbidden(message) => write!(f, "out of scope: {message}"),
+            Error::Unauthenticated(message) => write!(f, "not authenticated: {message}"),
             Error::NoMatch(message) => write!(f, "{message}"),
         }
     }
