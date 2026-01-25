@@ -22,7 +22,7 @@ const OUTCOME: &str = "OperationOutcome";
 
 const LISTED: [&str; 2] = ["_type", "_typeFilter"];
 
-const DELETE_PARAMS: [&str; 7] = [
+pub(crate) const DELETE_PARAMS: [&str; 7] = [
     "_type",
     "_exclude",
     "_maxCount",
@@ -34,13 +34,13 @@ const DELETE_PARAMS: [&str; 7] = [
 
 const DELETE_LISTED: [&str; 2] = ["_type", "_exclude"];
 
-const UPDATE_PARAMS: [&str; 3] = ["_type", "_exclude", "_maxCount"];
+pub(crate) const UPDATE_PARAMS: [&str; 3] = ["_type", "_exclude", "_maxCount"];
 
-const REINDEX_PARAMS: [&str; 3] = ["_type", "_url", "_resource"];
+pub(crate) const REINDEX_PARAMS: [&str; 3] = ["_type", "_url", "_resource"];
 
 const REINDEX_LISTED: [&str; 3] = ["_type", "_url", "_resource"];
 
-const ACCEPTED_PARAMS: [&str; 9] = [
+pub(crate) const ACCEPTED_PARAMS: [&str; 9] = [
     "_type",
     "_typeFilter",
     "_since",

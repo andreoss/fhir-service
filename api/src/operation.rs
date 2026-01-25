@@ -176,7 +176,7 @@ fn submitted(body: &[u8]) -> Result<Option<Value>, Error> {
         .map_err(|error| Error::InvalidJson(error.to_string()))
 }
 
-const EVERYTHING_PARAMS: [&str; 3] = ["_since", "_till", "_type"];
+pub(crate) const EVERYTHING_PARAMS: [&str; 3] = ["_since", "_till", "_type"];
 
 pub async fn everything(
     State(state): State<AppState>,
@@ -426,7 +426,7 @@ async fn related(
     )))
 }
 
-const DOCREF_PARAMS: [&str; 5] = ["patient", "start", "end", "type", "on-demand"];
+pub(crate) const DOCREF_PARAMS: [&str; 5] = ["patient", "start", "end", "type", "on-demand"];
 
 pub async fn docref_query(
     State(state): State<AppState>,
@@ -515,7 +515,7 @@ async fn documents(
     crate::handlers::respond_page(state, request, path, Some(raw), headers).await
 }
 
-const EXPAND_PARAMS: [&str; 11] = [
+pub(crate) const EXPAND_PARAMS: [&str; 11] = [
     "url",
     "filter",
     "count",

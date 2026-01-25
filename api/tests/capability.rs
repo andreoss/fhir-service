@@ -229,3 +229,131 @@ async fn the_statement_reports_the_running_version_and_build() {
         assert!(statement["date"].as_str().is_some());
     }
 }
+
+fn advertised(statement: &Value) -> BTreeSet<String> {
+    let mut found = names(statement["rest"][0].get("operation"));
+    for entry in statement["rest"][0]["resource"].as_array().unwrap() {
+        found.extend(names(entry.get("operation")));
+    }
+    found
+}
+
+#[tokio::test]
+async fn every_advertised_operation_has_a_definition() {
+    let app = service(FhirVersion::R4);
+    let statement = statement(&app).await;
+    for code in advertised(&statement) {
+        let (status, body) = reply(&app, "GET", &format!("/OperationDefinition/{code}"), b"").await;
+        assert_eq!(status, StatusCode::OK, "{code}");
+        let value: Value = serde_json::from_str(&body).expect("the definition must be json");
+        assert_eq!(value["resourceType"], "OperationDefinition");
+        assert_eq!(value["code"], code.as_str());
+        assert_eq!(value["status"], "active");
+    }
+}
+
+#[tokio::test]
+async fn the_definitions_listed_are_the_operations_routed() {
+    let app = service(FhirVersion::R4);
+    let (status, body) = reply(&app, "GET", "/OperationDefinition", b"").await;
+    assert_eq!(status, StatusCode::OK);
+    let bundle: Value = serde_json::from_str(&body).expect("the bundle must be json");
+    let listed: BTreeSet<String> = bundle["entry"]
+        .as_array()
+        .expect("the bundle must carry entries")
+        .iter()
+        .map(|entry| entry["resource"]["code"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(listed, advertised(&statement(&app).await));
+}
+
+#[tokio::test]
+async fn an_unknown_operation_has_no_definition() {
+    let app = service(FhirVersion::R4);
+    let (status, body) = reply(&app, "GET", "/OperationDefinition/nonesuch", b"").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(body.contains("OperationOutcome"));
+}
+
+#[tokio::test]
+async fn a_definition_declares_the_levels_and_types_its_routes_serve() {
+    let app = service(FhirVersion::R4);
+    async fn read(app: &Service, code: &str) -> Value {
+        let (_, body) = reply(app, "GET", &format!("/OperationDefinition/{code}"), b"").await;
+        serde_json::from_str::<Value>(&body).expect("the definition must be json")
+    }
+    let validate = read(&app, "validate").await;
+    assert_eq!(validate["system"], Value::Bool(false));
+    assert_eq!(validate["type"], Value::Bool(true));
+    assert_eq!(validate["instance"], Value::Bool(true));
+    assert!(validate["resource"].as_array().unwrap().is_empty());
+    let export = read(&app, "export").await;
+    assert_eq!(export["system"], Value::Bool(true));
+    let scoped: BTreeSet<String> = export["resource"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item.as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(scoped, BTreeSet::from(["Group".to_owned(), "Patient".to_owned()]));
+    let everything = read(&app, "everything").await;
+    assert_eq!(everything["instance"], Value::Bool(true));
+    assert_eq!(everything["resource"][0], "Patient");
+}
+
+#[tokio::test]
+async fn a_definition_declares_the_parameters_the_handler_accepts() {
+    let app = service(FhirVersion::R4);
+    let (_, body) = reply(&app, "GET", "/OperationDefinition/export", b"").await;
+    let export: Value = serde_json::from_str(&body).unwrap();
+    let declared = names(export.get("parameter"));
+    for name in ["_type", "_since", "_till", "_outputFormat", "_typeFilter"] {
+        assert!(declared.contains(name), "{name}");
+    }
+    let (_, body) = reply(&app, "GET", "/OperationDefinition/expand", b"").await;
+    let expand: Value = serde_json::from_str(&body).unwrap();
+    assert!(names(expand.get("parameter")).contains("filter"));
+}
+
+#[tokio::test]
+async fn a_required_parameter_is_one_the_handler_insists_on() {
+    let app = service(FhirVersion::R4);
+    let (_, body) = reply(&app, "GET", "/OperationDefinition/convert-data", b"").await;
+    let definition: Value = serde_json::from_str(&body).unwrap();
+    let required: Vec<String> = definition["parameter"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|item| item["use"] == "in" && item["min"] == 1)
+        .map(|item| item["name"].as_str().unwrap().to_owned())
+        .collect();
+    assert!(!required.is_empty());
+    let complete = serde_json::json!({
+        "resourceType": "Parameters",
+        "parameter": [
+            {"name": "inputData", "valueString": "MSH|^~\\&|"},
+            {"name": "inputDataType", "valueString": "hl7v2"},
+            {"name": "templateCollectionReference", "valueString": "builtin"},
+            {"name": "rootTemplate", "valueString": "ADT_A01"}
+        ]
+    });
+    for name in required {
+        let mut body = complete.clone();
+        let kept: Vec<Value> = body["parameter"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|item| item["name"] != name.as_str())
+            .cloned()
+            .collect();
+        body["parameter"] = Value::Array(kept);
+        let (status, _) = reply(
+            &app,
+            "POST",
+            "/$convert-data",
+            &serde_json::to_vec(&body).unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{name} must be required");
+    }
+}

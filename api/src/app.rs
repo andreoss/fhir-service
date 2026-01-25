@@ -9,6 +9,7 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 
 use crate::capability::capability;
+use crate::definition::{operation_definition, operation_definitions};
 use crate::handlers::{
     compartment_definition, compartment_definitions, compartment_search, conditional_delete,
     conditional_patch, conditional_update, create, delete_instance, health,
@@ -218,6 +219,8 @@ fn entries() -> Vec<Entry> {
         entry("/SearchParameter/$reindex", WRITE, post(parameter_reindex)),
         entry("/SearchParameter/$refresh", WRITE, post(parameter_refresh)),
         entry("/CompartmentDefinition", READ, get(compartment_definitions)),
+        entry("/OperationDefinition", READ, get(operation_definitions)),
+        entry("/OperationDefinition/{code}", READ, get(operation_definition)),
         entry("/CompartmentDefinition/{id}", READ, get(compartment_definition)),
         entry("/{type}/{id}/{target}", READ, get(compartment_search)),
         entry(
