@@ -502,3 +502,58 @@ async fn the_status_report_names_the_unsupported_parameters_of_the_version() {
     let (status, _) = reply(&app, "GET", "/Patient?_filter=name%20eq%20a", b"").await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
+
+#[tokio::test]
+async fn versions_reports_the_running_build() {
+    for version in [FhirVersion::Stu3, FhirVersion::R4, FhirVersion::R4b, FhirVersion::R5] {
+        let app = service(version);
+        for method in ["GET", "POST"] {
+            let (status, body) = reply(&app, method, "/$versions", b"").await;
+            assert_eq!(status, StatusCode::OK, "{method} {body}");
+            let value: Value = serde_json::from_str(&body).expect("the report must be json");
+            assert_eq!(value["resourceType"], "Parameters");
+            let listed: BTreeSet<String> = value["parameter"]
+                .as_array()
+                .expect("versions must be listed")
+                .iter()
+                .filter(|item| item["name"] == "version")
+                .map(|item| item["valueCode"].as_str().unwrap().to_owned())
+                .collect();
+            assert_eq!(
+                listed,
+                BTreeSet::from([
+                    "3.0.2".to_owned(),
+                    "4.0.1".to_owned(),
+                    "4.3.0".to_owned(),
+                    "5.0.0".to_owned(),
+                ])
+            );
+            let named = |name: &str| {
+                value["parameter"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|item| item["name"] == name)
+                    .map(|item| item["valueCode"].clone())
+                    .unwrap_or(Value::Null)
+            };
+            assert_eq!(named("default"), Value::String(version.release().to_owned()));
+            assert_eq!(named("build"), Value::String(env!("CARGO_PKG_VERSION").to_owned()));
+        }
+    }
+}
+
+#[tokio::test]
+async fn the_build_the_statement_reports_is_the_build_versions_reports() {
+    let app = service(FhirVersion::R4);
+    let (_, body) = reply(&app, "GET", "/$versions", b"").await;
+    let reported: Value = serde_json::from_str(&body).unwrap();
+    let build = reported["parameter"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["name"] == "build")
+        .unwrap()["valueCode"]
+        .clone();
+    assert_eq!(statement(&app).await["software"]["version"], build);
+}

@@ -1224,6 +1224,7 @@ fn live_conformance_is_served_from_the_running_routes() {
     let export = request(port, "GET", "/OperationDefinition/export", &[], &[]);
     let unknown = request(port, "GET", "/OperationDefinition/nonesuch", &[], &[]);
     let discovery = request(port, "GET", "/.well-known/smart-configuration", &[], &[]);
+    let versions = request(port, "GET", "/$versions", &[], &[]);
     stop(child);
 
     assert_eq!(statement.status, 200, "metadata failed: {}", statement.body);
@@ -1251,6 +1252,18 @@ fn live_conformance_is_served_from_the_running_routes() {
     assert_eq!(exported["code"], "export");
     assert_eq!(unknown.status, 404);
     assert_eq!(discovery.status, 404);
+
+    assert_eq!(versions.status, 200, "versions failed: {}", versions.body);
+    let reported: serde_json::Value = serde_json::from_str(&versions.body).unwrap();
+    assert_eq!(reported["resourceType"], "Parameters");
+    let default = reported["parameter"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["name"] == "default")
+        .expect("a default version must be reported")
+        .clone();
+    assert_eq!(default["valueCode"], "4.0.1");
 }
 
 #[test]

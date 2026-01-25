@@ -8,7 +8,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 
-use crate::capability::capability;
+use crate::capability::{capability, version_report};
 use crate::definition::{operation_definition, operation_definitions};
 use crate::smart::configuration;
 use crate::handlers::{
@@ -223,6 +223,7 @@ fn entries() -> Vec<Entry> {
         entry("/", BOTH, get(search_system).post(crate::bundle::process)),
         entry("/health", READ, get(health)),
         entry("/metadata", READ, get(capability)),
+        entry("/$versions", BOTH, get(version_report).post(version_report)),
         entry("/.well-known/smart-configuration", READ, get(configuration)),
         entry(
             "/SearchParameter/$status",

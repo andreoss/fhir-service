@@ -358,3 +358,26 @@ pub async fn capability(
     )
         .into_response())
 }
+
+pub fn versions(state: &AppState) -> Value {
+    let mut listed: Vec<Value> = fhir_core::FhirVersion::ALL
+        .iter()
+        .map(|version| json!({"name": "version", "valueCode": version.release()}))
+        .collect();
+    listed.push(json!({"name": "default", "valueCode": state.version.release()}));
+    listed.push(json!({"name": "build", "valueCode": BUILD}));
+    json!({"resourceType": "Parameters", "parameter": listed})
+}
+
+pub async fn version_report(State(state): State<AppState>) -> Result<Response, AppError> {
+    let body = serde_json::to_vec(&versions(&state))
+        .map_err(|error| fhir_core::Error::Internal(error.to_string()))?;
+    Ok((
+        [
+            (header::CONTENT_TYPE, FHIR_JSON),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        body,
+    )
+        .into_response())
+}

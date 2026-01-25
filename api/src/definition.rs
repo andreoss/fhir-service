@@ -94,7 +94,7 @@ fn output(code: &str) -> Option<&'static str> {
         "expand" => Some("ValueSet"),
         "validate" => Some("OperationOutcome"),
         "convert-data" => Some("Resource"),
-        "status" | "refresh" | "member-match" | "purge-history" => Some("Parameters"),
+        "status" | "refresh" | "member-match" | "purge-history" | "versions" => Some("Parameters"),
         _ => None,
     }
 }
