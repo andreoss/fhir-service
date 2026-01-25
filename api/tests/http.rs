@@ -1895,7 +1895,18 @@ async fn a_replaced_definition_replaces_the_registration() {
 async fn statuses(app: &Service, method: &str, uri: &str, body: &[u8]) -> serde_json::Value {
     let reply = request(app, method, uri, &[], body).await;
     assert_eq!(reply.status, StatusCode::OK, "{uri} gave {}", reply.body);
-    serde_json::from_str(&reply.body).unwrap()
+    let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
+    let registered: Vec<serde_json::Value> = value["parameter"]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter(|item| item["name"] != "unsupported")
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+    serde_json::json!({"resourceType": "Parameters", "parameter": registered})
 }
 
 fn status_of(value: &serde_json::Value, url: &str) -> Option<String> {

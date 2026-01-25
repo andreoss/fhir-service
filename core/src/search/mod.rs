@@ -19,12 +19,12 @@ pub use modifier::Modifier;
 pub use parameter::ParameterSpec;
 pub use path::select;
 pub use registry::{
-    common, for_type, lookup, references, CompositeDef, ParamDef, ParamStatus, RegisteredParam, Registry,
-    SubDef, Target,
+    common, common_in, for_type, for_type_in, lookup, lookup_in, references, references_in,
+    CompositeDef, ParamDef, ParamStatus, RegisteredParam, Registry, SubDef, Target,
 };
 pub use value::{Comparator, SearchValue, Token, TokenSystem, ValueType};
 
-use crate::{FhirInstant, ResourceId};
+use crate::{FhirInstant, FhirVersion, ResourceId};
 use serde_json::Value;
 
 pub fn pointers(element: &Value) -> Vec<String> {
@@ -301,6 +301,15 @@ fn component(sub: &SubDef, value: &SearchValue, element: &Value) -> bool {
         .iter()
         .flat_map(|path| select(element, path))
         .any(|found| value.matches(found))
+}
+
+pub fn unsupported(version: FhirVersion) -> &'static [&'static str] {
+    match version {
+        FhirVersion::Stu3 => &["_text", "_content", "_query"],
+        FhirVersion::R4 | FhirVersion::R4b | FhirVersion::R5 => {
+            &["_text", "_content", "_filter", "_query"]
+        }
+    }
 }
 
 #[cfg(test)]

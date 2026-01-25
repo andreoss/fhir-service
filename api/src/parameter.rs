@@ -91,6 +91,14 @@ pub fn status_report(state: &AppState, wanted: Option<&str>) -> Result<Vec<u8>, 
             })
         })
         .collect();
+    let mut rendered = rendered;
+    if wanted.is_none() {
+        rendered.extend(
+            fhir_core::search::unsupported(state.registry.fhir_version())
+                .iter()
+                .map(|name| json!({"name": "unsupported", "valueCode": name})),
+        );
+    }
     let body = json!({"resourceType": "Parameters", "parameter": rendered});
     Ok(serde_json::to_vec(&body).expect("status report is serializable"))
 }

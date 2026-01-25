@@ -1,6 +1,6 @@
 use crate::search::modifier::{value_of, Modifier};
 use crate::search::value::{SearchValue, ValueType};
-use crate::{Error, ResourceType};
+use crate::{Error, FhirVersion, ResourceType};
 use std::sync::{Arc, OnceLock, RwLock};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -142,6 +142,8 @@ struct StaticDef {
     target: StaticTarget,
     targets: &'static [&'static str],
     sortable: bool,
+    since: FhirVersion,
+    until: Option<FhirVersion>,
 }
 
 fn owned(paths: &'static [&'static str]) -> Vec<String> {
@@ -184,6 +186,8 @@ const COMMON: &[StaticDef] = &[
         target: StaticTarget::Id,
         targets: &[],
         sortable: true,
+        since: FhirVersion::Stu3,
+        until: None,
     },
     StaticDef {
         name: "_lastUpdated",
@@ -191,6 +195,8 @@ const COMMON: &[StaticDef] = &[
         target: StaticTarget::LastUpdated,
         targets: &[],
         sortable: true,
+        since: FhirVersion::Stu3,
+        until: None,
     },
     StaticDef {
         name: "_profile",
@@ -198,6 +204,8 @@ const COMMON: &[StaticDef] = &[
         target: StaticTarget::Path(&["meta.profile"]),
         targets: &[],
         sortable: false,
+        since: FhirVersion::Stu3,
+        until: None,
     },
     StaticDef {
         name: "_tag",
@@ -205,6 +213,8 @@ const COMMON: &[StaticDef] = &[
         target: StaticTarget::Path(&["meta.tag"]),
         targets: &[],
         sortable: false,
+        since: FhirVersion::Stu3,
+        until: None,
     },
     StaticDef {
         name: "_security",
@@ -212,6 +222,8 @@ const COMMON: &[StaticDef] = &[
         target: StaticTarget::Path(&["meta.security"]),
         targets: &[],
         sortable: false,
+        since: FhirVersion::Stu3,
+        until: None,
     },
 ];
 
@@ -222,6 +234,8 @@ const fn def(name: &'static str, value_type: ValueType, paths: &'static [&'stati
         target: StaticTarget::Path(paths),
         targets: &[],
         sortable: false,
+        since: FhirVersion::Stu3,
+        until: None,
     }
 }
 
@@ -236,6 +250,26 @@ const fn refers(
         target: StaticTarget::Path(paths),
         targets,
         sortable: false,
+        since: FhirVersion::Stu3,
+        until: None,
+    }
+}
+
+const fn refers_in(
+    name: &'static str,
+    paths: &'static [&'static str],
+    targets: &'static [&'static str],
+    since: FhirVersion,
+    until: Option<FhirVersion>,
+) -> StaticDef {
+    StaticDef {
+        name,
+        value_type: ValueType::Reference,
+        target: StaticTarget::Path(paths),
+        targets,
+        sortable: false,
+        since,
+        until,
     }
 }
 
@@ -250,6 +284,8 @@ const fn sorted(
         target: StaticTarget::Path(paths),
         targets: &[],
         sortable: true,
+        since: FhirVersion::Stu3,
+        until: None,
     }
 }
 
@@ -301,6 +337,8 @@ const OBSERVATION: &[StaticDef] = &[
         target: StaticTarget::Composite(&CODE_VALUE_QUANTITY),
         targets: &[],
         sortable: false,
+        since: FhirVersion::Stu3,
+        until: None,
     },
     def("component-code", ValueType::Token, &["component.code"]),
     StaticDef {
@@ -309,10 +347,25 @@ const OBSERVATION: &[StaticDef] = &[
         target: StaticTarget::Composite(&COMPONENT_CODE_VALUE_QUANTITY),
         targets: &[],
         sortable: false,
+        since: FhirVersion::Stu3,
+        until: None,
     },
     def("component-value-quantity", ValueType::Quantity, &["component.valueQuantity"]),
     sorted("date", ValueType::Date, &["effectiveDateTime", "effectivePeriod"]),
-    refers("encounter", &["encounter"], &["Encounter"]),
+    refers_in(
+        "context",
+        &["context"],
+        &["Encounter"],
+        FhirVersion::Stu3,
+        Some(FhirVersion::Stu3),
+    ),
+    refers_in(
+        "encounter",
+        &["encounter"],
+        &["Encounter"],
+        FhirVersion::R4,
+        None,
+    ),
     def("identifier", ValueType::Token, &["identifier"]),
     refers("patient", &["subject"], &["Patient"]),
     sorted("status", ValueType::Token, &["status"]),
@@ -396,7 +449,27 @@ fn per_type(resource_type: ResourceType) -> &'static [StaticDef] {
     }
 }
 
-type Definitions = Vec<(Option<&'static str>, Arc<ParamDef>)>;
+type Definitions = Vec<Held>;
+
+struct Held {
+    kind: Option<&'static str>,
+    def: Arc<ParamDef>,
+    since: FhirVersion,
+    until: Option<FhirVersion>,
+}
+
+impl Held {
+    fn spans(&self, version: FhirVersion) -> bool {
+        version >= self.since && self.until.is_none_or(|last| version <= last)
+    }
+
+    fn applies(&self, resource_type: Option<ResourceType>) -> bool {
+        match self.kind {
+            None => true,
+            Some(text) => resource_type.is_some_and(|wanted| wanted.as_str() == text),
+        }
+    }
+}
 
 fn definitions() -> &'static Definitions {
     static DEFINITIONS: OnceLock<Definitions> = OnceLock::new();
@@ -414,54 +487,98 @@ fn definitions() -> &'static Definitions {
         ];
         let mut all: Definitions = COMMON
             .iter()
-            .map(|def| (None, Arc::new(ParamDef::from(def))))
+            .map(|def| Held {
+                kind: None,
+                def: Arc::new(ParamDef::from(def)),
+                since: def.since,
+                until: def.until,
+            })
             .collect();
         for name in TYPES {
             let resource_type: ResourceType = name.parse().expect("built-in type is known");
             for def in per_type(resource_type) {
-                all.push((Some(name), Arc::new(ParamDef::from(def))));
+                all.push(Held {
+                    kind: Some(name),
+                    def: Arc::new(ParamDef::from(def)),
+                    since: def.since,
+                    until: def.until,
+                });
             }
         }
         all
     })
 }
 
+pub fn lookup_in(
+    version: FhirVersion,
+    resource_type: Option<ResourceType>,
+    name: &str,
+) -> Option<Arc<ParamDef>> {
+    definitions()
+        .iter()
+        .find(|held| held.def.name == name && held.applies(resource_type) && held.spans(version))
+        .map(|held| Arc::clone(&held.def))
+}
+
 pub fn lookup(resource_type: Option<ResourceType>, name: &str) -> Option<Arc<ParamDef>> {
     definitions()
         .iter()
-        .find(|(kind, def)| {
-            def.name == name
-                && match kind {
-                    None => true,
-                    Some(text) => resource_type.is_some_and(|wanted| wanted.as_str() == *text),
-                }
-        })
-        .map(|(_, def)| Arc::clone(def))
+        .find(|held| held.def.name == name && held.applies(resource_type))
+        .map(|held| Arc::clone(&held.def))
+}
+
+pub fn for_type_in(version: FhirVersion, resource_type: ResourceType) -> Vec<Arc<ParamDef>> {
+    definitions()
+        .iter()
+        .filter(|held| held.applies(Some(resource_type)) && held.spans(version))
+        .map(|held| Arc::clone(&held.def))
+        .collect()
 }
 
 pub fn for_type(resource_type: ResourceType) -> Vec<Arc<ParamDef>> {
     definitions()
         .iter()
-        .filter(|(kind, _)| kind.is_none() || *kind == Some(resource_type.as_str()))
-        .map(|(_, def)| Arc::clone(def))
+        .filter(|held| held.applies(Some(resource_type)))
+        .map(|held| Arc::clone(&held.def))
+        .collect()
+}
+
+pub fn references_in(version: FhirVersion, resource_type: ResourceType) -> Vec<Arc<ParamDef>> {
+    definitions()
+        .iter()
+        .filter(|held| {
+            held.kind == Some(resource_type.as_str())
+                && held.def.value_type == ValueType::Reference
+                && held.spans(version)
+        })
+        .map(|held| Arc::clone(&held.def))
         .collect()
 }
 
 pub fn references(resource_type: ResourceType) -> Vec<Arc<ParamDef>> {
     definitions()
         .iter()
-        .filter(|(kind, def)| {
-            *kind == Some(resource_type.as_str()) && def.value_type == ValueType::Reference
+        .filter(|held| {
+            held.kind == Some(resource_type.as_str())
+                && held.def.value_type == ValueType::Reference
         })
-        .map(|(_, def)| Arc::clone(def))
+        .map(|held| Arc::clone(&held.def))
+        .collect()
+}
+
+pub fn common_in(version: FhirVersion) -> Vec<Arc<ParamDef>> {
+    definitions()
+        .iter()
+        .filter(|held| held.kind.is_none() && held.spans(version))
+        .map(|held| Arc::clone(&held.def))
         .collect()
 }
 
 pub fn common() -> Vec<Arc<ParamDef>> {
     definitions()
         .iter()
-        .filter(|(kind, _)| kind.is_none())
-        .map(|(_, def)| Arc::clone(def))
+        .filter(|held| held.kind.is_none())
+        .map(|held| Arc::clone(&held.def))
         .collect()
 }
 
@@ -504,9 +621,15 @@ fn accepted(inner: &Inner, entry: &RegisteredParam) -> Result<(), Error> {
     Ok(())
 }
 
-#[derive(Default)]
 pub struct Registry {
     inner: RwLock<Inner>,
+    fhir_version: FhirVersion,
+}
+
+impl Default for Registry {
+    fn default() -> Registry {
+        Registry::for_version(FhirVersion::R4)
+    }
 }
 
 impl Registry {
@@ -514,12 +637,24 @@ impl Registry {
         Registry::default()
     }
 
+    pub fn for_version(fhir_version: FhirVersion) -> Registry {
+        Registry {
+            inner: RwLock::new(Inner::default()),
+            fhir_version,
+        }
+    }
+
+    pub fn fhir_version(&self) -> FhirVersion {
+        self.fhir_version
+    }
+
     pub fn version(&self) -> u64 {
         self.inner.read().map(|inner| inner.version).unwrap_or_default()
     }
 
     pub fn lookup(&self, resource_type: Option<ResourceType>, name: &str) -> Option<Arc<ParamDef>> {
-        lookup(resource_type, name).or_else(|| self.custom(resource_type, name).map(|found| found.def))
+        lookup_in(self.fhir_version, resource_type, name)
+            .or_else(|| self.custom(resource_type, name).map(|found| found.def))
     }
 
     pub fn searchable(
@@ -527,7 +662,7 @@ impl Registry {
         resource_type: Option<ResourceType>,
         name: &str,
     ) -> Result<Option<Arc<ParamDef>>, Error> {
-        if let Some(def) = lookup(resource_type, name) {
+        if let Some(def) = lookup_in(self.fhir_version, resource_type, name) {
             return Ok(Some(def));
         }
         match self.custom(resource_type, name) {
@@ -541,7 +676,7 @@ impl Registry {
     }
 
     pub fn for_type(&self, resource_type: ResourceType) -> Vec<Arc<ParamDef>> {
-        let mut found = for_type(resource_type);
+        let mut found = for_type_in(self.fhir_version, resource_type);
         found.extend(
             self.entries()
                 .into_iter()
@@ -552,7 +687,7 @@ impl Registry {
     }
 
     pub fn references(&self, resource_type: ResourceType) -> Vec<Arc<ParamDef>> {
-        let mut found = references(resource_type);
+        let mut found = references_in(self.fhir_version, resource_type);
         found.extend(
             self.entries()
                 .into_iter()
@@ -629,6 +764,38 @@ impl Registry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_definition_is_visible_only_in_the_versions_it_spans() {
+        let observation: ResourceType = "Observation".parse().unwrap();
+        assert!(lookup_in(FhirVersion::Stu3, Some(observation), "context").is_some());
+        assert!(lookup_in(FhirVersion::Stu3, Some(observation), "encounter").is_none());
+        for version in [FhirVersion::R4, FhirVersion::R4b, FhirVersion::R5] {
+            assert!(lookup_in(version, Some(observation), "encounter").is_some());
+            assert!(lookup_in(version, Some(observation), "context").is_none());
+        }
+        assert!(lookup(Some(observation), "context").is_some());
+        let old: Vec<String> = for_type_in(FhirVersion::Stu3, observation)
+            .iter()
+            .map(|def| def.name.clone())
+            .collect();
+        assert!(old.contains(&"context".to_owned()));
+        assert!(!old.contains(&"encounter".to_owned()));
+        assert!(references_in(FhirVersion::Stu3, observation)
+            .iter()
+            .any(|def| def.name == "context"));
+        assert_eq!(common_in(FhirVersion::Stu3).len(), common().len());
+    }
+
+    #[test]
+    fn a_registry_answers_for_the_version_it_was_built_for() {
+        let old = Registry::for_version(FhirVersion::Stu3);
+        let observation: ResourceType = "Observation".parse().unwrap();
+        assert_eq!(old.fhir_version(), FhirVersion::Stu3);
+        assert!(old.lookup(Some(observation), "encounter").is_none());
+        assert!(old.lookup(Some(observation), "context").is_some());
+        assert!(Registry::new().lookup(Some(observation), "encounter").is_some());
+    }
 
     fn custom(name: &str, base: &str, status: ParamStatus) -> RegisteredParam {
         let resource_type: ResourceType = base.parse().unwrap();

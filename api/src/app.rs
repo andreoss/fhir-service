@@ -62,7 +62,7 @@ impl Service {
                 outputs: None,
                 version,
                 dependencies: Arc::new(dependencies),
-                registry: Arc::new(Registry::new()),
+                registry: Arc::new(Registry::for_version(version)),
                 parameters: Arc::new(tokio::sync::Mutex::new(())),
                 entries: Arc::new(tokio::sync::Semaphore::new(crate::bundle::ENTRIES_AT_ONCE)),
                 templates: Arc::new(ApprovedTemplates::default()),

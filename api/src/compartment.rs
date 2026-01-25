@@ -1,8 +1,9 @@
-use fhir_core::search::compartment::{definitions, CompartmentDef};
+use fhir_core::search::compartment::{definitions_in, VersionedDef};
+use fhir_core::FhirVersion;
 use serde_json::{Map, Value};
 use uuid::Uuid;
 
-pub fn definition_json(def: &CompartmentDef, base: &str) -> Value {
+pub fn definition_json(def: &VersionedDef, base: &str) -> Value {
     let resources: Vec<Value> = def
         .members
         .iter()
@@ -26,8 +27,9 @@ pub fn definition_json(def: &CompartmentDef, base: &str) -> Value {
     })
 }
 
-pub fn definitions_bundle(base: &str, self_url: &str) -> Vec<u8> {
-    let entries: Vec<Value> = definitions()
+pub fn definitions_bundle(version: FhirVersion, base: &str, self_url: &str) -> Vec<u8> {
+    let held = definitions_in(version);
+    let entries: Vec<Value> = held
         .iter()
         .map(|def| {
             serde_json::json!({
@@ -53,12 +55,12 @@ pub fn definitions_bundle(base: &str, self_url: &str) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fhir_core::search::compartment::definition;
+    use fhir_core::search::compartment::definition_in;
 
     #[test]
     fn a_definition_carries_its_code_and_members() {
-        let def = definition("Patient").unwrap();
-        let value = definition_json(def, "http://localhost");
+        let def = definition_in(FhirVersion::R4, "Patient").unwrap();
+        let value = definition_json(&def, "http://localhost");
         assert_eq!(value["resourceType"], "CompartmentDefinition");
         assert_eq!(value["code"], "Patient");
         assert_eq!(value["url"], "http://localhost/CompartmentDefinition/Patient");
@@ -70,9 +72,13 @@ mod tests {
 
     #[test]
     fn every_definition_is_listed_once() {
-        let bytes = definitions_bundle("http://localhost", "http://localhost/CompartmentDefinition");
+        let bytes = definitions_bundle(
+            FhirVersion::R4,
+            "http://localhost",
+            "http://localhost/CompartmentDefinition",
+        );
         let value: Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(value["total"], definitions().len());
+        assert_eq!(value["total"], definitions_in(FhirVersion::R4).len());
         assert_eq!(value["entry"][0]["search"]["mode"], "match");
         assert_eq!(value["link"][0]["relation"], "self");
     }

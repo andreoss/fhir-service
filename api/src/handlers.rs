@@ -669,6 +669,7 @@ fn parameter_value(body: &Value, name: &str) -> Option<String> {
 }
 
 pub async fn compartment_definitions(
+    State(state): State<AppState>,
     RawQuery(query): RawQuery,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
@@ -677,16 +678,18 @@ pub async fn compartment_definitions(
         Some(raw) if !raw.is_empty() => format!("{base}/CompartmentDefinition?{raw}"),
         _ => format!("{base}/CompartmentDefinition"),
     };
-    Ok(rendered(definitions_bundle(&base, &self_url)))
+    Ok(rendered(definitions_bundle(state.version, &base, &self_url)))
 }
 
 pub async fn compartment_definition(
+    State(state): State<AppState>,
     Path(code): Path<String>,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
     let base = format!("http://{}", host_from(&headers));
-    let def = fhir_core::search::compartment::definition(&code).ok_or(Error::NotFound)?;
-    let body = serde_json::to_vec(&definition_json(def, &base))
+    let def = fhir_core::search::compartment::definition_in(state.version, &code)
+        .ok_or(Error::NotFound)?;
+    let body = serde_json::to_vec(&definition_json(&def, &base))
         .map_err(|error| Error::Internal(error.to_string()))?;
     Ok(rendered(body))
 }

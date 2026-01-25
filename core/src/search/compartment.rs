@@ -1,4 +1,4 @@
-use crate::{ResourceId, ResourceType};
+use crate::{FhirVersion, ResourceId, ResourceType};
 use serde_json::Value;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,7 +61,7 @@ const ENCOUNTER: &[Membership] = &[
     },
     Membership {
         resource_type: "Observation",
-        params: &["encounter"],
+        params: &["encounter", "context"],
     },
 ];
 
@@ -160,9 +160,78 @@ pub fn definitions() -> &'static [CompartmentDef] {
     DEFS
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VersionedMember {
+    pub resource_type: &'static str,
+    pub params: Vec<&'static str>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VersionedDef {
+    pub code: &'static str,
+    pub members: Vec<VersionedMember>,
+}
+
+fn membership_in(version: FhirVersion, member: &Membership) -> Option<VersionedMember> {
+    let resource_type: ResourceType = member.resource_type.parse().ok()?;
+    let params: Vec<&'static str> = member
+        .params
+        .iter()
+        .copied()
+        .filter(|name| crate::search::lookup_in(version, Some(resource_type), name).is_some())
+        .collect();
+    match (member.params.is_empty(), params.is_empty()) {
+        (true, _) => Some(VersionedMember {
+            resource_type: member.resource_type,
+            params: Vec::new(),
+        }),
+        (false, true) => None,
+        (false, false) => Some(VersionedMember {
+            resource_type: member.resource_type,
+            params,
+        }),
+    }
+}
+
+pub fn definitions_in(version: FhirVersion) -> Vec<VersionedDef> {
+    DEFS.iter()
+        .map(|def| VersionedDef {
+            code: def.code,
+            members: def
+                .members
+                .iter()
+                .filter_map(|member| membership_in(version, member))
+                .collect(),
+        })
+        .collect()
+}
+
+pub fn definition_in(version: FhirVersion, code: &str) -> Option<VersionedDef> {
+    definitions_in(version)
+        .into_iter()
+        .find(|def| def.code == code)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_version_publishes_only_the_references_it_defines() {
+        let old = definition_in(FhirVersion::Stu3, "Encounter").expect("the compartment exists");
+        let current = definition_in(FhirVersion::R4, "Encounter").expect("the compartment exists");
+        let observed = |def: &VersionedDef| {
+            def.members
+                .iter()
+                .find(|member| member.resource_type == "Observation")
+                .expect("Observation belongs")
+                .params
+                .clone()
+        };
+        assert_eq!(observed(&old), vec!["context"]);
+        assert_eq!(observed(&current), vec!["encounter"]);
+        assert_eq!(definitions_in(FhirVersion::R5).len(), DEFS.len());
+    }
 
     #[test]
     fn every_definition_resolves_by_its_code() {

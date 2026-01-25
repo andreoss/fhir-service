@@ -23,7 +23,6 @@ pub(crate) const CONTROL: [&str; 9] = [
     "ct",
 ];
 
-const UNSUPPORTED: [&str; 4] = ["_text", "_content", "_filter", "_query"];
 
 fn base_of(name: &str) -> &str {
     name.split_once(':').map(|(base, _)| base).unwrap_or(name)
@@ -44,7 +43,7 @@ pub fn parse_query(
                 "{name:?} with an empty value"
             )));
         }
-        if UNSUPPORTED.contains(&base_of(&name)) {
+        if fhir_core::search::unsupported(registry.fhir_version()).contains(&base_of(&name)) {
             return Err(Error::UnsupportedParameter(format!("{name:?}")));
         }
         if CONTROL.contains(&name.as_str()) {

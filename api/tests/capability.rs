@@ -423,3 +423,82 @@ async fn the_statement_carries_the_addresses_discovery_publishes() {
     assert_eq!(held("token"), document["token_endpoint"]);
     assert_eq!(held("introspect"), document["introspection_endpoint"]);
 }
+
+async fn observation_parameters(version: FhirVersion) -> BTreeSet<String> {
+    let app = service(version);
+    let statement = statement(&app).await;
+    names(resource(&statement, "Observation").get("searchParam"))
+}
+
+#[tokio::test]
+async fn the_statement_lists_the_parameters_of_the_running_version() {
+    let old = observation_parameters(FhirVersion::Stu3).await;
+    let current = observation_parameters(FhirVersion::R4).await;
+    assert!(old.contains("context"), "{old:?}");
+    assert!(!old.contains("encounter"));
+    assert!(current.contains("encounter"));
+    assert!(!current.contains("context"));
+    for version in [FhirVersion::R4b, FhirVersion::R5] {
+        assert_eq!(observation_parameters(version).await, current);
+    }
+}
+
+#[tokio::test]
+async fn a_parameter_a_version_lacks_is_refused_by_it() {
+    let old = service(FhirVersion::Stu3);
+    let (status, body) = reply(&old, "GET", "/Observation?encounter=Encounter/enc-1", b"").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let (status, _) = reply(&old, "GET", "/Observation?context=Encounter/enc-1", b"").await;
+    assert_eq!(status, StatusCode::OK);
+    let current = service(FhirVersion::R4);
+    let (status, _) = reply(&current, "GET", "/Observation?encounter=Encounter/enc-1", b"").await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = reply(&current, "GET", "/Observation?context=Encounter/enc-1", b"").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn compartment_definitions_carry_the_references_the_version_defines() {
+    let params = |version| async move {
+        let app = service(version);
+        let (status, body) = reply(&app, "GET", "/CompartmentDefinition/Encounter", b"").await;
+        assert_eq!(status, StatusCode::OK);
+        let value: Value = serde_json::from_str(&body).expect("the definition must be json");
+        value["resource"]
+            .as_array()
+            .expect("members must be listed")
+            .iter()
+            .find(|item| item["code"] == "Observation")
+            .expect("Observation must belong")
+            .clone()
+    };
+    let old = params(FhirVersion::Stu3).await;
+    let current = params(FhirVersion::R4).await;
+    assert_eq!(old["param"], serde_json::json!(["context"]));
+    assert_eq!(current["param"], serde_json::json!(["encounter"]));
+}
+
+#[tokio::test]
+async fn the_status_report_names_the_unsupported_parameters_of_the_version() {
+    let unsupported = |version| async move {
+        let app = service(version);
+        let (status, body) = reply(&app, "GET", "/SearchParameter/$status", b"").await;
+        assert_eq!(status, StatusCode::OK);
+        let value: Value = serde_json::from_str(&body).expect("the report must be json");
+        value["parameter"]
+            .as_array()
+            .expect("the report must carry parameters")
+            .iter()
+            .filter(|item| item["name"] == "unsupported")
+            .map(|item| item["valueCode"].as_str().unwrap().to_owned())
+            .collect::<BTreeSet<String>>()
+    };
+    let old = unsupported(FhirVersion::Stu3).await;
+    let current = unsupported(FhirVersion::R4).await;
+    assert!(!old.contains("_filter"));
+    assert!(current.contains("_filter"));
+    assert!(old.contains("_text") && current.contains("_text"));
+    let app = service(FhirVersion::R4);
+    let (status, _) = reply(&app, "GET", "/Patient?_filter=name%20eq%20a", b"").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
