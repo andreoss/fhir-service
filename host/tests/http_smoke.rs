@@ -1093,3 +1093,96 @@ fn a_reindex_of_one_resource_makes_it_findable_again() {
     assert_eq!(ids(&after.body), vec!["rx-1".to_owned()]);
     assert_eq!(ids(&others.body), vec!["rx-2".to_owned()]);
 }
+
+fn seed_operations(port: u16) {
+    let patient = br#"{"resourceType":"Patient","id":"pt-o1","gender":"female","identifier":[{"system":"urn:mrn","value":"90210"}],"birthDate":"1980-04-01"}"#;
+    let other = br#"{"resourceType":"Patient","id":"pt-o2","gender":"male"}"#;
+    let observation = br#"{"resourceType":"Observation","id":"ob-o1","status":"final","code":{"coding":[{"system":"urn:cs","code":"leaf"}]},"subject":{"reference":"Patient/pt-o1"}}"#;
+    let document = br#"{"resourceType":"DocumentReference","id":"dr-o1","status":"current","type":{"coding":[{"system":"urn:doc","code":"note"}]},"subject":{"reference":"Patient/pt-o1"},"date":"2026-03-01"}"#;
+    let system = br#"{"resourceType":"CodeSystem","id":"cs-o1","url":"urn:cs","version":"1.0","concept":[{"code":"top","display":"Top","concept":[{"code":"mid","display":"Middle","concept":[{"code":"leaf","display":"Leaf"}]}]}]}"#;
+    let set = br#"{"resourceType":"ValueSet","id":"vs-o1","url":"urn:vs","status":"active","compose":{"include":[{"system":"urn:cs"}]}}"#;
+    request(port, "POST", "/Patient", &[], patient);
+    request(port, "POST", "/Patient", &[], other);
+    request(port, "POST", "/Observation", &[], observation);
+    request(port, "POST", "/DocumentReference", &[], document);
+    request(port, "POST", "/CodeSystem", &[], system);
+    request(port, "POST", "/ValueSet", &[], set);
+}
+
+#[test]
+fn live_extended_operations_answer() {
+    let (child, port) = spawn_server();
+    seed_operations(port);
+    let conversion = br#"{"resourceType":"Parameters","parameter":[{"name":"inputData","valueString":"PID|1||pt-c1||Ann^Bea||19800401|female"},{"name":"inputDataType","valueString":"hl7v2"},{"name":"templateCollectionReference","valueString":"urn:template-collection:default"},{"name":"rootTemplate","valueString":"Patient"}]}"#;
+    let converted = request(port, "POST", "/$convert-data", &[], conversion);
+    let validated = request(
+        port,
+        "POST",
+        "/Patient/$validate",
+        &[],
+        br#"{"resourceType":"Patient","id":"pt-v1","active":true}"#,
+    );
+    let unstored = request(port, "GET", "/Patient/pt-v1", &[], &[]);
+    let everything = request(port, "GET", "/Patient/pt-o1/$everything", &[], &[]);
+    let matched = request(
+        port,
+        "POST",
+        "/Patient/$member-match",
+        &[],
+        br#"{"resourceType":"Parameters","parameter":[{"name":"MemberPatient","resource":{"resourceType":"Patient","identifier":[{"system":"urn:mrn","value":"90210"}]}}]}"#,
+    );
+    let unmatched = request(
+        port,
+        "POST",
+        "/Patient/$member-match",
+        &[],
+        br#"{"resourceType":"Parameters","parameter":[{"name":"MemberPatient","resource":{"resourceType":"Patient","identifier":[{"system":"urn:mrn","value":"nonesuch"}]}}]}"#,
+    );
+    let includes = request(
+        port,
+        "GET",
+        "/Observation/$includes?_include=Observation:subject",
+        &[],
+        &[],
+    );
+    let docref = request(port, "GET", "/DocumentReference/$docref?patient=pt-o1", &[], &[]);
+    let posted = request(
+        port,
+        "POST",
+        "/DocumentReference/$docref",
+        &[],
+        br#"{"resourceType":"Parameters","parameter":[{"name":"patient","valueString":"pt-o1"}]}"#,
+    );
+    let expanded = request(port, "GET", "/ValueSet/$expand?url=urn:vs&excludeNested=true", &[], &[]);
+    let unknown = request(port, "GET", "/ValueSet/$expand?url=urn:none", &[], &[]);
+    let below = request(port, "GET", "/Observation?code:below=urn:cs%7Cmid", &[], &[]);
+    stop(child);
+
+    assert_eq!(converted.status, 200);
+    let rendered: serde_json::Value = serde_json::from_str(&converted.body).expect("json");
+    assert_eq!(rendered["resourceType"], "Patient");
+    assert_eq!(rendered["id"], "pt-c1");
+    assert_eq!(validated.status, 200);
+    assert_eq!(issue_code(&validated.body), "informational");
+    assert_eq!(unstored.status, 404);
+    assert_eq!(everything.status, 200);
+    let gathered = ids(&everything.body);
+    assert!(gathered.contains(&"pt-o1".to_owned()), "{gathered:?}");
+    assert!(gathered.contains(&"ob-o1".to_owned()), "{gathered:?}");
+    assert_eq!(matched.status, 200);
+    let member: serde_json::Value = serde_json::from_str(&matched.body).expect("json");
+    assert_eq!(member["parameter"][0]["valueIdentifier"]["value"], "90210");
+    assert_eq!(unmatched.status, 422);
+    assert_eq!(issue_code(&unmatched.body), "business-rule");
+    assert_eq!(includes.status, 200);
+    assert_eq!(ids(&includes.body), vec!["pt-o1".to_owned()]);
+    assert_eq!(docref.status, 200);
+    assert_eq!(ids(&docref.body), vec!["dr-o1".to_owned()]);
+    assert_eq!(ids(&posted.body), ids(&docref.body));
+    assert_eq!(expanded.status, 200);
+    let expansion: serde_json::Value = serde_json::from_str(&expanded.body).expect("json");
+    assert_eq!(expansion["expansion"]["total"], 3);
+    assert_eq!(expansion["expansion"]["contains"][2]["code"], "leaf");
+    assert_eq!(unknown.status, 404);
+    assert_eq!(ids(&below.body), vec!["ob-o1".to_owned()]);
+}
