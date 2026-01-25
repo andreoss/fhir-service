@@ -540,6 +540,17 @@ impl Registry {
         }
     }
 
+    pub fn for_type(&self, resource_type: ResourceType) -> Vec<Arc<ParamDef>> {
+        let mut found = for_type(resource_type);
+        found.extend(
+            self.entries()
+                .into_iter()
+                .filter(|entry| entry.base.contains(&resource_type))
+                .map(|entry| entry.def),
+        );
+        found
+    }
+
     pub fn references(&self, resource_type: ResourceType) -> Vec<Arc<ParamDef>> {
         let mut found = references(resource_type);
         found.extend(

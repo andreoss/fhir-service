@@ -2,7 +2,7 @@ use crate::Error;
 use std::fmt;
 use std::str::FromStr;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum FhirVersion {
     Stu3,
     R4,
@@ -19,6 +19,15 @@ impl FhirVersion {
             FhirVersion::R4 => "R4",
             FhirVersion::R4b => "R4B",
             FhirVersion::R5 => "R5",
+        }
+    }
+
+    pub fn release(&self) -> &'static str {
+        match self {
+            FhirVersion::Stu3 => "3.0.2",
+            FhirVersion::R4 => "4.0.1",
+            FhirVersion::R4b => "4.3.0",
+            FhirVersion::R5 => "5.0.0",
         }
     }
 }

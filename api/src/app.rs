@@ -1,4 +1,4 @@
-use axum::routing::{get, post};
+use axum::routing::{get, post, MethodRouter};
 use axum::Router;
 use fhir_core::convert::{ApprovedTemplates, Templates};
 use fhir_core::search::Registry;
@@ -8,6 +8,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 
+use crate::capability::capability;
 use crate::handlers::{
     compartment_definition, compartment_definitions, compartment_search, conditional_delete,
     conditional_patch, conditional_update, create, delete_instance, health,
@@ -155,96 +156,191 @@ pub(crate) fn over(state: &AppState, store: Arc<dyn ResourceStore>) -> Router<()
     })
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Verb {
+    Get,
+    Post,
+    Put,
+    Delete,
+    Patch,
+}
+
+impl Verb {
+    pub const ALL: [Verb; 5] = [Verb::Get, Verb::Post, Verb::Put, Verb::Delete, Verb::Patch];
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Verb::Get => "GET",
+            Verb::Post => "POST",
+            Verb::Put => "PUT",
+            Verb::Delete => "DELETE",
+            Verb::Patch => "PATCH",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Route {
+    pub path: &'static str,
+    pub methods: &'static [Verb],
+}
+
+struct Entry {
+    route: Route,
+    router: MethodRouter<AppState>,
+}
+
+fn entry(path: &'static str, methods: &'static [Verb], router: MethodRouter<AppState>) -> Entry {
+    Entry {
+        route: Route { path, methods },
+        router,
+    }
+}
+
+pub fn served() -> Vec<Route> {
+    entries().into_iter().map(|held| held.route).collect()
+}
+
+const READ: &[Verb] = &[Verb::Get];
+const WRITE: &[Verb] = &[Verb::Post];
+const BOTH: &[Verb] = &[Verb::Get, Verb::Post];
+
+fn entries() -> Vec<Entry> {
+    vec![
+        entry("/", BOTH, get(search_system).post(crate::bundle::process)),
+        entry("/health", READ, get(health)),
+        entry("/metadata", READ, get(capability)),
+        entry(
+            "/SearchParameter/$status",
+            &[Verb::Get, Verb::Post, Verb::Put],
+            get(parameter_status).post(parameter_status_query).put(parameter_status_update),
+        ),
+        entry("/SearchParameter/$reindex", WRITE, post(parameter_reindex)),
+        entry("/SearchParameter/$refresh", WRITE, post(parameter_refresh)),
+        entry("/CompartmentDefinition", READ, get(compartment_definitions)),
+        entry("/CompartmentDefinition/{id}", READ, get(compartment_definition)),
+        entry("/{type}/{id}/{target}", READ, get(compartment_search)),
+        entry(
+            "/{type}/{id}",
+            &[Verb::Get, Verb::Put, Verb::Delete, Verb::Patch],
+            get(read).put(update).delete(delete_instance).patch(patch_instance),
+        ),
+        entry("/_history", READ, get(system_history)),
+        entry("/{type}/_history", READ, get(type_history)),
+        entry("/{type}/{id}/_history", READ, get(instance_history)),
+        entry("/{type}/{id}/_history/{vid}", READ, get(vread)),
+        entry(
+            "/{type}",
+            &Verb::ALL,
+            get(search_type)
+                .post(create)
+                .put(conditional_update)
+                .delete(conditional_delete)
+                .patch(conditional_patch),
+        ),
+        entry("/{type}/{id}/$purge-history", WRITE, post(purge_history)),
+        entry(
+            "/Patient/{id}/$everything",
+            BOTH,
+            get(crate::operation::everything).post(crate::operation::everything),
+        ),
+        entry(
+            "/Patient/$member-match",
+            WRITE,
+            post(crate::operation::member_match),
+        ),
+        entry(
+            "/$includes",
+            BOTH,
+            get(crate::operation::includes_system).post(crate::operation::includes_system),
+        ),
+        entry(
+            "/{type}/$includes",
+            BOTH,
+            get(crate::operation::includes_type).post(crate::operation::includes_type),
+        ),
+        entry(
+            "/DocumentReference/$docref",
+            BOTH,
+            get(crate::operation::docref_query).post(crate::operation::docref_body),
+        ),
+        entry(
+            "/ValueSet/$expand",
+            BOTH,
+            get(crate::operation::expand_query).post(crate::operation::expand_body),
+        ),
+        entry("/$convert-data", WRITE, post(crate::operation::convert_data)),
+        entry(
+            "/{type}/$validate",
+            BOTH,
+            get(crate::operation::validate_type).post(crate::operation::validate_type),
+        ),
+        entry(
+            "/{type}/{id}/$validate",
+            BOTH,
+            get(crate::operation::validate_instance).post(crate::operation::validate_instance),
+        ),
+        entry(
+            "/$export",
+            BOTH,
+            get(crate::job::submit_export).post(crate::job::submit_export),
+        ),
+        entry(
+            "/Patient/$export",
+            BOTH,
+            get(crate::job::submit_patient_export).post(crate::job::submit_patient_export),
+        ),
+        entry(
+            "/Group/{id}/$export",
+            BOTH,
+            get(crate::job::submit_group_export).post(crate::job::submit_group_export),
+        ),
+        entry("/$import", WRITE, post(crate::job::submit_import)),
+        entry("/$bulk-delete", WRITE, post(crate::job::submit_bulk_delete)),
+        entry(
+            "/{type}/$bulk-delete",
+            WRITE,
+            post(crate::job::submit_type_bulk_delete),
+        ),
+        entry(
+            "/$bulk-delete-soft-deleted",
+            WRITE,
+            post(crate::job::submit_bulk_delete_soft_deleted),
+        ),
+        entry(
+            "/{type}/$bulk-delete-soft-deleted",
+            WRITE,
+            post(crate::job::submit_type_bulk_delete_soft_deleted),
+        ),
+        entry("/$bulk-update", WRITE, post(crate::job::submit_bulk_update)),
+        entry(
+            "/{type}/$bulk-update",
+            WRITE,
+            post(crate::job::submit_type_bulk_update),
+        ),
+        entry("/$reindex", WRITE, post(crate::job::submit_reindex)),
+        entry(
+            "/{type}/{id}/$reindex",
+            WRITE,
+            post(crate::job::submit_resource_reindex),
+        ),
+        entry(
+            "/_jobs/{id}",
+            &[Verb::Get, Verb::Delete],
+            get(crate::job::poll).delete(crate::job::cancel),
+        ),
+        entry("/_jobs/{id}/{*name}", READ, get(crate::job::output)),
+    ]
+}
+
 fn routes() -> Router<AppState> {
-    Router::new()
-            .route("/", get(search_system).post(crate::bundle::process))
-            .route("/health", get(health))
-            .route(
-                "/SearchParameter/$status",
-                get(parameter_status).post(parameter_status_query).put(parameter_status_update),
-            )
-            .route("/SearchParameter/$reindex", post(parameter_reindex))
-            .route("/SearchParameter/$refresh", post(parameter_refresh))
-            .route("/CompartmentDefinition", get(compartment_definitions))
-            .route("/CompartmentDefinition/{id}", get(compartment_definition))
-            .route("/{type}/{id}/{target}", get(compartment_search))
-            .route("/{type}/{id}", get(read).put(update).delete(delete_instance).patch(patch_instance))
-            .route("/_history", get(system_history))
-            .route("/{type}/_history", get(type_history))
-            .route("/{type}/{id}/_history", get(instance_history))
-            .route("/{type}/{id}/_history/{vid}", get(vread))
-            .route("/{type}", get(search_type).post(create).put(conditional_update).delete(conditional_delete).patch(conditional_patch))
-            .route("/{type}/{id}/$purge-history", post(purge_history))
-            .route(
-                "/Patient/{id}/$everything",
-                get(crate::operation::everything).post(crate::operation::everything),
-            )
-            .route(
-                "/Patient/$member-match",
-                post(crate::operation::member_match),
-            )
-            .route(
-                "/$includes",
-                get(crate::operation::includes_system).post(crate::operation::includes_system),
-            )
-            .route(
-                "/{type}/$includes",
-                get(crate::operation::includes_type).post(crate::operation::includes_type),
-            )
-            .route(
-                "/DocumentReference/$docref",
-                get(crate::operation::docref_query).post(crate::operation::docref_body),
-            )
-            .route(
-                "/ValueSet/$expand",
-                get(crate::operation::expand_query).post(crate::operation::expand_body),
-            )
-            .route("/$convert-data", post(crate::operation::convert_data))
-            .route(
-                "/{type}/$validate",
-                get(crate::operation::validate_type).post(crate::operation::validate_type),
-            )
-            .route(
-                "/{type}/{id}/$validate",
-                get(crate::operation::validate_instance).post(crate::operation::validate_instance),
-            )
-            .route("/$export", get(crate::job::submit_export).post(crate::job::submit_export))
-            .route(
-                "/Patient/$export",
-                get(crate::job::submit_patient_export).post(crate::job::submit_patient_export),
-            )
-            .route(
-                "/Group/{id}/$export",
-                get(crate::job::submit_group_export).post(crate::job::submit_group_export),
-            )
-            .route("/$import", post(crate::job::submit_import))
-            .route("/$bulk-delete", post(crate::job::submit_bulk_delete))
-            .route(
-                "/{type}/$bulk-delete",
-                post(crate::job::submit_type_bulk_delete),
-            )
-            .route(
-                "/$bulk-delete-soft-deleted",
-                post(crate::job::submit_bulk_delete_soft_deleted),
-            )
-            .route(
-                "/{type}/$bulk-delete-soft-deleted",
-                post(crate::job::submit_type_bulk_delete_soft_deleted),
-            )
-            .route("/$bulk-update", post(crate::job::submit_bulk_update))
-            .route(
-                "/{type}/$bulk-update",
-                post(crate::job::submit_type_bulk_update),
-            )
-            .route("/$reindex", post(crate::job::submit_reindex))
-            .route(
-                "/{type}/{id}/$reindex",
-                post(crate::job::submit_resource_reindex),
-            )
-            .route("/_jobs/{id}", get(crate::job::poll).delete(crate::job::cancel))
-            .route("/_jobs/{id}/{*name}", get(crate::job::output))
-            .fallback(not_found)
-            .method_not_allowed_fallback(method_not_allowed)
+    entries()
+        .into_iter()
+        .fold(Router::new(), |router, held| {
+            router.route(held.route.path, held.router)
+        })
+        .fallback(not_found)
+        .method_not_allowed_fallback(method_not_allowed)
 }
 
 pub struct Bound {

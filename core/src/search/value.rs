@@ -53,6 +53,21 @@ pub enum ValueType {
     Uri,
 }
 
+impl ValueType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ValueType::Number => "number",
+            ValueType::Date => "date",
+            ValueType::String => "string",
+            ValueType::Token => "token",
+            ValueType::Quantity => "quantity",
+            ValueType::Reference => "reference",
+            ValueType::Composite => "composite",
+            ValueType::Uri => "uri",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TokenSystem {
     Any,

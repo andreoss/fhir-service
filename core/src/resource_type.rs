@@ -157,6 +157,10 @@ impl ResourceType {
     pub fn as_str(&self) -> &str {
         self.0
     }
+
+    pub fn all() -> Vec<ResourceType> {
+        RESOURCE_TYPES.iter().map(|name| ResourceType(name)).collect()
+    }
 }
 
 impl FromStr for ResourceType {
