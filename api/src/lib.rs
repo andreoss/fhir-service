@@ -3,6 +3,7 @@ pub mod app;
 pub mod bundle;
 pub mod capability;
 pub mod definition;
+pub mod discovery;
 pub mod smart;
 pub mod compartment;
 pub mod handlers;

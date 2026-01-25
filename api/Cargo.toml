@@ -10,7 +10,7 @@ fhir-core = { path = "../core" }
 fhir-store = { path = "../store" }
 serde_json = "1"
 time = { version = "0.3", features = ["parsing", "formatting"] }
-tokio = { version = "1", features = ["rt", "net", "sync"] }
+tokio = { version = "1", features = ["rt", "net", "sync", "io-util", "time"] }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 uuid = { version = "1", features = ["v4"] }
