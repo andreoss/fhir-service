@@ -2,8 +2,8 @@
 
 A FHIR server. Resources are stored with every version of
 themselves and answered over HTTP: read, write, history, search, bundles,
-extended operations and long-running bulk jobs. One store contract, more
-than one engine behind it.
+extended operations and long-running bulk jobs, under scoped
+authorization. One store contract, more than one engine behind it.
 
 == Build
 
@@ -19,21 +19,24 @@ cargo run --bin fhir-host
 
 [source,http]
 ----
-GET  /Patient/1
+GET  /metadata                # capability statement, generated from the routes
 GET  /Patient?name=Smith&_count=10&_sort=-_lastUpdated
 POST /                        # transaction and batch bundles
 POST /Patient/1/$validate     # also $everything, $member-match, $docref
-GET  /ValueSet/$expand        # also $subsumes, $convert-data
 GET  /$export                 # submit a bulk job, then poll it by id
 ----
+
+Bearer tokens are verified against the keys their issuer publishes. Resource,
+compartment and parameter scopes decide what a request may reach, and a job
+answers only the caller that submitted it.
 
 == Layout
 
 `core` the model, its rules and the terminology, `contract` the storage
 port and the suite every engine satisfies, `store` the query and index
 types, `adapter-memory` and `adapter-relational` the engines, `jobs` the
-durable queue and the bulk handlers, `api` the HTTP surface, `host` the
-binary.
+durable queue and the bulk handlers, `api` the HTTP surface and the
+authorization, `host` the binary.
 
-`FHIR_BACKEND` chooses the engine; `FHIR_DATABASE_URL` points the relational
-one at its server.
+`FHIR_BACKEND` chooses the engine, `FHIR_DATABASE_URL` points the relational
+one at its server, `FHIR_AUTH_ISSUER` names the issuer to trust.

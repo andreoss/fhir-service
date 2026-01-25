@@ -9,6 +9,7 @@ pub mod patch;
 pub mod resource_id;
 pub mod resource_type;
 pub mod search;
+pub mod security;
 pub mod terminology;
 pub mod validate;
 pub mod version;
