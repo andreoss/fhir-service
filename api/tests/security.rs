@@ -197,3 +197,136 @@ async fn an_expired_token_reads_nothing() {
     let response = app.router().oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
+
+async fn with_token(app: &Service, method: &str, uri: &str, token: &str, body: &[u8]) -> Reply {
+    let request = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("host", "localhost")
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::from(body.to_vec()))
+        .unwrap();
+    let response = app.router().oneshot(request).await.unwrap();
+    let status = response.status();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    Reply {
+        status,
+        body: String::from_utf8_lossy(&bytes).into_owned(),
+    }
+}
+
+fn launched(scopes: &str, patient: &str) -> String {
+    minted(json!({
+        "iss": ISSUER,
+        "sub": "practitioner-1",
+        "scope": scopes,
+        "patient": patient,
+        "exp": time::OffsetDateTime::now_utc().unix_timestamp() + 300,
+    }))
+}
+
+fn ids(body: &str) -> Vec<String> {
+    serde_json::from_str::<Value>(body)
+        .ok()
+        .and_then(|value| value["entry"].as_array().cloned())
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|entry| entry["resource"]["id"].as_str().map(str::to_owned))
+        .collect()
+}
+
+async fn seeded(app: &Service) {
+    let write = Some("system/*.write");
+    for body in [
+        br#"{"resourceType":"Patient","id":"pt-a","active":true}"#.to_vec(),
+        br#"{"resourceType":"Patient","id":"pt-b","active":true}"#.to_vec(),
+    ] {
+        call(app, "POST", "/Patient", write, &body).await;
+    }
+    for body in [
+        br#"{"resourceType":"Observation","id":"ob-a","status":"final","subject":{"reference":"Patient/pt-a"}}"#.to_vec(),
+        br#"{"resourceType":"Observation","id":"ob-b","status":"final","subject":{"reference":"Patient/pt-b"}}"#.to_vec(),
+        br#"{"resourceType":"Observation","id":"ob-c","status":"amended","subject":{"reference":"Patient/pt-a"}}"#.to_vec(),
+    ] {
+        call(app, "POST", "/Observation", write, &body).await;
+    }
+}
+
+#[tokio::test]
+async fn a_launch_compartment_confines_the_search_the_read_and_the_include() {
+    let app = guarded();
+    seeded(&app).await;
+    let confined = launched("patient/Observation.rs patient/Patient.rs", "pt-a");
+    let searched = with_token(&app, "GET", "/Observation", &confined, &[]).await;
+    let mine = with_token(&app, "GET", "/Observation/ob-a", &confined, &[]).await;
+    let theirs = with_token(&app, "GET", "/Observation/ob-b", &confined, &[]).await;
+    let included = with_token(
+        &app,
+        "GET",
+        "/Observation?_include=Observation:subject",
+        &confined,
+        &[],
+    )
+    .await;
+
+    let found = ids(&searched.body);
+    assert!(found.contains(&"ob-a".to_owned()), "{found:?}");
+    assert!(!found.contains(&"ob-b".to_owned()), "{found:?}");
+    assert_eq!(mine.status, StatusCode::OK, "{}", mine.body);
+    assert_eq!(theirs.status, StatusCode::NOT_FOUND, "{}", theirs.body);
+    let pulled = ids(&included.body);
+    assert!(pulled.contains(&"pt-a".to_owned()), "{pulled:?}");
+    assert!(!pulled.contains(&"pt-b".to_owned()), "{pulled:?}");
+}
+
+#[tokio::test]
+async fn a_search_parameter_grant_narrows_the_type_it_names() {
+    let app = guarded();
+    seeded(&app).await;
+    let narrowed = token("system/Observation.rs?status=final");
+    let searched = with_token(&app, "GET", "/Observation", &narrowed, &[]).await;
+    let outside = with_token(&app, "GET", "/Observation/ob-c", &narrowed, &[]).await;
+    let inside = with_token(&app, "GET", "/Observation/ob-a", &narrowed, &[]).await;
+
+    let found = ids(&searched.body);
+    assert!(found.contains(&"ob-a".to_owned()), "{found:?}");
+    assert!(!found.contains(&"ob-c".to_owned()), "{found:?}");
+    assert_eq!(outside.status, StatusCode::NOT_FOUND, "{}", outside.body);
+    assert_eq!(inside.status, StatusCode::OK, "{}", inside.body);
+}
+
+#[tokio::test]
+async fn history_is_never_wider_than_the_grant() {
+    let app = guarded();
+    seeded(&app).await;
+    let confined = launched("patient/Observation.rs", "pt-a");
+    let system = with_token(&app, "GET", "/_history", &confined, &[]).await;
+    let typed = with_token(&app, "GET", "/Observation/_history", &confined, &[]).await;
+    let theirs = with_token(&app, "GET", "/Observation/ob-b/_history", &confined, &[]).await;
+    let mine = with_token(&app, "GET", "/Observation/ob-a/_history", &confined, &[]).await;
+    let open = call(&app, "GET", "/Observation/_history", Some("system/*.read"), &[]).await;
+
+    assert_eq!(system.status, StatusCode::FORBIDDEN, "{}", system.body);
+    assert_eq!(typed.status, StatusCode::FORBIDDEN, "{}", typed.body);
+    assert_eq!(theirs.status, StatusCode::NOT_FOUND, "{}", theirs.body);
+    assert_eq!(mine.status, StatusCode::OK, "{}", mine.body);
+    assert_eq!(open.status, StatusCode::OK, "{}", open.body);
+}
+
+#[tokio::test]
+async fn a_conditional_write_selects_only_inside_the_grant() {
+    let app = guarded();
+    seeded(&app).await;
+    let confined = launched("patient/Observation.cruds", "pt-a");
+    let refused = with_token(
+        &app,
+        "DELETE",
+        "/Observation?_id=ob-b",
+        &confined,
+        &[],
+    )
+    .await;
+    let survived = call(&app, "GET", "/Observation/ob-b", Some("system/*.read"), &[]).await;
+    assert_eq!(refused.status, StatusCode::NOT_FOUND, "{}", refused.body);
+    assert_eq!(survived.status, StatusCode::OK, "{}", survived.body);
+}

@@ -1,5 +1,5 @@
 use fhir_core::search::{
-    lookup, Chain, ChainDirection, Compartment, Criterion, Filter, Grant, Include,
+    lookup, Chain, ChainDirection, Compartment, Criterion, Filter, Grant, GrantFilter, Include,
     IncludeDirection, Modifier, SearchValue,
 };
 use fhir_core::{ResourceEnvelope, ResourceType};
@@ -408,6 +408,7 @@ pub async fn linking(store: &dyn fhir_store::ResourceStore) {
                 kind: kind("Patient"),
                 id: id("p2"),
             }],
+            filters: Vec::new(),
         }),
         ..SearchQuery::default()
     };
@@ -417,10 +418,56 @@ pub async fn linking(store: &dyn fhir_store::ResourceStore) {
         grant: Some(Grant {
             types: vec![kind("Observation")],
             compartments: Vec::new(),
+            filters: Vec::new(),
         }),
         ..SearchQuery::of_type(kind("Patient"))
     };
     assert!(store.search(&refused).await.unwrap().entries.is_empty());
+
+    let narrowing = Grant {
+        types: Vec::new(),
+        compartments: Vec::new(),
+        filters: vec![GrantFilter {
+            resource_type: kind("Observation"),
+            filter: filter("Observation", "code", "code-1"),
+        }],
+    };
+    let narrowed = SearchQuery {
+        grant: Some(narrowing.clone()),
+        ..SearchQuery::of_type(kind("Observation"))
+    };
+    assert_eq!(ids(&store.search(&narrowed).await.unwrap()), vec!["v1"]);
+
+    let untouched = SearchQuery {
+        grant: Some(narrowing.clone()),
+        ..SearchQuery::of_type(kind("Patient"))
+    };
+    let mut reached = ids(&store.search(&untouched).await.unwrap());
+    reached.sort();
+    assert!(reached.contains(&"p1".to_owned()) && reached.contains(&"p2".to_owned()), "{reached:?}");
+
+    let pulled = SearchQuery {
+        filters: vec![filter("Patient", "_id", "p1")],
+        includes: vec![Include {
+            name: "subject".to_owned(),
+            source: Some(kind("Observation")),
+            paths: vec!["subject".to_owned()],
+            target: Some(kind("Patient")),
+            direction: IncludeDirection::Reverse,
+            iterate: false,
+        }],
+        grant: Some(Grant {
+            filters: vec![GrantFilter {
+                resource_type: kind("Observation"),
+                filter: filter("Observation", "code", "code-2"),
+            }],
+            ..narrowing
+        }),
+        ..SearchQuery::of_type(kind("Patient"))
+    };
+    let page = store.search(&pulled).await.unwrap();
+    assert_eq!(ids(&page), vec!["p1"]);
+    assert!(included(&page).is_empty(), "{:?}", included(&page));
 }
 
 pub async fn composites(store: &dyn fhir_store::ResourceStore) {

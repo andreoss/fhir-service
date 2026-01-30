@@ -1,10 +1,19 @@
 use crate::search::compartment::Compartment;
-use crate::{Error, ResourceId, ResourceType};
+use crate::search::Filter;
+use serde_json::Value;
+use crate::{Error, ResourceEnvelope, ResourceId, ResourceType};
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Grant {
     pub types: Vec<ResourceType>,
     pub compartments: Vec<Compartment>,
+    pub filters: Vec<GrantFilter>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct GrantFilter {
+    pub resource_type: ResourceType,
+    pub filter: Filter,
 }
 
 impl Grant {
@@ -31,6 +40,33 @@ impl Grant {
 
     pub fn is_open(&self) -> bool {
         self.compartments.is_empty()
+    }
+
+    pub fn reaches(&self, envelope: &ResourceEnvelope, body: &Value) -> bool {
+        if !self.admits(envelope.resource_type()) {
+            return false;
+        }
+        let narrowed = self
+            .narrowing(envelope.resource_type())
+            .into_iter()
+            .all(|filter| filter.matches(envelope.id(), envelope.last_updated(), body));
+        narrowed
+            && (self.is_open()
+                || self.compartments.iter().any(|compartment| {
+                    crate::search::compartment::contains(
+                        compartment,
+                        envelope.resource_type(),
+                        body,
+                    )
+                }))
+    }
+
+    pub fn narrowing(&self, resource_type: ResourceType) -> Vec<&Filter> {
+        self.filters
+            .iter()
+            .filter(|held| held.resource_type == resource_type)
+            .map(|held| &held.filter)
+            .collect()
     }
 }
 

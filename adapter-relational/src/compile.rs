@@ -660,6 +660,11 @@ impl<'a> Compiler<'a> {
 
     pub fn grant(&mut self, grant: &Grant, outer: &str) -> Result<String, Error> {
         let mut parts = Vec::new();
+        for held in &grant.filters {
+            let kind = self.text(held.resource_type.as_str());
+            let narrowed = self.filter(&held.filter, outer)?;
+            parts.push(format!("({outer}.resource_type <> {kind} or ({narrowed}))"));
+        }
         if !grant.types.is_empty() {
             let names = grant.types.iter().map(|kind| kind.as_str().to_owned()).collect();
             let bound = self.texts(names);
@@ -885,6 +890,7 @@ mod tests {
                 kind: kind("Patient"),
                 id: fhir_core::ResourceId::parse("p1").unwrap(),
             }],
+            filters: Vec::new(),
         };
         let text = compiler.grant(&grant, "r").expect("the grant compiles");
         assert!(text.contains("r.resource_type = any($"), "{text}");
@@ -898,6 +904,7 @@ mod tests {
         let grant = Grant {
             types: vec![kind("Patient")],
             compartments: Vec::new(),
+            filters: Vec::new(),
         };
         let text = compiler.grant(&grant, "r").expect("the grant compiles");
         assert!(!text.contains("index_reference"), "{text}");

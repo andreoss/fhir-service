@@ -176,15 +176,7 @@ fn in_compartment(
 }
 
 fn admitted(grant: Option<&Grant>, envelope: &ResourceEnvelope, body: &Value) -> bool {
-    let Some(grant) = grant else { return true };
-    if !grant.admits(envelope.resource_type()) {
-        return false;
-    }
-    grant.is_open()
-        || grant
-            .compartments
-            .iter()
-            .any(|compartment| in_compartment(compartment, envelope, body))
+    grant.is_none_or(|grant| grant.reaches(envelope, body))
 }
 
 const INCLUDE_ROUNDS: usize = 5;

@@ -58,7 +58,7 @@ pub async fn read(
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
     let resource_type = type_name.parse::<ResourceType>()?;
-    allowed(&state, &headers, DataAction::Read, Some(resource_type)).await?;
+    let access = allowed(&state, &headers, DataAction::Read, Some(resource_type)).await?;
     let id = id_text.parse::<ResourceId>()?;
     let envelope = state.store.read(&id).await?;
     if envelope.resource_type() != resource_type {
@@ -67,6 +67,7 @@ pub async fn read(
     if envelope.is_deleted() {
         return Err(Error::Deleted.into());
     }
+    within(&state, &access, &headers, DataAction::Read, &envelope)?;
     Ok(respond_resource(&envelope, host_from(&headers)))
 }
 
@@ -76,7 +77,7 @@ pub async fn vread(
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
     let resource_type = type_name.parse::<ResourceType>()?;
-    allowed(&state, &headers, DataAction::Read, Some(resource_type)).await?;
+    let access = allowed(&state, &headers, DataAction::Read, Some(resource_type)).await?;
     let id = id_text.parse::<ResourceId>()?;
     let version = version_text.parse::<VersionId>()?;
     let envelope = state.store.vread(&id, &version).await?;
@@ -86,6 +87,7 @@ pub async fn vread(
     if envelope.is_deleted() {
         return Err(Error::Deleted.into());
     }
+    within(&state, &access, &headers, DataAction::Read, &envelope)?;
     Ok(respond_resource(&envelope, host_from(&headers)))
 }
 
@@ -96,7 +98,7 @@ pub async fn create(
     body: Bytes,
 ) -> Result<Response, AppError> {
     let resource_type = type_name.parse::<ResourceType>()?;
-    allowed(&state, &headers, DataAction::Write, Some(resource_type)).await?;
+    let access = allowed(&state, &headers, DataAction::Write, Some(resource_type)).await?;
     if let Some(condition) = headers.get(IF_NONE_EXIST) {
         let raw = condition
             .to_str()
@@ -109,6 +111,7 @@ pub async fn create(
     let value: Value = serde_json::from_slice(&body).map_err(|error| Error::InvalidJson(error.to_string()))?;
     let id = body_id(&value)?;
     let envelope = write_envelope(state.version, resource_type, value.clone(), &id)?;
+    within(&state, &access, &headers, DataAction::Write, &envelope)?;
     if resource_type.as_str() == SEARCH_PARAMETER {
         let spec = ParameterSpec::parse(&value)?;
         let _guard = state.parameters.lock().await;
@@ -129,8 +132,9 @@ pub async fn conditional_update(
     body: Bytes,
 ) -> Result<Response, AppError> {
     let resource_type = type_name.parse::<ResourceType>()?;
-    allowed(&state, &headers, DataAction::Write, Some(resource_type)).await?;
-    let selection = require_condition(parse_query(&state.registry, Some(resource_type), query.as_deref())?, "conditional update")?;
+    let access = allowed(&state, &headers, DataAction::Write, Some(resource_type)).await?;
+    let mut selection = require_condition(parse_query(&state.registry, Some(resource_type), query.as_deref())?, "conditional update")?;
+    confine(&mut selection, confining(&state, &access, &headers, DataAction::Write)?)?;
     let value: Value = serde_json::from_slice(&body).map_err(|error| Error::InvalidJson(error.to_string()))?;
     let expected = expected_version(&headers)?;
     match single_match(&state, &selection).await? {
@@ -155,11 +159,12 @@ pub async fn update(
     body: Bytes,
 ) -> Result<Response, AppError> {
     let resource_type = type_name.parse::<ResourceType>()?;
-    allowed(&state, &headers, DataAction::Write, Some(resource_type)).await?;
+    let access = allowed(&state, &headers, DataAction::Write, Some(resource_type)).await?;
     let id = id_text.parse::<ResourceId>()?;
     let expected = expected_version(&headers)?;
     let value: Value = serde_json::from_slice(&body).map_err(|error| Error::InvalidJson(error.to_string()))?;
     let envelope = write_envelope(state.version, resource_type, value.clone(), &id)?;
+    within(&state, &access, &headers, DataAction::Write, &envelope)?;
     if resource_type.as_str() == SEARCH_PARAMETER {
         return replace_parameter(&state, &id, &value, envelope, expected, &headers).await;
     }
@@ -200,12 +205,13 @@ pub async fn delete_instance(
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
     let resource_type = type_name.parse::<ResourceType>()?;
-    allowed(&state, &headers, DataAction::Write, Some(resource_type)).await?;
+    let access = allowed(&state, &headers, DataAction::Write, Some(resource_type)).await?;
     let id = id_text.parse::<ResourceId>()?;
     let current = state.store.read(&id).await?;
     if current.resource_type() != resource_type {
         return Err(Error::NotFound.into());
     }
+    within(&state, &access, &headers, DataAction::Write, &current)?;
     let removed = remove(&state, &id, hard_delete(query.as_deref())).await?;
     if resource_type.as_str() == SEARCH_PARAMETER {
         if let Ok(body) = serde_json::from_slice::<Value>(current.raw()) {
@@ -224,8 +230,9 @@ pub async fn conditional_delete(
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
     let resource_type = type_name.parse::<ResourceType>()?;
-    allowed(&state, &headers, DataAction::Write, Some(resource_type)).await?;
-    let selection = require_condition(parse_query(&state.registry, Some(resource_type), query.as_deref())?, "conditional delete")?;
+    let access = allowed(&state, &headers, DataAction::Write, Some(resource_type)).await?;
+    let mut selection = require_condition(parse_query(&state.registry, Some(resource_type), query.as_deref())?, "conditional delete")?;
+    confine(&mut selection, confining(&state, &access, &headers, DataAction::Write)?)?;
     match single_match(&state, &selection).await? {
         Some(existing) => remove(&state, existing.id(), hard_delete(query.as_deref())).await,
         None => Err(Error::NotFound.into()),
@@ -239,12 +246,13 @@ pub async fn patch_instance(
     body: Bytes,
 ) -> Result<Response, AppError> {
     let resource_type = type_name.parse::<ResourceType>()?;
-    allowed(&state, &headers, DataAction::Write, Some(resource_type)).await?;
+    let access = allowed(&state, &headers, DataAction::Write, Some(resource_type)).await?;
     let id = id_text.parse::<ResourceId>()?;
     let current = state.store.read(&id).await?;
     if current.resource_type() != resource_type {
         return Err(Error::NotFound.into());
     }
+    within(&state, &access, &headers, DataAction::Write, &current)?;
     if current.is_deleted() {
         return Err(Error::Deleted.into());
     }
@@ -259,8 +267,9 @@ pub async fn conditional_patch(
     body: Bytes,
 ) -> Result<Response, AppError> {
     let resource_type = type_name.parse::<ResourceType>()?;
-    allowed(&state, &headers, DataAction::Write, Some(resource_type)).await?;
-    let selection = require_condition(parse_query(&state.registry, Some(resource_type), query.as_deref())?, "conditional patch")?;
+    let access = allowed(&state, &headers, DataAction::Write, Some(resource_type)).await?;
+    let mut selection = require_condition(parse_query(&state.registry, Some(resource_type), query.as_deref())?, "conditional patch")?;
+    confine(&mut selection, confining(&state, &access, &headers, DataAction::Write)?)?;
     match single_match(&state, &selection).await? {
         Some(existing) => patch_stored(&state, resource_type, &existing, &headers, &body).await,
         None => Err(Error::NotFound.into()),
@@ -273,12 +282,13 @@ pub async fn purge_history(
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
     let resource_type = type_name.parse::<ResourceType>()?;
-    allowed(&state, &headers, DataAction::Write, Some(resource_type)).await?;
+    let access = allowed(&state, &headers, DataAction::Write, Some(resource_type)).await?;
     let id = id_text.parse::<ResourceId>()?;
     let current = state.store.read(&id).await?;
     if current.resource_type() != resource_type {
         return Err(Error::NotFound.into());
     }
+    within(&state, &access, &headers, DataAction::Write, &current)?;
     let purged = state.store.purge_history(&id).await?;
     let body = serde_json::json!({
         "resourceType": "Parameters",
@@ -535,9 +545,11 @@ pub async fn instance_history(
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
     let resource_type = type_name.parse::<ResourceType>()?;
-    allowed(&state, &headers, DataAction::Read, Some(resource_type)).await?;
+    let access = allowed(&state, &headers, DataAction::Read, Some(resource_type)).await?;
     let id = id_text.parse::<ResourceId>()?;
     let path = format!("/{resource_type}/{id}/_history");
+    let current = state.store.read(&id).await?;
+    within(&state, &access, &headers, DataAction::Read, &current)?;
     let scope = HistoryScope::Instance(resource_type, id);
     respond_history(&state, scope, path, query, &headers).await
 }
@@ -550,6 +562,8 @@ async fn respond_history(
     headers: &HeaderMap,
 ) -> Result<Response, AppError> {
     let request = HistoryRequest::parse(query.as_deref())?;
+    let access = crate::access::access_of(state, headers).await?;
+    covers(&confining(state, &access, headers, DataAction::Read)?, &scope)?;
     let page = state.store.history(&scope, &request.query).await?;
     let base = format!("http://{}", host_from(headers));
     let self_url = match query.as_deref() {
@@ -775,7 +789,11 @@ pub(crate) async fn respond_page(
     query: Option<String>,
     headers: &HeaderMap,
 ) -> Result<Response, AppError> {
-    confine(&mut request.query, grant_of(headers)?)?;
+    let access = crate::access::access_of(state, headers).await?;
+    confine(
+        &mut request.query,
+        confining(state, &access, headers, DataAction::Read)?,
+    )?;
     crate::terminology::resolve(state.terminology.as_ref(), &mut request.query).await?;
     let page = state.store.search(&request.query).await?;
     let base = format!("http://{}", host_from(headers));
@@ -807,5 +825,55 @@ pub(crate) fn base_of(target: &str) -> Result<Option<ResourceType>, Error> {
     match target {
         "*" => Ok(None),
         name => Ok(Some(name.parse::<ResourceType>()?)),
+    }
+}
+
+pub(crate) fn confining(
+    state: &AppState,
+    access: &Access,
+    headers: &HeaderMap,
+    action: DataAction,
+) -> Result<Option<Grant>, Error> {
+    match access.secured {
+        true => crate::access::granted(&state.registry, access, action),
+        false => grant_of(headers),
+    }
+}
+
+pub(crate) fn within(
+    state: &AppState,
+    access: &Access,
+    headers: &HeaderMap,
+    action: DataAction,
+    envelope: &ResourceEnvelope,
+) -> Result<(), Error> {
+    let Some(grant) = confining(state, access, headers, action)? else {
+        return Ok(());
+    };
+    let body = serde_json::from_slice::<Value>(envelope.raw()).unwrap_or(Value::Null);
+    match grant.reaches(envelope, &body) {
+        true => Ok(()),
+        false => Err(Error::NotFound),
+    }
+}
+
+fn covers(grant: &Option<Grant>, scope: &HistoryScope) -> Result<(), Error> {
+    let Some(grant) = grant else { return Ok(()) };
+    let refused = |what: &str| Err(Error::Forbidden(format!("{what} history under this grant")));
+    match scope {
+        HistoryScope::Instance(_, _) => Ok(()),
+        HistoryScope::Type(kind) => match grant.admits(*kind)
+            && grant.is_open()
+            && grant.narrowing(*kind).is_empty()
+        {
+            true => Ok(()),
+            false => refused("type"),
+        },
+        HistoryScope::System => {
+            match grant.types.is_empty() && grant.is_open() && grant.filters.is_empty() {
+                true => Ok(()),
+                false => refused("system"),
+            }
+        }
     }
 }

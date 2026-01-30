@@ -12,7 +12,7 @@ pub mod value;
 
 pub use chain::{Chain, ChainDirection, Criterion};
 pub use compartment::{Compartment, CompartmentDef, Membership};
-pub use grant::Grant;
+pub use grant::{Grant, GrantFilter};
 pub use include::{Include, IncludeDirection};
 pub use index::IndexKey;
 pub use modifier::Modifier;
