@@ -330,3 +330,86 @@ async fn a_conditional_write_selects_only_inside_the_grant() {
     assert_eq!(refused.status, StatusCode::NOT_FOUND, "{}", refused.body);
     assert_eq!(survived.status, StatusCode::OK, "{}", survived.body);
 }
+
+fn location(reply: &Reply) -> String {
+    reply.body.clone()
+}
+
+#[tokio::test]
+async fn a_job_answers_only_the_caller_that_submitted_it() {
+    use fhir_adapter_memory::{MemoryBulkStore, MemoryJobStore};
+    use fhir_store::{BulkStore, JobId, JobStore, Output, StepTicker};
+
+    let store = MemoryStore::with_clock(Arc::new(|| {
+        FhirInstant::parse("2026-09-06T04:00:00.000Z").unwrap()
+    }));
+    let ticker = StepTicker::starting_at(1_000);
+    let jobs = Arc::new(MemoryJobStore::new(ticker.ticker()));
+    let sink = Arc::new(MemoryBulkStore::new());
+    let app = Service::new(
+        Arc::new(store),
+        FhirVersion::R4,
+        vec![Dependency {
+            name: "memory-store",
+            check: Arc::new(|| Ok(())),
+        }],
+    )
+    .with_jobs(Arc::clone(&jobs) as Arc<dyn JobStore>)
+    .with_outputs(Arc::clone(&sink) as Arc<dyn BulkStore>)
+    .with_authorization(Authorization::new(
+        ISSUER,
+        "https://issuer.example.org/a",
+        "https://issuer.example.org/t",
+    ))
+    .enforcing(Arc::new(HeldKeys::new(keys())))
+    .expect("an authorization is configured");
+
+    let mine = minted(json!({
+        "iss": ISSUER,
+        "sub": "practitioner-1",
+        "scope": "system/*.export system/*.read",
+        "exp": time::OffsetDateTime::now_utc().unix_timestamp() + 300,
+    }));
+    let theirs = minted(json!({
+        "iss": ISSUER,
+        "sub": "practitioner-2",
+        "scope": "system/*.export system/*.read",
+        "exp": time::OffsetDateTime::now_utc().unix_timestamp() + 300,
+    }));
+    let submitted = with_token(&app, "POST", "/$export", &mine, b"{}").await;
+    assert_eq!(submitted.status, StatusCode::ACCEPTED, "{}", location(&submitted));
+
+    let listed = jobs.list(&Default::default()).await.expect("the queue lists");
+    let record = listed.first().expect("one job was submitted").clone();
+    assert_eq!(record.owner.as_deref(), Some("practitioner-1"));
+    let id = record.id.as_str().to_owned();
+    sink.write(
+        &JobId::parse(&id).unwrap(),
+        &Output::new("part-1.ndjson", "Patient", 1),
+        b"{}\n",
+    )
+    .await
+    .expect("the sink takes the file");
+
+    let path = format!("/_jobs/{id}");
+    let polled_by_owner = with_token(&app, "GET", &path, &mine, &[]).await;
+    let polled_by_other = with_token(&app, "GET", &path, &theirs, &[]).await;
+    let file = format!("/_jobs/{id}/part-1.ndjson");
+    let read_by_owner = with_token(&app, "GET", &file, &mine, &[]).await;
+    let read_by_other = with_token(&app, "GET", &file, &theirs, &[]).await;
+    let cancelled_by_other = with_token(&app, "DELETE", &path, &theirs, &[]).await;
+
+    assert_ne!(polled_by_owner.status, StatusCode::NOT_FOUND);
+    assert_eq!(polled_by_other.status, StatusCode::NOT_FOUND);
+    assert_ne!(read_by_owner.status, StatusCode::NOT_FOUND, "{}", read_by_owner.body);
+    assert_eq!(read_by_other.status, StatusCode::NOT_FOUND);
+    assert_eq!(cancelled_by_other.status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn a_confined_grant_submits_no_bulk_job() {
+    let app = guarded();
+    let confined = launched("patient/*.export", "pt-a");
+    let refused = with_token(&app, "POST", "/$export", &confined, b"{}").await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.body);
+}

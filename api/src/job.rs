@@ -6,6 +6,7 @@ use axum::response::Response;
 use fhir_core::{IssueCode, OperationOutcome};
 use fhir_core::Error;
 use fhir_core::security::scope::DataAction;
+use fhir_core::security::Access;
 use fhir_store::{JobId, JobKind, JobRecord, JobRequest, JobState, JobStore};
 use serde_json::Value;
 use std::sync::Arc;
@@ -186,7 +187,11 @@ fn accepted(host: &str, id: &JobId) -> Response {
 }
 
 async fn submit(state: &AppState, kind: JobKind, headers: &HeaderMap, body: &[u8]) -> Response {
-    if let Err(error) = crate::handlers::allowed(state, headers, action_of(kind), None).await {
+    let access = match crate::handlers::allowed(state, headers, action_of(kind), None).await {
+        Ok(access) => access,
+        Err(error) => return AppError::from(error).into_response_now(),
+    };
+    if let Err(error) = wide_enough(state, &access, headers, action_of(kind)) {
         return AppError::from(error).into_response_now();
     }
     let Some(jobs) = queue(state) else {
@@ -203,7 +208,11 @@ async fn submit(state: &AppState, kind: JobKind, headers: &HeaderMap, body: &[u8
         Ok(id) => id,
         Err(error) => return AppError::from(error).into_response_now(),
     };
-    match jobs.submit(JobRequest::new(id.clone(), kind, payload)).await {
+    let request = match access.secured {
+        true => JobRequest::new(id.clone(), kind, payload).owned_by(&access.actor),
+        false => JobRequest::new(id.clone(), kind, payload),
+    };
+    match jobs.submit(request).await {
         Ok(_) => accepted(&host_of(headers), &id),
         Err(error) => AppError::from(error).into_response_now(),
     }
@@ -317,9 +326,10 @@ pub async fn poll(
     headers: HeaderMap,
     Path(id_text): Path<String>,
 ) -> Response {
-    if let Err(error) = crate::handlers::allowed(&state, &headers, DataAction::Read, None).await {
-        return AppError::from(error).into_response_now();
-    }
+    let access = match crate::handlers::allowed(&state, &headers, DataAction::Read, None).await {
+        Ok(access) => access,
+        Err(error) => return AppError::from(error).into_response_now(),
+    };
     let Some(jobs) = queue(&state) else {
         return unsupported();
     };
@@ -331,6 +341,9 @@ pub async fn poll(
         Ok(record) => record,
         Err(error) => return AppError::from(error).into_response_now(),
     };
+    if let Err(error) = owns(&access, &record) {
+        return AppError::from(error).into_response_now();
+    }
     match record.state {
         JobState::Queued | JobState::Running | JobState::Cancelling => {
             let mut response = Response::new(Body::empty());
@@ -371,9 +384,10 @@ pub async fn cancel(
     headers: HeaderMap,
     Path(id_text): Path<String>,
 ) -> Response {
-    if let Err(error) = crate::handlers::allowed(&state, &headers, DataAction::Read, None).await {
-        return AppError::from(error).into_response_now();
-    }
+    let access = match crate::handlers::allowed(&state, &headers, DataAction::Read, None).await {
+        Ok(access) => access,
+        Err(error) => return AppError::from(error).into_response_now(),
+    };
     let Some(jobs) = queue(&state) else {
         return unsupported();
     };
@@ -381,6 +395,10 @@ pub async fn cancel(
         Ok(id) => id,
         Err(_) => return AppError::from(Error::NotFound).into_response_now(),
     };
+    match jobs.fetch(&id).await.and_then(|record| owns(&access, &record)) {
+        Ok(()) => {}
+        Err(error) => return AppError::from(error).into_response_now(),
+    }
     match jobs.cancel(&id).await {
         Ok(_) => {
             let mut response = Response::new(Body::empty());
@@ -396,9 +414,10 @@ pub async fn output(
     headers: HeaderMap,
     Path((id_text, name)): Path<(String, String)>,
 ) -> Response {
-    if let Err(error) = crate::handlers::allowed(&state, &headers, DataAction::Read, None).await {
-        return AppError::from(error).into_response_now();
-    }
+    let access = match crate::handlers::allowed(&state, &headers, DataAction::Read, None).await {
+        Ok(access) => access,
+        Err(error) => return AppError::from(error).into_response_now(),
+    };
     let Some(sink) = sink(&state) else {
         return unsupported();
     };
@@ -406,6 +425,15 @@ pub async fn output(
         Ok(id) => id,
         Err(_) => return AppError::from(Error::NotFound).into_response_now(),
     };
+    if access.secured {
+        let owned = match queue(&state) {
+            None => Err(Error::NotFound),
+            Some(jobs) => jobs.fetch(&id).await.and_then(|record| owns(&access, &record)),
+        };
+        if let Err(error) = owned {
+            return AppError::from(error).into_response_now();
+        }
+    }
     match sink.read(&id, &name).await {
         Ok(body) => {
             let mut response = Response::new(Body::from(body));
@@ -642,4 +670,29 @@ pub async fn submit_group_export(
         &body,
     )
     .await
+}
+
+fn wide_enough(
+    state: &AppState,
+    access: &Access,
+    headers: &HeaderMap,
+    action: DataAction,
+) -> Result<(), Error> {
+    let Some(grant) = crate::handlers::confining(state, access, headers, action)? else {
+        return Ok(());
+    };
+    match grant.is_open() && grant.filters.is_empty() {
+        true => Ok(()),
+        false => Err(Error::Forbidden(format!(
+            "{} under a confined grant",
+            action.as_str()
+        ))),
+    }
+}
+
+fn owns(access: &Access, record: &JobRecord) -> Result<(), Error> {
+    match !access.secured || record.owner.as_deref() == Some(access.actor.as_str()) {
+        true => Ok(()),
+        false => Err(Error::NotFound),
+    }
 }

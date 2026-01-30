@@ -56,6 +56,7 @@ impl JobStore for MemoryJobStore {
         let record = JobRecord {
             id: request.id,
             kind: request.kind,
+            owner: request.owner,
             state: JobState::Queued,
             payload: Some(request.payload),
             progress: JobProgress::default(),

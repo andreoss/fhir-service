@@ -183,6 +183,14 @@ create index if not exists job_ended on job (state, updated_ms);
 create index if not exists job_started on job (kind, started_ms);
 ";
 
+const JOB_OWNER: &str = "
+alter table job add column if not exists owner text;
+";
+
+const JOB_OWNER_TUNING: &str = "
+create index if not exists job_owner on job (owner, created_ms);
+";
+
 pub const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 1,
@@ -237,6 +245,18 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "output index tuning",
         required: false,
         statements: OUTPUT_TUNING,
+    },
+    Migration {
+        version: 10,
+        name: "job owner",
+        required: true,
+        statements: JOB_OWNER,
+    },
+    Migration {
+        version: 11,
+        name: "job owner index",
+        required: false,
+        statements: JOB_OWNER_TUNING,
     },
 ];
 

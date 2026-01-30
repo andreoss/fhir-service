@@ -175,6 +175,7 @@ pub struct JobRequest {
     pub kind: JobKind,
     pub payload: String,
     pub attempts: u32,
+    pub owner: Option<String>,
 }
 
 impl JobRequest {
@@ -184,6 +185,14 @@ impl JobRequest {
             kind,
             payload: payload.into(),
             attempts: 3,
+            owner: None,
+        }
+    }
+
+    pub fn owned_by(self, owner: &str) -> JobRequest {
+        JobRequest {
+            owner: Some(owner.to_owned()),
+            ..self
         }
     }
 
@@ -197,6 +206,7 @@ impl JobRequest {
 
 #[derive(Debug, Clone)]
 pub struct JobRecord {
+    pub owner: Option<String>,
     pub id: JobId,
     pub kind: JobKind,
     pub state: JobState,

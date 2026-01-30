@@ -31,6 +31,15 @@ pub async fn submission(store: &dyn JobStore) {
 
     let missing = store.fetch(&job("nobody")).await;
     assert!(matches!(missing, Err(Error::NotFound)), "{missing:?}");
+
+    let owned = store
+        .submit(JobRequest::new(job("s2"), JobKind::Export, "{}").owned_by("practitioner-1"))
+        .await
+        .unwrap();
+    assert_eq!(owned.owner.as_deref(), Some("practitioner-1"));
+    let read = store.fetch(&job("s2")).await.unwrap();
+    assert_eq!(read.owner.as_deref(), Some("practitioner-1"));
+    assert_eq!(submitted.owner, None);
 }
 
 pub async fn claiming(store: &dyn JobStore) {
