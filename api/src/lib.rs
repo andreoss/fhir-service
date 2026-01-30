@@ -9,6 +9,7 @@ pub mod smart;
 pub mod compartment;
 pub mod handlers;
 pub mod history;
+pub mod introspect;
 pub mod job;
 pub mod operation;
 pub mod parameter;

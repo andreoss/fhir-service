@@ -242,6 +242,11 @@ fn entries() -> Vec<Entry> {
         entry("/$versions", BOTH, get(version_report).post(version_report)),
         entry("/.well-known/smart-configuration", READ, get(configuration)),
         entry(
+            crate::introspect::INTROSPECT,
+            WRITE,
+            post(crate::introspect::introspect),
+        ),
+        entry(
             "/SearchParameter/$status",
             &[Verb::Get, Verb::Post, Verb::Put],
             get(parameter_status).post(parameter_status_query).put(parameter_status_update),

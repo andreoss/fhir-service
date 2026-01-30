@@ -413,3 +413,56 @@ async fn a_confined_grant_submits_no_bulk_job() {
     let refused = with_token(&app, "POST", "/$export", &confined, b"{}").await;
     assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.body);
 }
+
+#[tokio::test]
+async fn introspection_reports_a_token_to_a_caller_that_carries_one() {
+    let app = guarded();
+    let asked = token("system/Patient.read");
+    let body = format!("token={asked}");
+    let reported = with_token(
+        &app,
+        "POST",
+        "/_introspect",
+        &token("system/Patient.read"),
+        body.as_bytes(),
+    )
+    .await;
+    let anonymous = call(&app, "POST", "/_introspect", None, body.as_bytes()).await;
+    let forged = with_token(
+        &app,
+        "POST",
+        "/_introspect",
+        &token("system/Patient.read"),
+        b"token=not-a-token",
+    )
+    .await;
+
+    assert_eq!(reported.status, StatusCode::OK, "{}", reported.body);
+    let value: Value = serde_json::from_str(&reported.body).expect("a document");
+    assert_eq!(value["active"], true);
+    assert_eq!(value["sub"], "practitioner-1");
+    assert_eq!(value["scope"], "system/Patient.read");
+    assert_eq!(value["iss"], ISSUER);
+    assert_eq!(anonymous.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(forged.status, StatusCode::OK, "{}", forged.body);
+    let inactive: Value = serde_json::from_str(&forged.body).expect("a document");
+    assert_eq!(inactive["active"], false);
+    assert!(inactive.get("sub").is_none());
+}
+
+#[tokio::test]
+async fn an_unsecured_instance_introspects_nothing() {
+    let store = MemoryStore::with_clock(Arc::new(|| {
+        FhirInstant::parse("2026-09-06T04:00:00.000Z").unwrap()
+    }));
+    let app = Service::new(
+        Arc::new(store),
+        FhirVersion::R4,
+        vec![Dependency {
+            name: "memory-store",
+            check: Arc::new(|| Ok(())),
+        }],
+    );
+    let reply = call(&app, "POST", "/_introspect", None, b"token=abc").await;
+    assert_eq!(reply.status, StatusCode::NOT_FOUND);
+}
