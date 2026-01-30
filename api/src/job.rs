@@ -5,6 +5,7 @@ use axum::http::StatusCode;
 use axum::response::Response;
 use fhir_core::{IssueCode, OperationOutcome};
 use fhir_core::Error;
+use fhir_core::security::scope::DataAction;
 use fhir_store::{JobId, JobKind, JobRecord, JobRequest, JobState, JobStore};
 use serde_json::Value;
 use std::sync::Arc;
@@ -159,6 +160,16 @@ fn manifest(host: &str, record: &JobRecord, files: &[fhir_store::Output]) -> Val
     body
 }
 
+fn action_of(kind: JobKind) -> DataAction {
+    match kind {
+        JobKind::Import => DataAction::Import,
+        JobKind::Export => DataAction::Export,
+        JobKind::BulkDelete => DataAction::BulkDelete,
+        JobKind::BulkUpdate => DataAction::BulkUpdate,
+        JobKind::Reindex => DataAction::Reindex,
+    }
+}
+
 fn accepted(host: &str, id: &JobId) -> Response {
     let mut response = Response::new(Body::empty());
     *response.status_mut() = StatusCode::ACCEPTED;
@@ -175,6 +186,9 @@ fn accepted(host: &str, id: &JobId) -> Response {
 }
 
 async fn submit(state: &AppState, kind: JobKind, headers: &HeaderMap, body: &[u8]) -> Response {
+    if let Err(error) = crate::handlers::allowed(state, headers, action_of(kind), None).await {
+        return AppError::from(error).into_response_now();
+    }
     let Some(jobs) = queue(state) else {
         return unsupported();
     };
@@ -303,6 +317,9 @@ pub async fn poll(
     headers: HeaderMap,
     Path(id_text): Path<String>,
 ) -> Response {
+    if let Err(error) = crate::handlers::allowed(&state, &headers, DataAction::Read, None).await {
+        return AppError::from(error).into_response_now();
+    }
     let Some(jobs) = queue(&state) else {
         return unsupported();
     };
@@ -349,7 +366,14 @@ pub async fn poll(
     }
 }
 
-pub async fn cancel(State(state): State<AppState>, Path(id_text): Path<String>) -> Response {
+pub async fn cancel(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id_text): Path<String>,
+) -> Response {
+    if let Err(error) = crate::handlers::allowed(&state, &headers, DataAction::Read, None).await {
+        return AppError::from(error).into_response_now();
+    }
     let Some(jobs) = queue(&state) else {
         return unsupported();
     };
@@ -369,8 +393,12 @@ pub async fn cancel(State(state): State<AppState>, Path(id_text): Path<String>) 
 
 pub async fn output(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Path((id_text, name)): Path<(String, String)>,
 ) -> Response {
+    if let Err(error) = crate::handlers::allowed(&state, &headers, DataAction::Read, None).await {
+        return AppError::from(error).into_response_now();
+    }
     let Some(sink) = sink(&state) else {
         return unsupported();
     };

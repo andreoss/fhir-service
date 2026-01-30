@@ -1,4 +1,5 @@
 
+pub mod access;
 pub mod app;
 pub mod bundle;
 pub mod capability;
@@ -16,7 +17,9 @@ pub mod search;
 pub mod terminology;
 pub mod token;
 
+pub use access::{access_of, Guard};
 pub use app::{AppState, Bound, Dependency, Service};
+pub use discovery::{DiscoveredKeys, HeldKeys, Keys};
 pub use bundle::process;
 pub use capability::{operations, statement, versions, Level, Operation, BUILD};
 pub use definition::{definitions_bundle as operation_definitions_bundle, inputs, OperationParam};

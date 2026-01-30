@@ -7,6 +7,8 @@ use fhir_core::{
     Error, FhirInstant, Patch, ResourceEnvelope, ResourceId, ResourceType, VersionId, WeakEtag,
 };
 use fhir_core::search::{Compartment, Grant, ParameterSpec};
+use fhir_core::security::scope::DataAction;
+use fhir_core::security::Access;
 use fhir_store::{HistoryScope, SearchQuery};
 use serde_json::Value;
 use uuid::Uuid;
@@ -56,6 +58,7 @@ pub async fn read(
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
     let resource_type = type_name.parse::<ResourceType>()?;
+    allowed(&state, &headers, DataAction::Read, Some(resource_type)).await?;
     let id = id_text.parse::<ResourceId>()?;
     let envelope = state.store.read(&id).await?;
     if envelope.resource_type() != resource_type {
@@ -73,6 +76,7 @@ pub async fn vread(
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
     let resource_type = type_name.parse::<ResourceType>()?;
+    allowed(&state, &headers, DataAction::Read, Some(resource_type)).await?;
     let id = id_text.parse::<ResourceId>()?;
     let version = version_text.parse::<VersionId>()?;
     let envelope = state.store.vread(&id, &version).await?;
@@ -92,6 +96,7 @@ pub async fn create(
     body: Bytes,
 ) -> Result<Response, AppError> {
     let resource_type = type_name.parse::<ResourceType>()?;
+    allowed(&state, &headers, DataAction::Write, Some(resource_type)).await?;
     if let Some(condition) = headers.get(IF_NONE_EXIST) {
         let raw = condition
             .to_str()
@@ -124,6 +129,7 @@ pub async fn conditional_update(
     body: Bytes,
 ) -> Result<Response, AppError> {
     let resource_type = type_name.parse::<ResourceType>()?;
+    allowed(&state, &headers, DataAction::Write, Some(resource_type)).await?;
     let selection = require_condition(parse_query(&state.registry, Some(resource_type), query.as_deref())?, "conditional update")?;
     let value: Value = serde_json::from_slice(&body).map_err(|error| Error::InvalidJson(error.to_string()))?;
     let expected = expected_version(&headers)?;
@@ -149,6 +155,7 @@ pub async fn update(
     body: Bytes,
 ) -> Result<Response, AppError> {
     let resource_type = type_name.parse::<ResourceType>()?;
+    allowed(&state, &headers, DataAction::Write, Some(resource_type)).await?;
     let id = id_text.parse::<ResourceId>()?;
     let expected = expected_version(&headers)?;
     let value: Value = serde_json::from_slice(&body).map_err(|error| Error::InvalidJson(error.to_string()))?;
@@ -190,8 +197,10 @@ pub async fn delete_instance(
     State(state): State<AppState>,
     Path((type_name, id_text)): Path<(String, String)>,
     RawQuery(query): RawQuery,
+    headers: HeaderMap,
 ) -> Result<Response, AppError> {
     let resource_type = type_name.parse::<ResourceType>()?;
+    allowed(&state, &headers, DataAction::Write, Some(resource_type)).await?;
     let id = id_text.parse::<ResourceId>()?;
     let current = state.store.read(&id).await?;
     if current.resource_type() != resource_type {
@@ -212,8 +221,10 @@ pub async fn conditional_delete(
     State(state): State<AppState>,
     Path(type_name): Path<String>,
     RawQuery(query): RawQuery,
+    headers: HeaderMap,
 ) -> Result<Response, AppError> {
     let resource_type = type_name.parse::<ResourceType>()?;
+    allowed(&state, &headers, DataAction::Write, Some(resource_type)).await?;
     let selection = require_condition(parse_query(&state.registry, Some(resource_type), query.as_deref())?, "conditional delete")?;
     match single_match(&state, &selection).await? {
         Some(existing) => remove(&state, existing.id(), hard_delete(query.as_deref())).await,
@@ -228,6 +239,7 @@ pub async fn patch_instance(
     body: Bytes,
 ) -> Result<Response, AppError> {
     let resource_type = type_name.parse::<ResourceType>()?;
+    allowed(&state, &headers, DataAction::Write, Some(resource_type)).await?;
     let id = id_text.parse::<ResourceId>()?;
     let current = state.store.read(&id).await?;
     if current.resource_type() != resource_type {
@@ -247,6 +259,7 @@ pub async fn conditional_patch(
     body: Bytes,
 ) -> Result<Response, AppError> {
     let resource_type = type_name.parse::<ResourceType>()?;
+    allowed(&state, &headers, DataAction::Write, Some(resource_type)).await?;
     let selection = require_condition(parse_query(&state.registry, Some(resource_type), query.as_deref())?, "conditional patch")?;
     match single_match(&state, &selection).await? {
         Some(existing) => patch_stored(&state, resource_type, &existing, &headers, &body).await,
@@ -257,8 +270,10 @@ pub async fn conditional_patch(
 pub async fn purge_history(
     State(state): State<AppState>,
     Path((type_name, id_text)): Path<(String, String)>,
+    headers: HeaderMap,
 ) -> Result<Response, AppError> {
     let resource_type = type_name.parse::<ResourceType>()?;
+    allowed(&state, &headers, DataAction::Write, Some(resource_type)).await?;
     let id = id_text.parse::<ResourceId>()?;
     let current = state.store.read(&id).await?;
     if current.resource_type() != resource_type {
@@ -497,6 +512,7 @@ pub async fn system_history(
     RawQuery(query): RawQuery,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
+    allowed(&state, &headers, DataAction::Read, None).await?;
     respond_history(&state, HistoryScope::System, "/_history".to_owned(), query, &headers).await
 }
 
@@ -507,6 +523,7 @@ pub async fn type_history(
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
     let resource_type = type_name.parse::<ResourceType>()?;
+    allowed(&state, &headers, DataAction::Read, Some(resource_type)).await?;
     let path = format!("/{resource_type}/_history");
     respond_history(&state, HistoryScope::Type(resource_type), path, query, &headers).await
 }
@@ -518,6 +535,7 @@ pub async fn instance_history(
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
     let resource_type = type_name.parse::<ResourceType>()?;
+    allowed(&state, &headers, DataAction::Read, Some(resource_type)).await?;
     let id = id_text.parse::<ResourceId>()?;
     let path = format!("/{resource_type}/{id}/_history");
     let scope = HistoryScope::Instance(resource_type, id);
@@ -554,6 +572,7 @@ pub async fn search_type(
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
     let resource_type = type_name.parse::<ResourceType>()?;
+    allowed(&state, &headers, DataAction::Read, Some(resource_type)).await?;
     let path = format!("/{resource_type}");
     respond_search(&state, Some(resource_type), path, query, &headers).await
 }
@@ -563,6 +582,7 @@ pub async fn search_system(
     RawQuery(query): RawQuery,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
+    allowed(&state, &headers, DataAction::Read, None).await?;
     respond_search(&state, None, String::new(), query, &headers).await
 }
 
@@ -573,6 +593,7 @@ pub async fn compartment_search(
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
     let root_type = kind.parse::<ResourceType>()?;
+    allowed(&state, &headers, DataAction::Read, base_of(&target)?).await?;
     let def = fhir_core::search::compartment::definition(root_type.as_str())
         .ok_or_else(|| Error::UnsupportedParameter(format!("compartment {kind:?}")))?;
     let root = ResourceId::parse(&id)?;
@@ -608,15 +629,19 @@ pub async fn compartment_search(
 pub async fn parameter_status(
     State(state): State<AppState>,
     RawQuery(query): RawQuery,
+    headers: HeaderMap,
 ) -> Result<Response, AppError> {
+    allowed(&state, &headers, DataAction::Read, None).await?;
     let wanted = param(query.as_deref(), "url");
     Ok(rendered(parameter::status_report(&state, wanted.as_deref())?))
 }
 
 pub async fn parameter_status_query(
     State(state): State<AppState>,
+    headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, AppError> {
+    allowed(&state, &headers, DataAction::Read, None).await?;
     let wanted = match body.is_empty() {
         true => None,
         false => {
@@ -631,7 +656,9 @@ pub async fn parameter_status_query(
 pub async fn parameter_status_update(
     State(state): State<AppState>,
     RawQuery(query): RawQuery,
+    headers: HeaderMap,
 ) -> Result<Response, AppError> {
+    allowed(&state, &headers, DataAction::ParameterManagement, None).await?;
     let url = param(query.as_deref(), "url")
         .ok_or_else(|| Error::InvalidParameter("status needs a url".to_owned()))?;
     let wanted = param(query.as_deref(), "status")
@@ -644,12 +671,18 @@ pub async fn parameter_status_update(
 pub async fn parameter_reindex(
     State(state): State<AppState>,
     RawQuery(query): RawQuery,
+    headers: HeaderMap,
 ) -> Result<Response, AppError> {
+    allowed(&state, &headers, DataAction::ParameterManagement, None).await?;
     let wanted = param(query.as_deref(), "url");
     Ok(rendered(parameter::reindex(&state, wanted.as_deref()).await?))
 }
 
-pub async fn parameter_refresh(State(state): State<AppState>) -> Result<Response, AppError> {
+pub async fn parameter_refresh(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    allowed(&state, &headers, DataAction::ParameterManagement, None).await?;
     parameter::refresh(&state).await?;
     Ok(rendered(parameter::status_report(&state, None)?))
 }
@@ -757,4 +790,22 @@ pub(crate) async fn respond_page(
         body,
     )
         .into_response())
+}
+
+pub(crate) async fn allowed(
+    state: &AppState,
+    headers: &HeaderMap,
+    action: DataAction,
+    resource_type: Option<ResourceType>,
+) -> Result<Access, Error> {
+    let access = crate::access::access_of(state, headers).await?;
+    access.require(action, resource_type)?;
+    Ok(access)
+}
+
+pub(crate) fn base_of(target: &str) -> Result<Option<ResourceType>, Error> {
+    match target {
+        "*" => Ok(None),
+        name => Ok(Some(name.parse::<ResourceType>()?)),
+    }
 }

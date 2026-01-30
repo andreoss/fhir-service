@@ -14,6 +14,8 @@ use tower::ServiceExt;
 
 use crate::app::AppState;
 use crate::handlers::AppError;
+use fhir_core::security::scope::DataAction;
+use fhir_core::security::Access;
 
 const FHIR_JSON: &str = "application/fhir+json";
 const BUNDLE: &str = "Bundle";
@@ -34,10 +36,13 @@ pub async fn process(
         serde_json::from_slice(&body).map_err(|error| Error::InvalidJson(error.to_string()))?;
     let incoming = Incoming::parse(&value)?;
     let grant = granted(&headers)?;
+    let access = Arc::new(crate::access::access_of(&state, &headers).await?);
     let entries = Arc::new(incoming.entries);
     match incoming.kind {
-        Kind::Transaction => transaction(&state, &headers, &entries, grant.as_ref()).await,
-        Kind::Batch => Ok(batch(&state, &headers, &entries, grant.as_ref()).await),
+        Kind::Transaction => {
+            transaction(&state, &headers, &entries, &access, grant.as_ref()).await
+        }
+        Kind::Batch => Ok(batch(&state, &headers, &entries, &access, grant.as_ref()).await),
     }
 }
 
@@ -195,13 +200,14 @@ async fn transaction(
     state: &AppState,
     headers: &HeaderMap,
     entries: &[Result<Entry, Error>],
+    access: &Access,
     grant: Option<&Grant>,
 ) -> Result<Response, AppError> {
     let scope = state.store.begin().await?;
     let router = crate::app::over(state, scope.store());
     let mut taken: Vec<Option<Taken>> = entries.iter().map(|_| None).collect();
     for index in ordered(entries) {
-        let outcome = dispatch(&router, headers, &entries[index], grant).await;
+        let outcome = dispatch(&router, headers, &entries[index], access, grant).await;
         if outcome.failed() {
             scope.rollback().await?;
             return Ok(outcome.into_response());
@@ -217,6 +223,7 @@ async fn batch(
     state: &AppState,
     headers: &HeaderMap,
     entries: &Arc<Vec<Result<Entry, Error>>>,
+    access: &Arc<Access>,
     grant: Option<&Grant>,
 ) -> Response {
     let router = crate::app::over(state, Arc::clone(&state.store));
@@ -226,10 +233,12 @@ async fn batch(
         let headers = headers.clone();
         let entries = Arc::clone(entries);
         let grant = grant.cloned();
+        let access = Arc::clone(access);
         let gate = Arc::clone(&state.entries);
         running.spawn(async move {
             let _permit = gate.acquire().await;
-            let taken = dispatch(&router, &headers, &entries[index], grant.as_ref()).await;
+            let taken =
+                dispatch(&router, &headers, &entries[index], &access, grant.as_ref()).await;
             (index, taken.to_entry())
         });
     }
@@ -279,13 +288,14 @@ async fn dispatch(
     router: &Router<()>,
     outer: &HeaderMap,
     entry: &Result<Entry, Error>,
+    access: &Access,
     grant: Option<&Grant>,
 ) -> Taken {
     let entry = match entry {
         Err(error) => return refused(error),
         Ok(entry) => entry,
     };
-    if let Err(error) = permitted(grant, entry) {
+    if let Err(error) = permitted(access, grant, entry) {
         return refused(&error);
     }
     match built(outer, entry) {
@@ -310,6 +320,9 @@ fn built(outer: &HeaderMap, entry: &Entry) -> Result<Request<Body>, Error> {
     }
     if let Some(scope) = outer.get(SCOPE) {
         builder = builder.header(HeaderName::from_static(SCOPE), scope.clone());
+    }
+    if let Some(credential) = outer.get(header::AUTHORIZATION) {
+        builder = builder.header(header::AUTHORIZATION, credential.clone());
     }
     builder
         .body(Body::from(entry.body()))
@@ -381,13 +394,20 @@ fn granted(headers: &HeaderMap) -> Result<Option<Grant>, Error> {
     }
 }
 
-fn permitted(grant: Option<&Grant>, entry: &Entry) -> Result<(), Error> {
-    let Some(grant) = grant else { return Ok(()) };
-    let Some(target) = target(&entry.url) else { return Ok(()) };
-    let Ok(kind) = target.parse::<ResourceType>() else { return Ok(()) };
+fn permitted(access: &Access, grant: Option<&Grant>, entry: &Entry) -> Result<(), Error> {
+    let kind = target(&entry.url).and_then(|name| name.parse::<ResourceType>().ok());
+    access.require(action_of(&entry.method), kind)?;
+    let (Some(grant), Some(kind)) = (grant, kind) else { return Ok(()) };
     match grant.admits(kind) {
         true => Ok(()),
         false => Err(Error::Forbidden(format!("type {:?}", kind.as_str()))),
+    }
+}
+
+fn action_of(method: &str) -> DataAction {
+    match method {
+        "GET" | "HEAD" => DataAction::Read,
+        _ => DataAction::Write,
     }
 }
 
