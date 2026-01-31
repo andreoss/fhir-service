@@ -370,6 +370,8 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "fhir-core",
+ "flate2",
+ "serde_json",
  "time",
 ]
 

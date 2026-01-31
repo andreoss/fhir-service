@@ -1,8 +1,9 @@
 
 pub(crate) mod compile;
-pub mod body;
+pub use fhir_store::body;
+pub use fhir_store::index as extract;
+
 pub mod bulk;
-pub mod extract;
 pub mod fault;
 pub mod jobs;
 pub mod migration;

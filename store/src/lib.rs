@@ -1,8 +1,10 @@
 
 pub mod audit;
 pub mod bulk;
+pub mod body;
 pub mod clock;
 pub mod history;
+pub mod index;
 pub mod job;
 pub mod parameter;
 pub mod plan;
