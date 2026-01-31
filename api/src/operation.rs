@@ -80,7 +80,7 @@ pub async fn convert_data(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, AppError> {
-    allowed(&state, &headers, DataAction::Read, None).await?;
+    allowed(&state, &headers, DataAction::Read, None, None).await?;
     let input = parameters(&body)?;
     let data = required(&input, "inputData")?;
     let input_type = required(&input, "inputDataType")?.parse::<InputType>()?;
@@ -108,7 +108,7 @@ pub async fn validate_type(
     body: Bytes,
 ) -> Result<Response, AppError> {
     let resource_type = type_name.parse::<ResourceType>()?;
-    allowed(&state, &headers, DataAction::Read, Some(resource_type)).await?;
+    allowed(&state, &headers, DataAction::Read, Some(resource_type), None).await?;
     validated(&state, Some(resource_type), None, query.as_deref(), &body).await
 }
 
@@ -120,7 +120,7 @@ pub async fn validate_instance(
     body: Bytes,
 ) -> Result<Response, AppError> {
     let resource_type = type_name.parse::<ResourceType>()?;
-    allowed(&state, &headers, DataAction::Read, Some(resource_type)).await?;
+    allowed(&state, &headers, DataAction::Read, Some(resource_type), None).await?;
     let id = id_text.parse::<ResourceId>()?;
     validated(&state, Some(resource_type), Some(id), query.as_deref(), &body).await
 }
@@ -191,7 +191,7 @@ pub async fn everything(
     RawQuery(query): RawQuery,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
-    allowed(&state, &headers, DataAction::Read, None).await?;
+    allowed(&state, &headers, DataAction::Read, None, None).await?;
     let root = "Patient".parse::<ResourceType>()?;
     let id = id_text.parse::<ResourceId>()?;
     let stored = state.store.read(&id).await?;
@@ -276,7 +276,7 @@ pub async fn member_match(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, AppError> {
-    allowed(&state, &headers, DataAction::Read, None).await?;
+    allowed(&state, &headers, DataAction::Read, None, None).await?;
     let input = parameters(&body)?;
     let submitted = resource_of(&input, "MemberPatient").ok_or_else(|| {
         Error::InvalidParameter("\"MemberPatient\" is missing".to_owned())
@@ -373,7 +373,7 @@ pub async fn includes_type(
     RawQuery(query): RawQuery,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
-    allowed(&state, &headers, DataAction::Read, None).await?;
+    allowed(&state, &headers, DataAction::Read, None, None).await?;
     let resource_type = type_name.parse::<ResourceType>()?;
     let path = format!("/{resource_type}/$includes");
     related(&state, Some(resource_type), path, query, &headers).await
@@ -384,7 +384,7 @@ pub async fn includes_system(
     RawQuery(query): RawQuery,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
-    allowed(&state, &headers, DataAction::Read, None).await?;
+    allowed(&state, &headers, DataAction::Read, None, None).await?;
     related(&state, None, "/$includes".to_owned(), query, &headers).await
 }
 
@@ -445,7 +445,7 @@ pub async fn docref_query(
     RawQuery(query): RawQuery,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
-    allowed(&state, &headers, DataAction::Read, None).await?;
+    allowed(&state, &headers, DataAction::Read, None, None).await?;
     let asked = from_query(query.as_deref())?;
     documents(&state, asked, &headers).await
 }
@@ -455,7 +455,7 @@ pub async fn docref_body(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, AppError> {
-    allowed(&state, &headers, DataAction::Read, None).await?;
+    allowed(&state, &headers, DataAction::Read, None, None).await?;
     let asked = match body.iter().all(u8::is_ascii_whitespace) {
         true => from_query(None)?,
         false => from_parameters(&parameters(&body)?)?,
@@ -550,7 +550,7 @@ pub async fn expand_query(
     RawQuery(query): RawQuery,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
-    allowed(&state, &headers, DataAction::Read, None).await?;
+    allowed(&state, &headers, DataAction::Read, None, None).await?;
     let asked = crate::query::pairs(query.as_deref());
     accepts(query.as_deref(), &[&EXPAND_PARAMS[..], &[SYSTEM_VERSION]].concat())?;
     expanded(&state, &asked).await
@@ -561,7 +561,7 @@ pub async fn expand_body(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, AppError> {
-    allowed(&state, &headers, DataAction::Read, None).await?;
+    allowed(&state, &headers, DataAction::Read, None, None).await?;
     let input = parameters(&body)?;
     let mut asked = Vec::new();
     for name in EXPAND_PARAMS.iter().chain([SYSTEM_VERSION].iter()) {

@@ -33,6 +33,7 @@ pub struct AppState {
     pub entries: Arc<tokio::sync::Semaphore>,
     pub templates: Arc<dyn Templates>,
     pub terminology: Arc<dyn fhir_store::Terminology>,
+    pub audit: Arc<dyn fhir_store::Audit>,
     pub authorization: Option<Arc<crate::smart::Authorization>>,
     pub guard: Option<Arc<crate::access::Guard>>,
 }
@@ -67,6 +68,7 @@ impl Service {
                 parameters: Arc::new(tokio::sync::Mutex::new(())),
                 entries: Arc::new(tokio::sync::Semaphore::new(crate::bundle::ENTRIES_AT_ONCE)),
                 templates: Arc::new(ApprovedTemplates::default()),
+                audit: Arc::new(fhir_store::Unrecorded),
                 authorization: None,
                 guard: None,
             },
@@ -113,6 +115,15 @@ impl Service {
         Service {
             state: AppState {
                 authorization: Some(Arc::new(authorization)),
+                ..self.state
+            },
+        }
+    }
+
+    pub fn recording(self, audit: Arc<dyn fhir_store::Audit>) -> Service {
+        Service {
+            state: AppState {
+                audit,
                 ..self.state
             },
         }

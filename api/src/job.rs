@@ -187,7 +187,7 @@ fn accepted(host: &str, id: &JobId) -> Response {
 }
 
 async fn submit(state: &AppState, kind: JobKind, headers: &HeaderMap, body: &[u8]) -> Response {
-    let access = match crate::handlers::allowed(state, headers, action_of(kind), None).await {
+    let access = match crate::handlers::allowed(state, headers, action_of(kind), None, None).await {
         Ok(access) => access,
         Err(error) => return AppError::from(error).into_response_now(),
     };
@@ -326,7 +326,7 @@ pub async fn poll(
     headers: HeaderMap,
     Path(id_text): Path<String>,
 ) -> Response {
-    let access = match crate::handlers::allowed(&state, &headers, DataAction::Read, None).await {
+    let access = match crate::handlers::allowed(&state, &headers, DataAction::Read, None, None).await {
         Ok(access) => access,
         Err(error) => return AppError::from(error).into_response_now(),
     };
@@ -384,7 +384,7 @@ pub async fn cancel(
     headers: HeaderMap,
     Path(id_text): Path<String>,
 ) -> Response {
-    let access = match crate::handlers::allowed(&state, &headers, DataAction::Read, None).await {
+    let access = match crate::handlers::allowed(&state, &headers, DataAction::Read, None, None).await {
         Ok(access) => access,
         Err(error) => return AppError::from(error).into_response_now(),
     };
@@ -414,7 +414,7 @@ pub async fn output(
     headers: HeaderMap,
     Path((id_text, name)): Path<(String, String)>,
 ) -> Response {
-    let access = match crate::handlers::allowed(&state, &headers, DataAction::Read, None).await {
+    let access = match crate::handlers::allowed(&state, &headers, DataAction::Read, None, None).await {
         Ok(access) => access,
         Err(error) => return AppError::from(error).into_response_now(),
     };

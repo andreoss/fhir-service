@@ -466,3 +466,103 @@ async fn an_unsecured_instance_introspects_nothing() {
     let reply = call(&app, "POST", "/_introspect", None, b"token=abc").await;
     assert_eq!(reply.status, StatusCode::NOT_FOUND);
 }
+
+fn recording() -> (Service, Arc<MemoryStore>) {
+    let store = Arc::new(MemoryStore::with_clock(Arc::new(|| {
+        FhirInstant::parse("2026-09-06T04:00:00.000Z").unwrap()
+    })));
+    let app = Service::new(
+        Arc::clone(&store) as Arc<dyn fhir_store::ResourceStore>,
+        FhirVersion::R4,
+        vec![Dependency {
+            name: "memory-store",
+            check: Arc::new(|| Ok(())),
+        }],
+    )
+    .with_authorization(Authorization::new(
+        ISSUER,
+        "https://issuer.example.org/a",
+        "https://issuer.example.org/t",
+    ))
+    .enforcing(Arc::new(HeldKeys::new(keys())))
+    .expect("an authorization is configured");
+    let trail = Arc::new(fhir_api::StoredTrail::new(
+        Arc::clone(&store) as Arc<dyn fhir_store::ResourceStore>,
+        FhirVersion::R4,
+    ));
+    (app.recording(trail), store)
+}
+
+async fn trail_of(store: &Arc<MemoryStore>) -> Vec<Value> {
+    use fhir_store::{ResourceStore, SearchQuery};
+    let query = SearchQuery::of_type("AuditEvent".parse().unwrap());
+    store
+        .search(&query)
+        .await
+        .expect("the trail is searchable")
+        .entries
+        .iter()
+        .map(|entry| serde_json::from_slice::<Value>(entry.raw()).expect("a record"))
+        .collect()
+}
+
+#[tokio::test]
+async fn every_read_and_write_leaves_one_record_of_who_did_what() {
+    let (app, store) = recording();
+    let scopes = Some("system/Patient.read system/Patient.write");
+    let created = call(
+        &app,
+        "POST",
+        "/Patient",
+        scopes,
+        br#"{"resourceType":"Patient","id":"pt-t1","active":true,"name":[{"family":"Stone"}]}"#,
+    )
+    .await;
+    let read = call(&app, "GET", "/Patient/pt-t1", scopes, &[]).await;
+    let refused = call(&app, "GET", "/Observation/ob-t1", scopes, &[]).await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    assert_eq!(read.status, StatusCode::OK, "{}", read.body);
+    assert_eq!(refused.status, StatusCode::FORBIDDEN);
+
+    let records = trail_of(&store).await;
+    assert_eq!(records.len(), 3, "{records:?}");
+    let actions: Vec<String> = records
+        .iter()
+        .map(|entry| entry["type"]["code"].as_str().unwrap_or_default().to_owned())
+        .collect();
+    assert!(actions.contains(&"write".to_owned()), "{actions:?}");
+    assert!(actions.contains(&"read".to_owned()), "{actions:?}");
+    for entry in &records {
+        assert_eq!(
+            entry["agent"][0]["who"]["identifier"]["value"],
+            "practitioner-1"
+        );
+        let text = entry.to_string();
+        assert!(!text.contains("Stone"), "{text}");
+        assert!(!text.contains("Bearer"), "{text}");
+    }
+    let denied = records
+        .iter()
+        .find(|entry| entry["outcome"] == "8")
+        .expect("the refusal is recorded");
+    assert_eq!(denied["entity"][0]["what"]["reference"], "Observation/ob-t1");
+}
+
+#[tokio::test]
+async fn a_refused_credential_never_reaches_the_error_body() {
+    let (app, _store) = recording();
+    let secret = "a-token-that-does-not-verify";
+    let request = Request::builder()
+        .method("GET")
+        .uri("/Patient/pt-t1")
+        .header("host", "localhost")
+        .header("authorization", format!("Bearer {secret}"))
+        .body(Body::empty())
+        .unwrap();
+    let response = app.router().oneshot(request).await.unwrap();
+    let status = response.status();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let body = String::from_utf8_lossy(&bytes).into_owned();
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert!(!body.contains(secret), "{body}");
+}

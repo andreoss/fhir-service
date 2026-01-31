@@ -16,6 +16,7 @@ pub mod parameter;
 pub mod query;
 pub mod search;
 pub mod terminology;
+pub mod trail;
 pub mod token;
 
 pub use access::{access_of, Guard};
@@ -32,3 +33,4 @@ pub use parameter::{install, status_of, uninstall};
 pub use search::{parse_query, search_bundle, SearchRequest};
 pub use smart::Authorization;
 pub use terminology::StoredTerminology;
+pub use trail::StoredTrail;
