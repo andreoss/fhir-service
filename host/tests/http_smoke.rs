@@ -1285,3 +1285,107 @@ fn live_discovery_matches_the_configured_authorization() {
         "SMART-on-FHIR"
     );
 }
+
+const SMOKE_SECRET: &[u8] = b"a-secret-supplied-by-configuration";
+const SMOKE_ISSUER: &str = "https://issuer.example.org";
+
+fn key_document() -> String {
+    format!(
+        r#"{{"keys":[{{"kty":"oct","kid":"one","alg":"HS256","k":"{}"}}]}}"#,
+        fhir_core::security::bearer::encode(SMOKE_SECRET)
+    )
+}
+
+fn smoke_token(scopes: &str) -> String {
+    use fhir_core::security::bearer::encode;
+    use fhir_core::security::digest::hmac_sha256;
+    let expiry = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|since| since.as_secs() as i64 + 300)
+        .unwrap_or(0);
+    let head = encode(br#"{"alg":"HS256","kid":"one"}"#);
+    let payload = format!(
+        r#"{{"iss":"{SMOKE_ISSUER}","sub":"practitioner-1","scope":"{scopes}","exp":{expiry}}}"#
+    );
+    let body = encode(payload.as_bytes());
+    let input = format!("{head}.{body}");
+    format!("{input}.{}", encode(&hmac_sha256(SMOKE_SECRET, input.as_bytes())))
+}
+
+fn spawn_enforcing() -> (Child, u16) {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_fhir-host"))
+        .env("FHIR_BACKEND", "memory")
+        .env("FHIR_BIND", "127.0.0.1:0")
+        .env("FHIR_VERSION", "R4")
+        .env("FHIR_AUTH_ISSUER", SMOKE_ISSUER)
+        .env("FHIR_AUTH_AUTHORIZE", "https://issuer.example.org/authorize")
+        .env("FHIR_AUTH_TOKEN", "https://issuer.example.org/token")
+        .env("FHIR_AUTH_INTROSPECT", "https://issuer.example.org/introspect")
+        .env("FHIR_AUTH_SCOPES", "system/*.read,system/*.write")
+        .env("FHIR_AUTH_KEYS", key_document())
+        .env_remove("FHIR_DATABASE_URL")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to spawn binary");
+    let stdout = child.stdout.take().expect("missing stdout");
+    let mut line = String::new();
+    BufReader::new(stdout)
+        .read_line(&mut line)
+        .expect("failed to read the announced address");
+    match line.trim().rsplit_once(':').and_then(|(_, port)| port.parse().ok()) {
+        Some(port) => (child, port),
+        None => {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("server did not announce an address, said {line:?}");
+        }
+    }
+}
+
+#[test]
+fn live_requests_are_authorized_scoped_and_recorded() {
+    let (child, port) = spawn_enforcing();
+    let write = format!("Bearer {}", smoke_token("system/Patient.read system/Patient.write"));
+    let read_all = format!("Bearer {}", smoke_token("system/*.read"));
+    let patient = br#"{"resourceType":"Patient","id":"pt-sec","active":true,"name":[{"family":"Stone"}]}"#;
+
+    let anonymous = request(port, "GET", "/Patient/pt-sec", &[], &[]);
+    let created = request(port, "POST", "/Patient", &[("Authorization", write.as_str())], patient);
+    let read = request(port, "GET", "/Patient/pt-sec", &[("Authorization", write.as_str())], &[]);
+    let outside = request(port, "GET", "/Observation", &[("Authorization", write.as_str())], &[]);
+    let introspected = request(
+        port,
+        "POST",
+        "/_introspect",
+        &[("Authorization", write.as_str())],
+        format!("token={}", smoke_token("system/Patient.read")).as_bytes(),
+    );
+    let trail = request(port, "GET", "/AuditEvent", &[("Authorization", read_all.as_str())], &[]);
+    stop(child);
+
+    assert_eq!(anonymous.status, 401, "{}", anonymous.body);
+    assert_eq!(issue_code(&anonymous.body), "login");
+    assert_eq!(created.status, 201, "{}", created.body);
+    assert_eq!(read.status, 200, "{}", read.body);
+    assert_eq!(outside.status, 403, "{}", outside.body);
+    assert_eq!(issue_code(&outside.body), "forbidden");
+
+    assert_eq!(introspected.status, 200, "{}", introspected.body);
+    let reported: serde_json::Value = serde_json::from_str(&introspected.body).expect("json");
+    assert_eq!(reported["active"], true);
+    assert_eq!(reported["sub"], "practitioner-1");
+    assert_eq!(reported["scope"], "system/Patient.read");
+
+    assert_eq!(trail.status, 200, "{}", trail.body);
+    let recorded: serde_json::Value = serde_json::from_str(&trail.body).expect("json");
+    let entries = recorded["entry"].as_array().cloned().unwrap_or_default();
+    assert!(!entries.is_empty(), "{}", trail.body);
+    let actions: Vec<String> = entries
+        .iter()
+        .map(|entry| entry["resource"]["type"]["code"].as_str().unwrap_or_default().to_owned())
+        .collect();
+    assert!(actions.contains(&"write".to_owned()), "{actions:?}");
+    assert!(actions.contains(&"read".to_owned()), "{actions:?}");
+    assert!(!trail.body.contains("Stone"), "{}", trail.body);
+}

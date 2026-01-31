@@ -1,4 +1,5 @@
 use fhir_api::Authorization;
+use fhir_core::security::bearer::KeySet;
 use fhir_core::{Error, FhirVersion};
 use std::collections::BTreeMap;
 use std::fmt;
@@ -22,6 +23,7 @@ pub const ENV_AUTH_TOKEN: &str = "FHIR_AUTH_TOKEN";
 pub const ENV_AUTH_INTROSPECT: &str = "FHIR_AUTH_INTROSPECT";
 pub const ENV_AUTH_SCOPES: &str = "FHIR_AUTH_SCOPES";
 pub const ENV_AUTH_CAPABILITIES: &str = "FHIR_AUTH_CAPABILITIES";
+pub const ENV_AUTH_KEYS: &str = "FHIR_AUTH_KEYS";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Backend {
@@ -63,6 +65,7 @@ pub struct Config {
     pub database_url: String,
     pub data_dir: Option<PathBuf>,
     pub authorization: Option<Authorization>,
+    pub keys: Option<KeySet>,
 }
 
 fn listed(env: &BTreeMap<String, String>, key: &str) -> Vec<String> {
@@ -99,6 +102,15 @@ fn authorization(env: &BTreeMap<String, String>) -> Result<Option<Authorization>
         active = active.with_introspection(endpoint);
     }
     Ok(Some(active))
+}
+
+fn keys(env: &BTreeMap<String, String>) -> Result<Option<KeySet>, Error> {
+    let Some(raw) = get(env, ENV_AUTH_KEYS) else {
+        return Ok(None);
+    };
+    let document = serde_json::from_str(raw)
+        .map_err(|_| Error::Config(format!("{ENV_AUTH_KEYS} is not a key set")))?;
+    KeySet::parse(&document).map(Some)
 }
 
 impl Config {
@@ -157,6 +169,7 @@ impl Config {
             database_url,
             data_dir,
             authorization: authorization(env)?,
+            keys: keys(env)?,
         })
     }
 }

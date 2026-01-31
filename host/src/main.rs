@@ -1,4 +1,4 @@
-use fhir_api::{Dependency, Service};
+use fhir_api::{DiscoveredKeys, Dependency, HeldKeys, Keys, Service, StoredTrail};
 use fhir_core::Error;
 use fhir_store::ResourceStore;
 use std::sync::Arc;
@@ -6,6 +6,7 @@ use std::sync::Arc;
 const LEASE_MILLIS: i64 = 30_000;
 const POLL_MILLIS: u64 = 50;
 const SWEEP_MILLIS: u64 = 1_000;
+const DISCOVERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 #[cfg(feature = "backend-memory")]
 use fhir_adapter_memory::MemoryStore;
@@ -38,6 +39,14 @@ async fn run() -> Result<(), Error> {
     let mut service = Service::started(Arc::clone(&store), config.version, dependencies).await?;
     if let Some(authorization) = config.authorization.clone() {
         service = service.with_authorization(authorization);
+        let keys: Arc<dyn Keys> = match config.keys.clone() {
+            Some(set) => Arc::new(HeldKeys::new(set)),
+            None => Arc::new(DiscoveredKeys::new(DISCOVERY_TIMEOUT)),
+        };
+        service = service.enforcing(keys)?.recording(Arc::new(StoredTrail::new(
+            Arc::clone(&store),
+            config.version,
+        )));
     }
     if let Some(outputs) = &outputs {
         service = service.with_outputs(Arc::clone(outputs));
