@@ -7,14 +7,13 @@ pub mod bulk;
 pub mod fault;
 pub mod jobs;
 pub mod migration;
-pub mod namespace;
 pub(crate) mod query;
 pub mod row;
 pub mod store;
 pub mod throttle;
 
 pub use migration::{latest, Migration, MIGRATIONS};
-pub use namespace::Namespace;
+pub use fhir_store::Namespace;
 pub use fault::{Fault, Policy};
 pub use bulk::RelationalBulkStore;
 pub use jobs::RelationalJobStore;

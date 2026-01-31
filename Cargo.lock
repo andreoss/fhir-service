@@ -373,6 +373,7 @@ dependencies = [
  "flate2",
  "serde_json",
  "time",
+ "tokio",
 ]
 
 [[package]]

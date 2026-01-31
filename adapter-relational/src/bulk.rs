@@ -1,4 +1,4 @@
-use crate::namespace::Namespace;
+use fhir_store::Namespace;
 use crate::store::faulted;
 use async_trait::async_trait;
 use fhir_core::Error;

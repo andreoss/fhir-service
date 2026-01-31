@@ -719,7 +719,7 @@ pub fn table_for(filter: &Filter) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::namespace::Namespace;
+    use fhir_store::Namespace;
     use fhir_core::search::{lookup, ParamDef, SearchValue};
     use fhir_core::ResourceType;
     use std::sync::Arc;

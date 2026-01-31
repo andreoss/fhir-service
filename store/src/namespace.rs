@@ -16,7 +16,7 @@ impl Namespace {
         match valid {
             true => Ok(Namespace(raw.to_owned())),
             false => Err(Error::Config(format!(
-                "invalid schema name {raw:?}; expected lowercase letters, digits and underscores"
+                "invalid namespace name {raw:?}; expected lowercase letters, digits and underscores"
             ))),
         }
     }
@@ -42,7 +42,7 @@ mod tests {
     }
 
     #[test]
-    fn the_default_names_one_schema() {
+    fn the_default_names_one_space() {
         assert_eq!(Namespace::default().as_str(), "fhir");
     }
 

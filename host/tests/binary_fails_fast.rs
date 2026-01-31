@@ -32,7 +32,7 @@ fn an_invalid_schema_name_fails_fast_at_startup() {
         .expect("failed to spawn binary");
     assert!(!output.status.success(), "an invalid schema name must exit non-zero");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("schema name"), "stderr was: {stderr}");
+    assert!(stderr.contains("namespace name"), "stderr was: {stderr}");
 }
 
 #[test]

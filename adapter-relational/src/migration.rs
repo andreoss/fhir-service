@@ -1,4 +1,4 @@
-use crate::namespace::Namespace;
+use fhir_store::Namespace;
 use fhir_core::Error;
 use sqlx::{PgPool, Row};
 

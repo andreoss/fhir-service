@@ -1,26 +1,5 @@
 use fhir_core::Error;
-use std::time::Duration;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Fault {
-    Transient,
-    Throttled,
-    Permanent,
-}
-
-impl Fault {
-    pub fn is_retriable(&self) -> bool {
-        !matches!(self, Fault::Permanent)
-    }
-
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Fault::Transient => "transient",
-            Fault::Throttled => "throttled",
-            Fault::Permanent => "permanent",
-        }
-    }
-}
+pub use fhir_store::fault::{Fault, Policy};
 
 const TRANSIENT: [&str; 6] = ["40001", "40P01", "57P03", "55P03", "57014", "58030"];
 const THROTTLED: [&str; 4] = ["53100", "53200", "53300", "53400"];
@@ -60,64 +39,19 @@ pub fn classified(context: &str, error: sqlx::Error) -> Error {
     Error::Internal(format!("{context}: {error}"))
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Policy {
-    pub attempts: u32,
-    pub backoff: Duration,
-    pub pause: Duration,
-}
-
-impl Default for Policy {
-    fn default() -> Policy {
-        Policy {
-            attempts: 4,
-            backoff: Duration::from_millis(20),
-            pause: Duration::from_millis(50),
-        }
-    }
-}
-
-impl Policy {
-    pub fn once() -> Policy {
-        Policy {
-            attempts: 1,
-            ..Policy::default()
-        }
-    }
-
-    pub fn delay(&self, fault: Fault, attempt: u32) -> Duration {
-        match fault {
-            Fault::Throttled => self.pause.saturating_mul(attempt),
-            Fault::Transient => self.backoff.saturating_mul(1 << attempt.min(5).saturating_sub(1)),
-            Fault::Permanent => Duration::ZERO,
-        }
-    }
-}
-
-pub async fn retried<T, F, Fut>(policy: &Policy, context: &str, mut work: F) -> Result<T, Error>
+pub async fn retried<T, F, Fut>(policy: &Policy, context: &str, work: F) -> Result<T, Error>
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<T, sqlx::Error>>,
 {
-    let mut attempt = 0;
-    loop {
-        attempt += 1;
-        let error = match work().await {
-            Ok(value) => return Ok(value),
-            Err(error) => error,
-        };
-        let fault = classify(&error);
-        if !fault.is_retriable() || attempt >= policy.attempts {
-            return Err(classified(context, error));
-        }
-        tokio::time::sleep(policy.delay(fault, attempt)).await;
-    }
+    fhir_store::fault::repeated(policy, context, classify, classified, work).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU32, Ordering};
+    use std::time::Duration;
 
     fn transient() -> sqlx::Error {
         sqlx::Error::PoolTimedOut
@@ -149,21 +83,6 @@ mod tests {
     fn a_dropped_connection_is_worth_another_attempt() {
         assert_eq!(classify(&transient()), Fault::Transient);
         assert_eq!(classify(&permanent()), Fault::Permanent);
-        assert!(Fault::Transient.is_retriable());
-        assert!(Fault::Throttled.is_retriable());
-        assert!(!Fault::Permanent.is_retriable());
-        assert_eq!(Fault::Throttled.as_str(), "throttled");
-        assert_eq!(Fault::Transient.as_str(), "transient");
-        assert_eq!(Fault::Permanent.as_str(), "permanent");
-    }
-
-    #[test]
-    fn a_throttled_attempt_waits_longer_the_more_it_is_repeated() {
-        let policy = Policy::default();
-        assert!(policy.delay(Fault::Throttled, 2) > policy.delay(Fault::Throttled, 1));
-        assert!(policy.delay(Fault::Transient, 3) > policy.delay(Fault::Transient, 1));
-        assert_eq!(policy.delay(Fault::Permanent, 3), Duration::ZERO);
-        assert_eq!(Policy::once().attempts, 1);
     }
 
     #[tokio::test]

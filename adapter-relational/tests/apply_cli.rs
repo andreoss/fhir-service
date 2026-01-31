@@ -65,5 +65,5 @@ async fn the_command_reports_and_advances_the_schema() {
 fn an_invalid_namespace_fails_fast() {
     let (code, text) = run("Not Valid", &["version"]);
     assert_eq!(code, 1);
-    assert!(text.contains("schema name"), "{text}");
+    assert!(text.contains("namespace name"), "{text}");
 }

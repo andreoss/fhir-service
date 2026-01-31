@@ -3,9 +3,11 @@ pub mod audit;
 pub mod bulk;
 pub mod body;
 pub mod clock;
+pub mod fault;
 pub mod history;
 pub mod index;
 pub mod job;
+pub mod namespace;
 pub mod parameter;
 pub mod plan;
 pub mod resource;
@@ -16,7 +18,9 @@ pub mod terminology;
 pub use audit::{Audit, AuditEvent, Unrecorded};
 pub use bulk::{output_format, BulkStore, Output, NDJSON};
 pub use clock::{system_clock, system_ticker, Clock, StepTicker, Ticker};
+pub use fault::{repeated, Fault, Policy};
 pub use history::{HistoryOrder, HistoryPage, HistoryQuery, HistoryScope};
+pub use namespace::Namespace;
 pub use job::{
     JobFilter, JobId, JobKind, JobLimits, JobProgress, JobRecord, JobRequest, JobResult, JobSignal,
     JobState, JobStore, Lease, RETRY_BACKOFF,

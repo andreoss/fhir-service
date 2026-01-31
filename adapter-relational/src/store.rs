@@ -2,7 +2,7 @@ use crate::compile::Bind;
 use crate::extract::{rows_of, Rows};
 use crate::fault::{self, Policy};
 use crate::migration::Migrator;
-use crate::namespace::Namespace;
+use fhir_store::Namespace;
 use crate::row::{envelope_of, Record, COLUMNS};
 use async_trait::async_trait;
 use fhir_core::search::{for_type, ParamDef, ParameterSpec};

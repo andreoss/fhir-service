@@ -9,3 +9,4 @@ fhir-core = { path = "../core" }
 flate2 = "1"
 serde_json = "1"
 time = { version = "0.3", features = ["formatting"] }
+tokio = { version = "1", features = ["time"] }
