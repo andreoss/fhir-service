@@ -1,13 +1,14 @@
 
+pub mod change;
 pub mod expr;
 pub mod fault;
 pub mod query;
-pub mod range;
 pub mod record;
 pub mod store;
 
 pub use fault::{Fault, Policy};
-pub use range::{FeedRange, PARTITIONS};
+pub use fhir_store::range;
+pub use fhir_store::{ChangeKind, ChangeRecord, Continuation, FeedRange, PARTITIONS};
 pub use store::{DocumentScope, DocumentStore};
 
 pub const ENV_URL: &str = "FHIR_DOCUMENT_URL";

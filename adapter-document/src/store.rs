@@ -120,21 +120,21 @@ impl DocumentStore {
         &self.namespace
     }
 
+    pub fn database(&self) -> mongodb::Database {
+        self.client.database(self.namespace.as_str())
+    }
+
     pub fn resources(&self) -> Collection<Document> {
-        self.client
-            .database(self.namespace.as_str())
-            .collection(RESOURCES)
+        self.database().collection(RESOURCES)
     }
 
     fn counters(&self) -> Collection<Document> {
-        self.client
-            .database(self.namespace.as_str())
-            .collection(COUNTERS)
+        self.database().collection(COUNTERS)
     }
 
     pub async fn initialise(&self) -> Result<usize, Error> {
         let database = self.client.database(self.namespace.as_str());
-        for name in [RESOURCES, COUNTERS] {
+        for name in [RESOURCES, COUNTERS, crate::change::CHANGES] {
             match database.create_collection(name).await {
                 Ok(()) => {}
                 Err(error) if crate::fault::classify(&error) == crate::fault::Fault::Permanent => {}
@@ -183,7 +183,22 @@ impl DocumentStore {
             .create_indexes(models)
             .await
             .map_err(|error| faulted("preparing an index", error))?;
-        Ok(made)
+        let recorded = vec![
+            IndexModel::builder()
+                .keys(doc! {SEQUENCE: 1})
+                .options(IndexOptions::builder().unique(true).build())
+                .build(),
+            IndexModel::builder()
+                .keys(doc! {"partition": 1, SEQUENCE: 1})
+                .build(),
+        ];
+        let kept = recorded.len();
+        self.database()
+            .collection::<Document>(crate::change::CHANGES)
+            .create_indexes(recorded)
+            .await
+            .map_err(|error| faulted("preparing an index", error))?;
+        Ok(made + kept)
     }
 
     pub fn plans(&self) -> Vec<PlanStat> {
@@ -293,10 +308,20 @@ impl DocumentStore {
         pipeline: Vec<Document>,
         context: &str,
     ) -> Result<Vec<Document>, Error> {
+        self.drawn(RESOURCES, pipeline, context).await
+    }
+
+    pub(crate) async fn drawn(
+        &self,
+        collection: &str,
+        pipeline: Vec<Document>,
+        context: &str,
+    ) -> Result<Vec<Document>, Error> {
         let mut work = self.reading().await?;
         let session = work.session()?;
         let mut cursor = self
-            .resources()
+            .database()
+            .collection::<Document>(collection)
             .aggregate(pipeline)
             .session(&mut *session)
             .await
@@ -404,6 +429,7 @@ impl DocumentStore {
             .session(&mut *session)
             .await
             .map_err(|error| faulted("writing a version", error))?;
+        self.record(session, envelope, sequence).await?;
         Ok(sequence)
     }
 

@@ -172,7 +172,7 @@ pub fn document_of(
     let (packed, encoding) = encoded(envelope.raw());
     let mut held = doc! {
         "sequence": sequence,
-        "partition": crate::range::partition(envelope.id().as_str()),
+        "partition": fhir_store::partition(envelope.id().as_str()),
         "resource_type": envelope.resource_type().as_str(),
         "resource_id": envelope.id().as_str(),
         "version_number": version_number(envelope.version_id()).unwrap_or_default(),
