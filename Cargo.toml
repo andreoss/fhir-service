@@ -5,6 +5,7 @@ members = [
     "store",
     "contract",
     "adapter-memory",
+    "adapter-document",
     "adapter-relational",
     "jobs",
     "api",

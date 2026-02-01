@@ -1,5 +1,5 @@
 use fhir_core::search::registry::{ParamDef, SubDef, Target};
-use fhir_core::search::{select, sort_value, IndexKey, SortValue, ValueType};
+use fhir_core::search::{select, sort_value, IndexKey, ParameterSpec, SortValue, ValueType};
 use fhir_core::{InstantPeriod, ResourceEnvelope};
 use serde_json::Value;
 use std::sync::Arc;
@@ -525,6 +525,68 @@ pub fn rows_of(envelope: &ResourceEnvelope, body: &Value, defs: &[Arc<ParamDef>]
     rows
 }
 
+
+pub fn reference_of(envelope: &ResourceEnvelope) -> String {
+    format!(
+        "{}/{}",
+        envelope.resource_type().as_str(),
+        envelope.id().as_str()
+    )
+}
+
+pub fn normalized(text: &str) -> String {
+    let mut parts = text.rsplit('/');
+    let id = parts.next().unwrap_or_default();
+    match parts.next() {
+        Some(kind) => format!("{kind}/{id}"),
+        None => id.to_owned(),
+    }
+}
+
+pub fn logical(text: &str) -> String {
+    text.rsplit('/').next().unwrap_or_default().to_owned()
+}
+
+fn flattened(element: &Value, out: &mut Vec<String>) {
+    match element {
+        Value::String(text) => out.push(text.clone()),
+        Value::Number(number) => out.push(number.to_string()),
+        Value::Bool(flag) => out.push(flag.to_string()),
+        Value::Array(items) => items.iter().for_each(|item| flattened(item, out)),
+        Value::Object(_) | Value::Null => {}
+    }
+}
+
+pub fn parses(spec: &ParameterSpec, body: &Value) -> Result<(), String> {
+    for path in spec.def.paths() {
+        for element in select(body, &path) {
+            let mut found = Vec::new();
+            flattened(element, &mut found);
+            for text in found {
+                fhir_core::search::SearchValue::parse(spec.def.value_type, &text)
+                    .map_err(|error| error.to_string())?;
+            }
+        }
+    }
+    Ok(())
+}
+
+pub fn declared(rows: &Rows) -> usize {
+    rows.tokens.iter().filter(|row| row.slot == MAIN).count()
+        + rows.texts.iter().filter(|row| row.slot == MAIN).count()
+        + rows.numbers.len()
+        + rows.dates.len()
+        + rows.quantities.len()
+        + rows.references.len()
+        + rows.uris.len()
+}
+
+pub fn overflowed(rows: &Rows) -> usize {
+    rows.tokens
+        .iter()
+        .filter(|row| row.code_tail.is_some())
+        .count()
+}
 #[cfg(test)]
 mod tests {
     use super::*;
