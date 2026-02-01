@@ -22,6 +22,8 @@ pub const COUNTERS: &str = "counter";
 
 const SEQUENCE: &str = "sequence";
 
+const SELECTION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 pub fn faulted(context: &str, error: mongodb::error::Error) -> Error {
     classified(context, error)
 }
@@ -93,8 +95,11 @@ impl DocumentStore {
     }
 
     pub async fn connect(url: &str, namespace: Namespace) -> Result<DocumentStore, Error> {
-        let client = Client::with_uri_str(url)
+        let mut options = mongodb::options::ClientOptions::parse(url)
             .await
+            .map_err(|error| Error::Config(format!("the store is not reachable: {error}")))?;
+        options.server_selection_timeout = Some(SELECTION_TIMEOUT);
+        let client = Client::with_options(options)
             .map_err(|error| Error::Config(format!("the store is not reachable: {error}")))?;
         Ok(DocumentStore::new(client, namespace))
     }

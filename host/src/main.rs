@@ -11,8 +11,14 @@ const DISCOVERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5)
 #[cfg(feature = "backend-memory")]
 use fhir_adapter_memory::MemoryStore;
 
+#[cfg(feature = "backend-document")]
+use fhir_adapter_document::DocumentStore;
+
 #[cfg(feature = "backend-relational")]
-use fhir_adapter_relational::{Namespace, RelationalStore};
+use fhir_adapter_relational::RelationalStore;
+
+#[cfg(any(feature = "backend-relational", feature = "backend-document"))]
+use fhir_store::Namespace;
 
 #[tokio::main]
 async fn main() {
@@ -123,9 +129,15 @@ async fn build_store(config: &fhir_host::Config) -> Result<Arc<dyn ResourceStore
             "relational backend is not enabled in this build; rebuild with --features backend-relational or set FHIR_BACKEND=memory".to_owned(),
         )),
         #[cfg(feature = "backend-document")]
-        fhir_host::Backend::Document => Err(Error::Config(
-            "document backend is not implemented yet".to_owned(),
-        )),
+        fhir_host::Backend::Document => {
+            let namespace = match std::env::var(fhir_adapter_document::ENV_NAMESPACE) {
+                Ok(name) => Namespace::parse(&name)?,
+                Err(_) => Namespace::default(),
+            };
+            let store = DocumentStore::connect(&config.document_url, namespace).await?;
+            store.initialise().await?;
+            Ok(Arc::new(store))
+        }
         #[cfg(not(feature = "backend-document"))]
         fhir_host::Backend::Document => Err(Error::Config(
             "document backend is not enabled in this build; rebuild with --features backend-document or set FHIR_BACKEND=memory".to_owned(),

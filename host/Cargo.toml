@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+fhir-adapter-document = { path = "../adapter-document", optional = true }
 fhir-adapter-memory = { path = "../adapter-memory", optional = true }
 fhir-adapter-relational = { path = "../adapter-relational", optional = true }
 fhir-api = { path = "../api" }
@@ -14,12 +15,13 @@ serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "time"] }
 
 [features]
-default = ["backend-memory", "backend-relational"]
+default = ["backend-memory", "backend-relational", "backend-document"]
 backend-memory = ["dep:fhir-adapter-memory"]
 backend-relational = ["dep:fhir-adapter-relational"]
-backend-document = []
+backend-document = ["dep:fhir-adapter-document"]
 
 [dev-dependencies]
+mongodb = "3"
 serde_json = "1"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"] }
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "net"] }

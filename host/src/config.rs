@@ -12,11 +12,15 @@ pub const DEFAULT_BACKEND: &str = "memory";
 pub const DEFAULT_VERSION: &str = "R4";
 pub const DEFAULT_DATABASE_URL: &str = "postgres://fhir:fhir@127.0.0.1:5432/fhir";
 
+pub const DEFAULT_DOCUMENT_URL: &str = "mongodb://127.0.0.1:27017/?directConnection=true";
+
 pub const ENV_BIND: &str = "FHIR_BIND";
 pub const ENV_BACKEND: &str = "FHIR_BACKEND";
 pub const ENV_VERSION: &str = "FHIR_VERSION";
 pub const ENV_DATABASE_URL: &str = "FHIR_DATABASE_URL";
 pub const ENV_DATA_DIR: &str = "FHIR_DATA_DIR";
+
+pub const ENV_DOCUMENT_URL: &str = "FHIR_DOCUMENT_URL";
 pub const ENV_AUTH_ISSUER: &str = "FHIR_AUTH_ISSUER";
 pub const ENV_AUTH_AUTHORIZE: &str = "FHIR_AUTH_AUTHORIZE";
 pub const ENV_AUTH_TOKEN: &str = "FHIR_AUTH_TOKEN";
@@ -63,6 +67,7 @@ pub struct Config {
     pub backend: Backend,
     pub version: FhirVersion,
     pub database_url: String,
+    pub document_url: String,
     pub data_dir: Option<PathBuf>,
     pub authorization: Option<Authorization>,
     pub keys: Option<KeySet>,
@@ -142,6 +147,10 @@ impl Config {
             .map(str::to_owned)
             .unwrap_or_else(|| DEFAULT_DATABASE_URL.to_owned());
 
+        let document_url = get(env, ENV_DOCUMENT_URL)
+            .map(str::to_owned)
+            .unwrap_or_else(|| DEFAULT_DOCUMENT_URL.to_owned());
+
         let data_dir = get(env, ENV_DATA_DIR).map(PathBuf::from);
 
         match backend {
@@ -154,9 +163,9 @@ impl Config {
                 }
             }
             Backend::Document => {
-                if data_dir.is_none() {
+                if document_url.is_empty() {
                     return Err(Error::Config(format!(
-                        "{ENV_DATA_DIR} is required for the document backend"
+                        "{ENV_DOCUMENT_URL} is required for the document backend"
                     )));
                 }
             }
@@ -167,6 +176,7 @@ impl Config {
             backend,
             version,
             database_url,
+            document_url,
             data_dir,
             authorization: authorization(env)?,
             keys: keys(env)?,
@@ -255,12 +265,12 @@ mod tests {
         env.insert(ENV_BIND.to_owned(), "0.0.0.0:9090".to_owned());
         env.insert(ENV_VERSION.to_owned(), "R5".to_owned());
         env.insert(ENV_BACKEND.to_owned(), "document".to_owned());
-        env.insert(ENV_DATA_DIR.to_owned(), "/var/lib/fhir".to_owned());
+        env.insert(ENV_DOCUMENT_URL.to_owned(), "mongodb://127.0.0.1:27018".to_owned());
         let config = Config::parse(&env).expect("valid env must parse");
         assert_eq!(config.bind.to_string(), "0.0.0.0:9090");
         assert_eq!(config.version, FhirVersion::R5);
         assert_eq!(config.backend, Backend::Document);
-        assert_eq!(config.data_dir, Some(PathBuf::from("/var/lib/fhir")));
+        assert_eq!(config.document_url, "mongodb://127.0.0.1:27018");
     }
 
     #[test]
@@ -313,12 +323,16 @@ mod tests {
     }
 
     #[test]
-    fn document_backend_requires_data_dir() {
+    fn document_backend_requires_an_engine_address() {
         let mut env = env_empty();
         env.insert(ENV_BACKEND.to_owned(), "document".to_owned());
-        let error = Config::parse(&env).expect_err("document backend without a data dir must fail");
-        assert!(matches!(error, Error::Config(_)));
-        assert!(error.to_string().contains("FHIR_DATA_DIR"));
+        assert_eq!(
+            Config::parse(&env).expect("a default address is enough").document_url,
+            DEFAULT_DOCUMENT_URL
+        );
+        env.insert(ENV_DOCUMENT_URL.to_owned(), "  ".to_owned());
+        let config = Config::parse(&env).expect("a blank address falls back");
+        assert_eq!(config.document_url, DEFAULT_DOCUMENT_URL);
     }
 
     #[test]

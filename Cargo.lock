@@ -611,12 +611,14 @@ dependencies = [
 name = "fhir-host"
 version = "0.1.0"
 dependencies = [
+ "fhir-adapter-document",
  "fhir-adapter-memory",
  "fhir-adapter-relational",
  "fhir-api",
  "fhir-core",
  "fhir-jobs",
  "fhir-store",
+ "mongodb",
  "serde_json",
  "sqlx",
  "tokio",
