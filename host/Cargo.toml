@@ -21,6 +21,7 @@ backend-relational = ["dep:fhir-adapter-relational"]
 backend-document = ["dep:fhir-adapter-document"]
 
 [dev-dependencies]
+jsonwebtoken = { version = "10", features = ["rust_crypto"] }
 mongodb = "3"
 serde_json = "1"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"] }

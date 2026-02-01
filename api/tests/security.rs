@@ -3,7 +3,6 @@ use axum::http::{Request, StatusCode};
 use fhir_adapter_memory::MemoryStore;
 use fhir_api::{Authorization, Dependency, HeldKeys, Service};
 use fhir_core::security::bearer::{encode, KeySet};
-use fhir_core::security::digest::hmac_sha256;
 use fhir_core::{FhirInstant, FhirVersion};
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
@@ -52,11 +51,19 @@ pub fn token(scopes: &str) -> String {
     }))
 }
 
+fn signature(secret: &[u8], input: &str) -> String {
+    jsonwebtoken::crypto::sign(
+        input.as_bytes(),
+        &jsonwebtoken::EncodingKey::from_secret(secret),
+        jsonwebtoken::Algorithm::HS256,
+    )
+    .expect("the library signs")
+}
 pub fn minted(payload: Value) -> String {
     let head = encode(&serde_json::to_vec(&json!({"alg": "HS256", "kid": "one"})).unwrap());
     let body = encode(&serde_json::to_vec(&payload).unwrap());
     let input = format!("{head}.{body}");
-    format!("{input}.{}", encode(&hmac_sha256(SECRET, input.as_bytes())))
+    format!("{input}.{}", signature(SECRET, &input))
 }
 
 async fn call(app: &Service, method: &str, uri: &str, scopes: Option<&str>, body: &[u8]) -> Reply {

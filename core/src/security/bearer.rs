@@ -1,8 +1,8 @@
-use crate::security::digest::{hmac_sha256, same};
 use crate::Error;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine;
+use jsonwebtoken::DecodingKey;
 use serde_json::Value;
-
-const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Algorithm {
@@ -44,44 +44,13 @@ pub struct Claims {
 }
 
 pub fn decode(text: &str) -> Result<Vec<u8>, Error> {
-    let malformed = || Error::Unauthenticated("malformed token".to_owned());
-    let mut out = Vec::with_capacity(text.len() * 3 / 4);
-    let mut held: u32 = 0;
-    let mut bits = 0u32;
-    for byte in text.bytes() {
-        let value = ALPHABET
-            .iter()
-            .position(|candidate| *candidate == byte)
-            .ok_or_else(malformed)? as u32;
-        held = (held << 6) | value;
-        bits += 6;
-        if bits >= 8 {
-            bits -= 8;
-            out.push((held >> bits) as u8);
-        }
-    }
-    match held & ((1 << bits) - 1) {
-        0 => Ok(out),
-        _ => Err(malformed()),
-    }
+    URL_SAFE_NO_PAD
+        .decode(text)
+        .map_err(|_| Error::Unauthenticated("malformed token".to_owned()))
 }
 
 pub fn encode(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    let mut held: u32 = 0;
-    let mut bits = 0u32;
-    for byte in bytes {
-        held = (held << 8) | u32::from(*byte);
-        bits += 8;
-        while bits >= 6 {
-            bits -= 6;
-            out.push(ALPHABET[((held >> bits) & 0x3f) as usize] as char);
-        }
-    }
-    if bits > 0 {
-        out.push(ALPHABET[((held << (6 - bits)) & 0x3f) as usize] as char);
-    }
-    out
+    URL_SAFE_NO_PAD.encode(bytes)
 }
 
 fn text_or_texts(value: Option<&Value>) -> Vec<String> {
@@ -157,10 +126,15 @@ impl Claims {
         if candidates.is_empty() {
             return Err(refused("no key verifies this token"));
         }
-        let signed = decode(signature)?;
         let input = format!("{head}.{body}");
         let verified = candidates.iter().any(|key| match key.algorithm {
-            Algorithm::Hs256 => same(&hmac_sha256(&key.secret, input.as_bytes()), &signed),
+            Algorithm::Hs256 => jsonwebtoken::crypto::verify(
+                signature,
+                input.as_bytes(),
+                &DecodingKey::from_secret(&key.secret),
+                jsonwebtoken::Algorithm::HS256,
+            )
+            .unwrap_or(false),
         });
         if !verified {
             return Err(refused("signature does not verify"));
@@ -218,8 +192,13 @@ mod tests {
         let head = encode(&serde_json::to_vec(&header).unwrap());
         let body = encode(&serde_json::to_vec(&payload).unwrap());
         let input = format!("{head}.{body}");
-        let mac = hmac_sha256(secret, input.as_bytes());
-        format!("{input}.{}", encode(&mac))
+        let mac = jsonwebtoken::crypto::sign(
+            input.as_bytes(),
+            &jsonwebtoken::EncodingKey::from_secret(secret),
+            jsonwebtoken::Algorithm::HS256,
+        )
+        .expect("the library signs");
+        format!("{input}.{mac}")
     }
 
     fn header() -> Value {
@@ -252,6 +231,8 @@ mod tests {
         assert_eq!(decode("YW55IGNhcm5hbCBwbGVhc3VyZS4").unwrap(), b"any carnal pleasure.");
         assert_eq!(decode(&encode(&[0xff, 0xfe, 0x00, 0x01])).unwrap(), vec![0xff, 0xfe, 0x00, 0x01]);
         assert!(decode("not base64 ~").is_err());
+        assert!(decode("A").is_err());
+        assert!(decode("YW55IGNhcm5hbCBwbGVhc3VyZS4=").is_err());
     }
 
     #[test]

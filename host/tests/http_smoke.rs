@@ -1298,7 +1298,6 @@ fn key_document() -> String {
 
 fn smoke_token(scopes: &str) -> String {
     use fhir_core::security::bearer::encode;
-    use fhir_core::security::digest::hmac_sha256;
     let expiry = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|since| since.as_secs() as i64 + 300)
@@ -1309,7 +1308,15 @@ fn smoke_token(scopes: &str) -> String {
     );
     let body = encode(payload.as_bytes());
     let input = format!("{head}.{body}");
-    format!("{input}.{}", encode(&hmac_sha256(SMOKE_SECRET, input.as_bytes())))
+    {
+        let mac = jsonwebtoken::crypto::sign(
+            input.as_bytes(),
+            &jsonwebtoken::EncodingKey::from_secret(SMOKE_SECRET),
+            jsonwebtoken::Algorithm::HS256,
+        )
+        .expect("the library signs");
+        format!("{input}.{mac}")
+    }
 }
 
 fn spawn_enforcing() -> (Child, u16) {

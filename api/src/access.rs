@@ -153,7 +153,6 @@ mod tests {
     use crate::discovery::HeldKeys;
     use fhir_core::security::bearer::{encode, KeySet};
     use fhir_core::security::scope::DataAction;
-    use fhir_core::security::digest::hmac_sha256;
     use serde_json::json;
 
     const SECRET: &[u8] = b"a-secret-from-the-store";
@@ -173,6 +172,14 @@ mod tests {
         )
     }
 
+    fn signature(secret: &[u8], input: &str) -> String {
+        jsonwebtoken::crypto::sign(
+            input.as_bytes(),
+            &jsonwebtoken::EncodingKey::from_secret(secret),
+            jsonwebtoken::Algorithm::HS256,
+        )
+        .expect("the library signs")
+    }
     fn token(scopes: &str) -> String {
         let head = encode(&serde_json::to_vec(&json!({"alg": "HS256", "kid": "one"})).unwrap());
         let body = encode(
@@ -185,7 +192,7 @@ mod tests {
             .unwrap(),
         );
         let input = format!("{head}.{body}");
-        format!("{input}.{}", encode(&hmac_sha256(SECRET, input.as_bytes())))
+        format!("{input}.{}", signature(SECRET, &input))
     }
 
     fn carrying(value: &str) -> HeaderMap {

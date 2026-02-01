@@ -17,6 +17,7 @@ uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 async-trait = "0.1"
+jsonwebtoken = { version = "10", features = ["rust_crypto"] }
 fhir-adapter-memory = { path = "../adapter-memory" }
 fhir-jobs = { path = "../jobs" }
 fhir-store-contract = { path = "../contract" }
