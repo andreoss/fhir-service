@@ -8,6 +8,7 @@ members = [
     "adapter-document",
     "adapter-relational",
     "jobs",
+    "telemetry",
     "api",
     "host",
 ]

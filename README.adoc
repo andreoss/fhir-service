@@ -19,6 +19,7 @@ cargo run --bin fhir-host
 
 [source,http]
 ----
+GET  /health                  # the process and the engine behind it
 GET  /metadata                # capability statement, generated from the routes
 GET  /Patient?name=Smith&_count=10&_sort=-_lastUpdated
 POST /                        # transaction and batch bundles
@@ -29,15 +30,18 @@ GET  /$export                 # submit a bulk job, then poll it by id
 Bearer tokens are verified against the keys their issuer publishes. Resource,
 compartment and parameter scopes decide what a request may reach, and a job
 answers only the caller that submitted it. Every read and every write leaves
-a chained, verifiable audit record.
+a chained, verifiable audit record. Latency, count and failure are measured
+per operation over a closed label set, and one identifier follows a request
+into the job it starts.
 
 == Layout
 
 `core` the model, its rules and the terminology, `contract` the storage
 port and the suite every engine satisfies, `store` the query and index
 types, `adapter-memory`, `adapter-relational` and `adapter-document` the
-engines, `jobs` the durable queue and the bulk handlers, `api` the HTTP
-surface and the authorization, `host` the binary.
+engines, `jobs` the durable queue and the bulk handlers, `telemetry` the
+measurements, `api` the HTTP surface and the authorization, `host` the
+binary.
 
 `FHIR_BACKEND` chooses the engine, `FHIR_DATABASE_URL` and
 `FHIR_DOCUMENT_URL` point the durable ones at their servers,
