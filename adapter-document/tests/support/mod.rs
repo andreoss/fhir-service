@@ -11,7 +11,15 @@ pub fn url() -> String {
 }
 
 pub async fn engine() -> Option<Client> {
-    let client = match Client::with_uri_str(url()).await {
+    let mut options = match mongodb::options::ClientOptions::parse(url()).await {
+        Ok(options) => options,
+        Err(_) => {
+            eprintln!("{SKIPPED}");
+            return None;
+        }
+    };
+    options.server_selection_timeout = Some(std::time::Duration::from_secs(3));
+    let client = match Client::with_options(options) {
         Ok(client) => client,
         Err(_) => {
             eprintln!("{SKIPPED}");

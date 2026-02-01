@@ -400,15 +400,20 @@ pub async fn run(store: &DocumentStore, query: &SearchQuery) -> Result<SearchPag
     selected.extend(stages);
     selected.push(doc! {"$match": {"$expr": all(conditions)}});
 
-    let mut listing = selected.clone();
-    ordering(&query, &mut listing);
-    if query.offset > 0 {
-        listing.push(doc! {"$skip": query.offset.min(i64::MAX as usize) as i64});
-    }
-    if query.count < usize::MAX {
-        listing.push(doc! {"$limit": query.count.min(i64::MAX as usize) as i64});
-    }
-    let found = store.listed(listing, "running a search").await?;
+    let found = match query.count {
+        0 => Vec::new(),
+        count => {
+            let mut listing = selected.clone();
+            ordering(&query, &mut listing);
+            if query.offset > 0 {
+                listing.push(doc! {"$skip": query.offset.min(i64::MAX as usize) as i64});
+            }
+            if count < usize::MAX {
+                listing.push(doc! {"$limit": count.min(i64::MAX as usize) as i64});
+            }
+            store.listed(listing, "running a search").await?
+        }
+    };
     let entries: Vec<(Document, ResourceEnvelope)> = found
         .into_iter()
         .map(|held| envelope_of(&held).map(|envelope| (held, envelope)))
