@@ -151,17 +151,19 @@ fn narrowed(
 mod tests {
     use super::*;
     use crate::discovery::HeldKeys;
-    use fhir_core::security::bearer::{encode, KeySet};
+    use fhir_core::security::bearer::KeySet;
+    use fhir_core::security::fixture::Issuer;
     use fhir_core::security::scope::DataAction;
     use serde_json::json;
+    use std::sync::OnceLock;
 
-    const SECRET: &[u8] = b"a-secret-from-the-store";
+    fn issuer() -> &'static Issuer {
+        static HELD: OnceLock<Issuer> = OnceLock::new();
+        HELD.get_or_init(|| Issuer::generate("one"))
+    }
 
     fn guard() -> Guard {
-        let set = KeySet::parse(&json!({"keys": [
-            {"kty": "oct", "kid": "one", "alg": "HS256", "k": encode(SECRET)}
-        ]}))
-        .expect("a configured key set");
+        let set = KeySet::parse(&issuer().keys()).expect("a published key set");
         Guard::new(
             Arc::new(Authorization::new(
                 "https://issuer.example.org",
@@ -172,27 +174,13 @@ mod tests {
         )
     }
 
-    fn signature(secret: &[u8], input: &str) -> String {
-        jsonwebtoken::crypto::sign(
-            input.as_bytes(),
-            &jsonwebtoken::EncodingKey::from_secret(secret),
-            jsonwebtoken::Algorithm::HS256,
-        )
-        .expect("the library signs")
-    }
     fn token(scopes: &str) -> String {
-        let head = encode(&serde_json::to_vec(&json!({"alg": "HS256", "kid": "one"})).unwrap());
-        let body = encode(
-            &serde_json::to_vec(&json!({
-                "iss": "https://issuer.example.org",
-                "sub": "practitioner-1",
-                "scope": scopes,
-                "exp": now() + 300,
-            }))
-            .unwrap(),
-        );
-        let input = format!("{head}.{body}");
-        format!("{input}.{}", signature(SECRET, &input))
+        issuer().mint(&json!({
+            "iss": "https://issuer.example.org",
+            "sub": "practitioner-1",
+            "scope": scopes,
+            "exp": now() + 300,
+        }))
     }
 
     fn carrying(value: &str) -> HeaderMap {

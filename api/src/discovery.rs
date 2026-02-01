@@ -115,7 +115,7 @@ impl Keys for DiscoveredKeys {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fhir_core::security::bearer::encode;
+    use fhir_core::security::fixture::Issuer;
     use serde_json::json;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
@@ -125,6 +125,7 @@ mod tests {
         let addr = listener.local_addr().expect("addr");
         let base = format!("http://{addr}");
         let published = base.clone();
+        let document = Issuer::generate("one").keys();
         let handle = tokio::spawn(async move {
             for _ in 0..replies {
                 let Ok((mut socket, _)) = listener.accept().await else { return };
@@ -136,9 +137,7 @@ mod tests {
                         "issuer": published,
                         "jwks_uri": format!("{published}/keys"),
                     }),
-                    false => json!({"keys": [
-                        {"kty": "oct", "kid": "one", "alg": "HS256", "k": encode(b"a-secret")}
-                    ]}),
+                    false => document.clone(),
                 }
                 .to_string();
                 let reply = format!(
@@ -171,7 +170,10 @@ mod tests {
         let set = found.keys(&base).await.expect("the issuer publishes keys");
         assert_eq!(set.keys.len(), 1);
         assert_eq!(set.keys[0].id.as_deref(), Some("one"));
-        assert!(!set.keys[0].secret.is_empty());
+        assert_eq!(
+            set.keys[0].algorithm,
+            fhir_core::security::bearer::Algorithm::Es256
+        );
         handle.abort();
     }
 
@@ -196,10 +198,7 @@ mod tests {
 
     #[tokio::test]
     async fn keys_held_from_configuration_need_no_issuer() {
-        let set = KeySet::parse(&json!({"keys": [
-            {"kty": "oct", "kid": "held", "alg": "HS256", "k": encode(b"a-secret")}
-        ]}))
-        .expect("a configured key set");
+        let set = KeySet::parse(&Issuer::generate("held").keys()).expect("a configured key set");
         let held = HeldKeys::new(set.clone());
         assert_eq!(held.keys("https://issuer.example.org").await.unwrap(), set);
     }

@@ -1,6 +1,8 @@
 
 pub mod access;
 pub mod bearer;
+#[cfg(any(test, feature = "fixtures"))]
+pub mod fixture;
 pub mod scope;
 
 pub use access::Access;

@@ -2,15 +2,20 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use fhir_adapter_memory::MemoryStore;
 use fhir_api::{Authorization, Dependency, HeldKeys, Service};
-use fhir_core::security::bearer::{encode, KeySet};
+use fhir_core::security::bearer::KeySet;
+use fhir_core::security::fixture::Issuer;
 use fhir_core::{FhirInstant, FhirVersion};
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tower::ServiceExt;
 
-const SECRET: &[u8] = b"a-secret-held-outside-the-source";
 const ISSUER: &str = "https://issuer.example.org";
+
+fn signing() -> &'static Issuer {
+    static HELD: OnceLock<Issuer> = OnceLock::new();
+    HELD.get_or_init(|| Issuer::generate("one"))
+}
 
 struct Reply {
     status: StatusCode,
@@ -18,10 +23,7 @@ struct Reply {
 }
 
 pub fn keys() -> KeySet {
-    KeySet::parse(&json!({"keys": [
-        {"kty": "oct", "kid": "one", "alg": "HS256", "k": encode(SECRET)}
-    ]}))
-    .expect("a configured key set")
+    KeySet::parse(&signing().keys()).expect("a published key set")
 }
 
 fn guarded() -> Service {
@@ -51,19 +53,8 @@ pub fn token(scopes: &str) -> String {
     }))
 }
 
-fn signature(secret: &[u8], input: &str) -> String {
-    jsonwebtoken::crypto::sign(
-        input.as_bytes(),
-        &jsonwebtoken::EncodingKey::from_secret(secret),
-        jsonwebtoken::Algorithm::HS256,
-    )
-    .expect("the library signs")
-}
 pub fn minted(payload: Value) -> String {
-    let head = encode(&serde_json::to_vec(&json!({"alg": "HS256", "kid": "one"})).unwrap());
-    let body = encode(&serde_json::to_vec(&payload).unwrap());
-    let input = format!("{head}.{body}");
-    format!("{input}.{}", signature(SECRET, &input))
+    signing().mint(&payload)
 }
 
 async fn call(app: &Service, method: &str, uri: &str, scopes: Option<&str>, body: &[u8]) -> Reply {
@@ -572,4 +563,83 @@ async fn a_refused_credential_never_reaches_the_error_body() {
     let body = String::from_utf8_lossy(&bytes).into_owned();
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert!(!body.contains(secret), "{body}");
+}
+
+fn granted() -> Value {
+    json!({
+        "iss": ISSUER,
+        "sub": "practitioner-1",
+        "scope": "system/*.read system/*.write",
+        "exp": time::OffsetDateTime::now_utc().unix_timestamp() + 300,
+    })
+}
+
+fn refusable() -> Vec<(&'static str, String)> {
+    let elsewhere = Issuer::generate("one");
+    let symmetric = json!({"alg": "HS256", "kid": "one"});
+    let input = Issuer::input(&symmetric, &granted());
+    let forged = jsonwebtoken::crypto::sign(
+        input.as_bytes(),
+        &jsonwebtoken::EncodingKey::from_secret(signing().material().as_bytes()),
+        jsonwebtoken::Algorithm::HS256,
+    )
+    .expect("the library signs");
+    let mut stale = granted();
+    stale["exp"] = json!(time::OffsetDateTime::now_utc().unix_timestamp() - 60);
+    vec![
+        ("signed by another key", elsewhere.mint(&granted())),
+        (
+            "carrying no signature",
+            format!(
+                "{}.",
+                Issuer::input(&json!({"alg": "ES256", "kid": "one"}), &granted())
+            ),
+        ),
+        ("naming a symmetric algorithm", format!("{input}.{forged}")),
+        (
+            "naming an algorithm the key does not verify",
+            signing().minted_under(&json!({"alg": "ES384", "kid": "one"}), &granted()),
+        ),
+        ("expired", signing().mint(&stale)),
+    ]
+}
+
+async fn held(store: &Arc<MemoryStore>, kind: &str) -> usize {
+    use fhir_store::{ResourceStore, SearchQuery};
+    let query = SearchQuery::of_type(kind.parse().unwrap());
+    store
+        .search(&query)
+        .await
+        .expect("the store is searchable")
+        .entries
+        .len()
+}
+
+#[tokio::test]
+async fn a_token_the_published_key_does_not_verify_never_reaches_the_store() {
+    let (app, store) = recording();
+    for (reason, offered) in refusable() {
+        let read = with_token(&app, "GET", "/Patient/pt-s1", &offered, &[]).await;
+        let write = with_token(&app, "POST", "/Patient", &offered, PATIENT).await;
+        assert_eq!(read.status, StatusCode::UNAUTHORIZED, "{reason}: {}", read.body);
+        assert_eq!(code(&read.body), "login", "{reason}");
+        assert_eq!(write.status, StatusCode::UNAUTHORIZED, "{reason}: {}", write.body);
+        assert!(!read.body.contains(&offered), "{reason}");
+    }
+    assert_eq!(held(&store, "Patient").await, 0);
+    assert!(trail_of(&store).await.is_empty());
+}
+
+#[tokio::test]
+async fn an_issuer_offering_a_symmetric_key_configures_no_instance() {
+    let shared = json!({"keys": [
+        {"kty": "oct", "kid": "one", "alg": "HS256", "k": "c2hhcmVk"}
+    ]});
+    assert!(KeySet::parse(&shared).is_err());
+    let mut mixed = signing().keys();
+    mixed["keys"]
+        .as_array_mut()
+        .expect("a listed key")
+        .push(shared["keys"][0].clone());
+    assert!(KeySet::parse(&mixed).is_err());
 }

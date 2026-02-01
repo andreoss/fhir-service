@@ -1,18 +1,76 @@
 use crate::Error;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
-use jsonwebtoken::DecodingKey;
+use jsonwebtoken::jwk::Jwk;
+use jsonwebtoken::{DecodingKey, Validation};
 use serde_json::Value;
+use std::str::FromStr;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Algorithm {
-    Hs256,
+    Es256,
+    Es384,
+    EdDsa,
+    Rs256,
+    Rs384,
+    Rs512,
+    Ps256,
+    Ps384,
+    Ps512,
 }
 
 impl Algorithm {
     pub fn named(name: &str) -> Option<Algorithm> {
-        match name {
-            "HS256" => Some(Algorithm::Hs256),
+        jsonwebtoken::Algorithm::from_str(name)
+            .ok()
+            .and_then(Algorithm::verifiable)
+    }
+
+    pub fn symmetric(name: &str) -> bool {
+        jsonwebtoken::Algorithm::from_str(name)
+            .is_ok_and(|named| named.family() == jsonwebtoken::AlgorithmFamily::Hmac)
+    }
+
+    fn verifiable(named: jsonwebtoken::Algorithm) -> Option<Algorithm> {
+        match named {
+            jsonwebtoken::Algorithm::ES256 => Some(Algorithm::Es256),
+            jsonwebtoken::Algorithm::ES384 => Some(Algorithm::Es384),
+            jsonwebtoken::Algorithm::EdDSA => Some(Algorithm::EdDsa),
+            jsonwebtoken::Algorithm::RS256 => Some(Algorithm::Rs256),
+            jsonwebtoken::Algorithm::RS384 => Some(Algorithm::Rs384),
+            jsonwebtoken::Algorithm::RS512 => Some(Algorithm::Rs512),
+            jsonwebtoken::Algorithm::PS256 => Some(Algorithm::Ps256),
+            jsonwebtoken::Algorithm::PS384 => Some(Algorithm::Ps384),
+            jsonwebtoken::Algorithm::PS512 => Some(Algorithm::Ps512),
+            _ => None,
+        }
+    }
+
+    fn checked(self) -> jsonwebtoken::Algorithm {
+        match self {
+            Algorithm::Es256 => jsonwebtoken::Algorithm::ES256,
+            Algorithm::Es384 => jsonwebtoken::Algorithm::ES384,
+            Algorithm::EdDsa => jsonwebtoken::Algorithm::EdDSA,
+            Algorithm::Rs256 => jsonwebtoken::Algorithm::RS256,
+            Algorithm::Rs384 => jsonwebtoken::Algorithm::RS384,
+            Algorithm::Rs512 => jsonwebtoken::Algorithm::RS512,
+            Algorithm::Ps256 => jsonwebtoken::Algorithm::PS256,
+            Algorithm::Ps384 => jsonwebtoken::Algorithm::PS384,
+            Algorithm::Ps512 => jsonwebtoken::Algorithm::PS512,
+        }
+    }
+
+    fn of(entry: &Value) -> Option<Algorithm> {
+        if let Some(name) = entry.get("alg").and_then(Value::as_str) {
+            return Algorithm::named(name);
+        }
+        let kind = entry.get("kty").and_then(Value::as_str);
+        let curve = entry.get("crv").and_then(Value::as_str);
+        match (kind, curve) {
+            (Some("EC"), Some("P-256")) => Some(Algorithm::Es256),
+            (Some("EC"), Some("P-384")) => Some(Algorithm::Es384),
+            (Some("OKP"), Some("Ed25519")) => Some(Algorithm::EdDsa),
+            (Some("RSA"), _) => Some(Algorithm::Rs256),
             _ => None,
         }
     }
@@ -22,7 +80,7 @@ impl Algorithm {
 pub struct Key {
     pub id: Option<String>,
     pub algorithm: Algorithm,
-    pub secret: Vec<u8>,
+    published: Jwk,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -73,18 +131,27 @@ impl KeySet {
             .ok_or_else(|| Error::Config("key set carries no keys".to_owned()))?;
         let mut keys = Vec::new();
         for entry in listed {
-            let algorithm = entry
-                .get("alg")
-                .and_then(Value::as_str)
-                .and_then(Algorithm::named);
-            let material = entry.get("k").and_then(Value::as_str);
-            let (Some(algorithm), Some(material)) = (algorithm, material) else {
+            let shared = entry.get("kty").and_then(Value::as_str) == Some("oct")
+                || entry
+                    .get("alg")
+                    .and_then(Value::as_str)
+                    .is_some_and(Algorithm::symmetric);
+            if shared {
+                return Err(Error::Config("key set offers a symmetric key".to_owned()));
+            }
+            let Some(algorithm) = Algorithm::of(entry) else {
                 continue;
             };
+            let Ok(published) = serde_json::from_value::<Jwk>(entry.clone()) else {
+                continue;
+            };
+            if DecodingKey::from_jwk(&published).is_err() {
+                continue;
+            }
             keys.push(Key {
                 id: entry.get("kid").and_then(Value::as_str).map(str::to_owned),
                 algorithm,
-                secret: decode(material)?,
+                published,
             });
         }
         match keys.is_empty() {
@@ -108,40 +175,26 @@ impl KeySet {
 impl Claims {
     pub fn verify(token: &str, keys: &KeySet, issuer: &str, now: i64) -> Result<Claims, Error> {
         let refused = |reason: &str| Error::Unauthenticated(reason.to_owned());
-        let mut parts = token.split('.');
-        let (Some(head), Some(body), Some(signature), None) =
-            (parts.next(), parts.next(), parts.next(), parts.next())
-        else {
-            return Err(refused("malformed token"));
-        };
-        let header: Value = serde_json::from_slice(&decode(head)?)
-            .map_err(|_| refused("malformed token header"))?;
-        let algorithm = header
-            .get("alg")
-            .and_then(Value::as_str)
-            .and_then(Algorithm::named)
+        let header =
+            jsonwebtoken::decode_header(token).map_err(|_| refused("malformed token header"))?;
+        let algorithm = Algorithm::verifiable(header.alg)
             .ok_or_else(|| refused("unsupported signature algorithm"))?;
-        let named = header.get("kid").and_then(Value::as_str);
-        let candidates = keys.matching(named, algorithm);
+        let candidates = keys.matching(header.kid.as_deref(), algorithm);
         if candidates.is_empty() {
             return Err(refused("no key verifies this token"));
         }
-        let input = format!("{head}.{body}");
-        let verified = candidates.iter().any(|key| match key.algorithm {
-            Algorithm::Hs256 => jsonwebtoken::crypto::verify(
-                signature,
-                input.as_bytes(),
-                &DecodingKey::from_secret(&key.secret),
-                jsonwebtoken::Algorithm::HS256,
-            )
-            .unwrap_or(false),
-        });
-        if !verified {
-            return Err(refused("signature does not verify"));
-        }
-        let payload: Value =
-            serde_json::from_slice(&decode(body)?).map_err(|_| refused("malformed token body"))?;
-        let claims = Claims::read(&payload);
+        let checks = Claims::checks(algorithm);
+        let payload = candidates
+            .iter()
+            .find_map(|key| {
+                DecodingKey::from_jwk(&key.published)
+                    .ok()
+                    .and_then(|material| {
+                        jsonwebtoken::decode::<Value>(token, &material, &checks).ok()
+                    })
+            })
+            .ok_or_else(|| refused("signature does not verify"))?;
+        let claims = Claims::read(&payload.claims);
         if claims.issuer != issuer {
             return Err(refused("token was issued elsewhere"));
         }
@@ -152,6 +205,15 @@ impl Claims {
             return Err(refused("token is not yet valid"));
         }
         Ok(claims)
+    }
+
+    fn checks(algorithm: Algorithm) -> Validation {
+        let mut checks = Validation::new(algorithm.checked());
+        checks.required_spec_claims.clear();
+        checks.validate_exp = false;
+        checks.validate_nbf = false;
+        checks.validate_aud = false;
+        checks
     }
 
     fn read(payload: &Value) -> Claims {
@@ -186,35 +248,14 @@ impl Claims {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::security::fixture::Issuer;
     use serde_json::json;
 
-    fn signed(payload: Value, secret: &[u8], header: Value) -> String {
-        let head = encode(&serde_json::to_vec(&header).unwrap());
-        let body = encode(&serde_json::to_vec(&payload).unwrap());
-        let input = format!("{head}.{body}");
-        let mac = jsonwebtoken::crypto::sign(
-            input.as_bytes(),
-            &jsonwebtoken::EncodingKey::from_secret(secret),
-            jsonwebtoken::Algorithm::HS256,
-        )
-        .expect("the library signs");
-        format!("{input}.{mac}")
-    }
-
-    fn header() -> Value {
-        json!({"alg": "HS256", "typ": "JWT", "kid": "one"})
-    }
-
-    fn key_set(secret: &[u8]) -> KeySet {
-        KeySet::parse(&json!({"keys": [
-            {"kty": "oct", "kid": "one", "alg": "HS256", "k": encode(secret)}
-        ]}))
-        .expect("a published key set parses")
-    }
+    const ISSUER: &str = "https://issuer.example.org";
 
     fn payload() -> Value {
         json!({
-            "iss": "https://issuer.example.org",
+            "iss": ISSUER,
             "sub": "practitioner-1",
             "client_id": "app-1",
             "aud": "https://service.example.org",
@@ -223,6 +264,10 @@ mod tests {
             "nbf": 500,
             "iat": 500,
         })
+    }
+
+    fn header() -> Value {
+        json!({"alg": "ES256", "typ": "JWT", "kid": "one"})
     }
 
     #[test]
@@ -237,9 +282,10 @@ mod tests {
 
     #[test]
     fn a_signed_token_yields_the_claims_it_carries() {
-        let secret = b"a-configured-secret";
-        let claims = Claims::verify(&signed(payload(), secret, header()), &key_set(secret), "https://issuer.example.org", 1_000).unwrap();
-        assert_eq!(claims.issuer, "https://issuer.example.org");
+        let issuer = Issuer::generate("one");
+        let keys = KeySet::parse(&issuer.keys()).unwrap();
+        let claims = Claims::verify(&issuer.mint(&payload()), &keys, ISSUER, 1_000).unwrap();
+        assert_eq!(claims.issuer, ISSUER);
         assert_eq!(claims.subject.as_deref(), Some("practitioner-1"));
         assert_eq!(claims.client.as_deref(), Some("app-1"));
         assert_eq!(claims.audience, vec!["https://service.example.org".to_owned()]);
@@ -248,73 +294,130 @@ mod tests {
     }
 
     #[test]
+    fn a_published_key_set_names_the_algorithm_it_verifies() {
+        let issuer = Issuer::generate("one");
+        let keys = KeySet::parse(&issuer.keys()).unwrap();
+        assert_eq!(keys.keys.len(), 1);
+        assert_eq!(keys.keys[0].id.as_deref(), Some("one"));
+        assert_eq!(keys.keys[0].algorithm, Algorithm::Es256);
+    }
+
+    #[test]
     fn a_token_signed_by_another_key_is_refused() {
-        let token = signed(payload(), b"another-secret", header());
-        let error = Claims::verify(&token, &key_set(b"a-configured-secret"), "https://issuer.example.org", 1_000).unwrap_err();
+        let issuer = Issuer::generate("one");
+        let other = Issuer::generate("one");
+        let keys = KeySet::parse(&issuer.keys()).unwrap();
+        let error = Claims::verify(&other.mint(&payload()), &keys, ISSUER, 1_000).unwrap_err();
         assert!(matches!(error, Error::Unauthenticated(_)));
     }
 
     #[test]
-    fn an_expired_or_early_token_is_refused() {
-        let secret = b"a-configured-secret";
-        let token = signed(payload(), secret, header());
+    fn a_token_carrying_no_signature_is_refused() {
+        let issuer = Issuer::generate("one");
+        let keys = KeySet::parse(&issuer.keys()).unwrap();
+        let input = Issuer::input(&header(), &payload());
         assert!(matches!(
-            Claims::verify(&token, &key_set(secret), "https://issuer.example.org", 2_001).unwrap_err(),
+            Claims::verify(&format!("{input}."), &keys, ISSUER, 1_000).unwrap_err(),
+            Error::Unauthenticated(_)
+        ));
+        let unsigned = Issuer::input(&json!({"alg": "none"}), &payload());
+        assert!(matches!(
+            Claims::verify(&format!("{unsigned}."), &keys, ISSUER, 1_000).unwrap_err(),
+            Error::Unauthenticated(_)
+        ));
+    }
+
+    #[test]
+    fn a_token_naming_a_symmetric_algorithm_is_refused() {
+        let issuer = Issuer::generate("one");
+        let keys = KeySet::parse(&issuer.keys()).unwrap();
+        let head = json!({"alg": "HS256", "kid": "one"});
+        let input = Issuer::input(&head, &payload());
+        let forged = jsonwebtoken::crypto::sign(
+            input.as_bytes(),
+            &jsonwebtoken::EncodingKey::from_secret(issuer.material().as_bytes()),
+            jsonwebtoken::Algorithm::HS256,
+        )
+        .expect("the library signs");
+        let error = Claims::verify(&format!("{input}.{forged}"), &keys, ISSUER, 1_000).unwrap_err();
+        assert!(matches!(error, Error::Unauthenticated(_)));
+        assert!(error.to_string().contains("unsupported"));
+    }
+
+    #[test]
+    fn a_token_naming_an_algorithm_the_key_does_not_verify_is_refused() {
+        let issuer = Issuer::generate("one");
+        let keys = KeySet::parse(&issuer.keys()).unwrap();
+        let token = issuer.minted_under(&json!({"alg": "ES384", "kid": "one"}), &payload());
+        let error = Claims::verify(&token, &keys, ISSUER, 1_000).unwrap_err();
+        assert!(matches!(error, Error::Unauthenticated(_)));
+    }
+
+    #[test]
+    fn a_key_set_offering_a_symmetric_key_is_refused() {
+        let shared = json!({"keys": [
+            {"kty": "oct", "kid": "one", "alg": "HS256", "k": encode(b"a-shared-secret")}
+        ]});
+        assert!(matches!(KeySet::parse(&shared), Err(Error::Config(_))));
+        let named = json!({"keys": [{"kty": "EC", "crv": "P-256", "alg": "HS256"}]});
+        assert!(matches!(KeySet::parse(&named), Err(Error::Config(_))));
+    }
+
+    #[test]
+    fn an_expired_or_early_token_is_refused() {
+        let issuer = Issuer::generate("one");
+        let keys = KeySet::parse(&issuer.keys()).unwrap();
+        let token = issuer.mint(&payload());
+        assert!(matches!(
+            Claims::verify(&token, &keys, ISSUER, 2_001).unwrap_err(),
             Error::Unauthenticated(_)
         ));
         assert!(matches!(
-            Claims::verify(&token, &key_set(secret), "https://issuer.example.org", 499).unwrap_err(),
+            Claims::verify(&token, &keys, ISSUER, 499).unwrap_err(),
             Error::Unauthenticated(_)
         ));
     }
 
     #[test]
     fn a_token_from_another_issuer_is_refused() {
-        let secret = b"a-configured-secret";
-        let token = signed(payload(), secret, header());
+        let issuer = Issuer::generate("one");
+        let keys = KeySet::parse(&issuer.keys()).unwrap();
+        let token = issuer.mint(&payload());
         assert!(matches!(
-            Claims::verify(&token, &key_set(secret), "https://elsewhere.example.org", 1_000).unwrap_err(),
+            Claims::verify(&token, &keys, "https://elsewhere.example.org", 1_000).unwrap_err(),
             Error::Unauthenticated(_)
         ));
     }
 
     #[test]
-    fn an_unsigned_token_is_refused() {
-        let secret = b"a-configured-secret";
-        let head = encode(&serde_json::to_vec(&json!({"alg": "none"})).unwrap());
-        let body = encode(&serde_json::to_vec(&payload()).unwrap());
-        let error = Claims::verify(&format!("{head}.{body}."), &key_set(secret), "https://issuer.example.org", 1_000).unwrap_err();
-        assert!(matches!(error, Error::Unauthenticated(_)));
-    }
-
-    #[test]
     fn a_malformed_token_is_refused_without_echoing_it() {
-        let secret = b"a-configured-secret";
-        let error = Claims::verify("not-a-token", &key_set(secret), "https://issuer.example.org", 1_000).unwrap_err();
+        let issuer = Issuer::generate("one");
+        let keys = KeySet::parse(&issuer.keys()).unwrap();
+        let error = Claims::verify("not-a-token", &keys, ISSUER, 1_000).unwrap_err();
         assert!(matches!(error, Error::Unauthenticated(_)));
         assert!(!error.to_string().contains("not-a-token"));
     }
 
     #[test]
     fn a_named_key_is_the_one_the_header_asks_for() {
-        let secret = b"a-configured-secret";
-        let mut keys = key_set(b"stale-secret");
-        keys.keys.push(Key {
-            id: Some("two".to_owned()),
-            algorithm: Algorithm::Hs256,
-            secret: secret.to_vec(),
-        });
-        let token = signed(payload(), secret, json!({"alg": "HS256", "kid": "two"}));
-        assert!(Claims::verify(&token, &keys, "https://issuer.example.org", 1_000).is_ok());
+        let stale = Issuer::generate("one");
+        let current = Issuer::generate("two");
+        let mut document = stale.keys();
+        let listed = document["keys"].as_array_mut().expect("a listed key");
+        listed.push(current.keys()["keys"][0].clone());
+        let keys = KeySet::parse(&document).unwrap();
+        assert_eq!(keys.keys.len(), 2);
+        assert!(Claims::verify(&current.mint(&payload()), &keys, ISSUER, 1_000).is_ok());
     }
 
     #[test]
     fn a_launch_compartment_and_a_list_of_audiences_are_carried() {
-        let secret = b"a-configured-secret";
+        let issuer = Issuer::generate("one");
+        let keys = KeySet::parse(&issuer.keys()).unwrap();
         let mut body = payload();
         body["patient"] = json!("pt-1");
         body["aud"] = json!(["one", "two"]);
-        let claims = Claims::verify(&signed(body, secret, header()), &key_set(secret), "https://issuer.example.org", 1_000).unwrap();
+        let claims = Claims::verify(&issuer.mint(&body), &keys, ISSUER, 1_000).unwrap();
         assert_eq!(claims.patient.as_deref(), Some("pt-1"));
         assert_eq!(claims.audience, vec!["one".to_owned(), "two".to_owned()]);
     }
@@ -322,7 +425,7 @@ mod tests {
     #[test]
     fn a_key_set_without_usable_keys_is_refused() {
         assert!(KeySet::parse(&json!({"keys": []})).is_err());
-        assert!(KeySet::parse(&json!({"keys": [{"kty": "RSA", "kid": "r"}]})).is_err());
+        assert!(KeySet::parse(&json!({"keys": [{"kty": "OKP", "kid": "r"}]})).is_err());
         assert!(KeySet::parse(&json!({})).is_err());
     }
 }

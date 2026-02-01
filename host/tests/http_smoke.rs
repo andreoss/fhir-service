@@ -1286,37 +1286,33 @@ fn live_discovery_matches_the_configured_authorization() {
     );
 }
 
-const SMOKE_SECRET: &[u8] = b"a-secret-supplied-by-configuration";
 const SMOKE_ISSUER: &str = "https://issuer.example.org";
 
+fn smoke_signing() -> &'static fhir_core::security::fixture::Issuer {
+    use std::sync::OnceLock;
+    static HELD: OnceLock<fhir_core::security::fixture::Issuer> = OnceLock::new();
+    HELD.get_or_init(|| fhir_core::security::fixture::Issuer::generate("one"))
+}
+
 fn key_document() -> String {
-    format!(
-        r#"{{"keys":[{{"kty":"oct","kid":"one","alg":"HS256","k":"{}"}}]}}"#,
-        fhir_core::security::bearer::encode(SMOKE_SECRET)
-    )
+    smoke_signing().keys().to_string()
+}
+
+fn smoke_claims(scopes: &str, life: i64) -> serde_json::Value {
+    let expiry = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|since| since.as_secs() as i64 + life)
+        .unwrap_or(0);
+    serde_json::json!({
+        "iss": SMOKE_ISSUER,
+        "sub": "practitioner-1",
+        "scope": scopes,
+        "exp": expiry,
+    })
 }
 
 fn smoke_token(scopes: &str) -> String {
-    use fhir_core::security::bearer::encode;
-    let expiry = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|since| since.as_secs() as i64 + 300)
-        .unwrap_or(0);
-    let head = encode(br#"{"alg":"HS256","kid":"one"}"#);
-    let payload = format!(
-        r#"{{"iss":"{SMOKE_ISSUER}","sub":"practitioner-1","scope":"{scopes}","exp":{expiry}}}"#
-    );
-    let body = encode(payload.as_bytes());
-    let input = format!("{head}.{body}");
-    {
-        let mac = jsonwebtoken::crypto::sign(
-            input.as_bytes(),
-            &jsonwebtoken::EncodingKey::from_secret(SMOKE_SECRET),
-            jsonwebtoken::Algorithm::HS256,
-        )
-        .expect("the library signs");
-        format!("{input}.{mac}")
-    }
+    smoke_signing().mint(&smoke_claims(scopes, 300))
 }
 
 fn spawn_enforcing() -> (Child, u16) {
@@ -1395,4 +1391,64 @@ fn live_requests_are_authorized_scoped_and_recorded() {
     assert!(actions.contains(&"write".to_owned()), "{actions:?}");
     assert!(actions.contains(&"read".to_owned()), "{actions:?}");
     assert!(!trail.body.contains("Stone"), "{}", trail.body);
+}
+
+fn smoke_refusable() -> Vec<(&'static str, String)> {
+    use fhir_core::security::fixture::Issuer;
+    let elsewhere = Issuer::generate("one");
+    let claims = smoke_claims("system/*.read system/*.write", 300);
+    let symmetric = serde_json::json!({"alg": "HS256", "kid": "one"});
+    let input = Issuer::input(&symmetric, &claims);
+    let forged = jsonwebtoken::crypto::sign(
+        input.as_bytes(),
+        &jsonwebtoken::EncodingKey::from_secret(smoke_signing().material().as_bytes()),
+        jsonwebtoken::Algorithm::HS256,
+    )
+    .expect("the library signs");
+    vec![
+        ("signed by another key", elsewhere.mint(&claims)),
+        (
+            "carrying no signature",
+            format!(
+                "{}.",
+                Issuer::input(&serde_json::json!({"alg": "ES256", "kid": "one"}), &claims)
+            ),
+        ),
+        ("naming a symmetric algorithm", format!("{input}.{forged}")),
+        (
+            "naming an algorithm the key does not verify",
+            smoke_signing()
+                .minted_under(&serde_json::json!({"alg": "ES384", "kid": "one"}), &claims),
+        ),
+        ("expired", smoke_signing().mint(&smoke_claims("system/*.read", -60))),
+    ]
+}
+
+#[test]
+fn live_a_token_the_published_key_does_not_verify_is_refused() {
+    let (child, port) = spawn_enforcing();
+    let offered = smoke_refusable();
+    let replies: Vec<(String, u16, String)> = offered
+        .iter()
+        .map(|(reason, token)| {
+            let carried = format!("Bearer {token}");
+            let reply = request(
+                port,
+                "POST",
+                "/Patient",
+                &[("Authorization", carried.as_str())],
+                br#"{"resourceType":"Patient","id":"pt-forged","active":true}"#,
+            );
+            ((*reason).to_owned(), reply.status, reply.body)
+        })
+        .collect();
+    let honest = format!("Bearer {}", smoke_token("system/*.read"));
+    let absent = request(port, "GET", "/Patient/pt-forged", &[("Authorization", honest.as_str())], &[]);
+    stop(child);
+
+    for (reason, status, body) in &replies {
+        assert_eq!(*status, 401, "{reason}: {body}");
+        assert_eq!(issue_code(body), "login", "{reason}: {body}");
+    }
+    assert_eq!(absent.status, 404, "{}", absent.body);
 }
