@@ -68,6 +68,73 @@ where
 mod tests {
     use super::*;
 
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::time::Duration;
+
+    fn transient() -> DriverError {
+        DriverError::from(std::io::Error::new(
+            std::io::ErrorKind::BrokenPipe,
+            "the connection dropped",
+        ))
+    }
+
+    fn permanent() -> DriverError {
+        DriverError::from(mongodb::bson::de::Error::EndOfStream)
+    }
+
+    fn quick() -> Policy {
+        Policy {
+            attempts: 4,
+            backoff: Duration::from_micros(1),
+            pause: Duration::from_micros(1),
+        }
+    }
+
+    #[test]
+    fn a_dropped_connection_is_worth_another_attempt() {
+        assert_eq!(classify(&transient()), Fault::Transient);
+        assert_eq!(classify(&permanent()), Fault::Permanent);
+    }
+
+    #[tokio::test]
+    async fn work_that_recovers_is_repeated_until_it_does() {
+        let seen = AtomicU32::new(0);
+        let value = retried(&quick(), "reading", || async {
+            match seen.fetch_add(1, Ordering::SeqCst) {
+                0 | 1 => Err(transient()),
+                _ => Ok(7),
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(value, 7);
+        assert_eq!(seen.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn work_that_will_never_succeed_is_not_repeated() {
+        let seen = AtomicU32::new(0);
+        let failure = retried(&quick(), "reading", || async {
+            seen.fetch_add(1, Ordering::SeqCst);
+            Err::<u32, DriverError>(permanent())
+        })
+        .await;
+        assert!(failure.is_err());
+        assert_eq!(seen.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn work_that_keeps_failing_gives_up_after_the_last_attempt() {
+        let seen = AtomicU32::new(0);
+        let failure = retried(&quick(), "reading", || async {
+            seen.fetch_add(1, Ordering::SeqCst);
+            Err::<u32, DriverError>(transient())
+        })
+        .await;
+        assert!(matches!(failure, Err(Error::Internal(_))));
+        assert_eq!(seen.load(Ordering::SeqCst), 4);
+    }
+
     #[test]
     fn a_failure_the_engine_names_is_placed_by_its_code() {
         assert_eq!(coded(112), Fault::Transient);

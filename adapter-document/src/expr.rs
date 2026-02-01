@@ -117,6 +117,12 @@ fn prefixes(text: &str) -> Vec<Bson> {
     found
 }
 
+struct Component {
+    array: &'static str,
+    condition: Bson,
+    variable: String,
+}
+
 pub struct Compiler {
     variables: usize,
     lookups: usize,
@@ -367,16 +373,19 @@ impl Compiler {
         }))
     }
 
-    fn paired(
-        &mut self,
-        left_array: &str,
-        right_array: &str,
-        param: &str,
-        left: Bson,
-        right: Bson,
-        left_variable: &str,
-        right_variable: &str,
-    ) -> Bson {
+    fn paired(&mut self, param: &str, left: Component, right: Component) -> Bson {
+        let Component {
+            array: left_array,
+            condition: left,
+            variable: left_variable,
+        } = left;
+        let Component {
+            array: right_array,
+            condition: right,
+            variable: right_variable,
+        } = right;
+        let left_variable = left_variable.as_str();
+        let right_variable = right_variable.as_str();
         let inner = Bson::Document(doc! {
             "$gt": [
                 {"$size": {"$filter": {
@@ -568,17 +577,17 @@ impl Compiler {
                 let right_array = array_of(definition.right.value_type)?;
                 let left_variable = self.variable();
                 let right_variable = self.variable();
-                let left = self.condition(left, &left_variable);
-                let right = self.condition(right, &right_variable);
-                Ok(self.paired(
-                    left_array,
-                    right_array,
-                    &param,
-                    left,
-                    right,
-                    &left_variable,
-                    &right_variable,
-                ))
+                let left = Component {
+                    array: left_array,
+                    condition: self.condition(left, &left_variable),
+                    variable: left_variable,
+                };
+                let right = Component {
+                    array: right_array,
+                    condition: self.condition(right, &right_variable),
+                    variable: right_variable,
+                };
+                Ok(self.paired(&param, left, right))
             }
         }
     }

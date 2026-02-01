@@ -1,7 +1,7 @@
 mod support;
 
 use fhir_store::{
-    ChangeFeed, ChangeKind, ChangeRecord, Continuation, FeedRange, ResourceStore, StoreScope,
+    ChangeFeed, ChangeKind, ChangeRecord, Continuation, FeedRange, ResourceStore,
 };
 use fhir_store_contract::fixture::{id, patient};
 
