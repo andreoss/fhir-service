@@ -730,6 +730,7 @@ dependencies = [
  "fhir-jobs",
  "fhir-store",
  "fhir-store-contract",
+ "fhir-telemetry",
  "http-body-util",
  "jsonwebtoken",
  "serde_json",
@@ -777,6 +778,7 @@ dependencies = [
  "fhir-core",
  "fhir-store",
  "fhir-store-contract",
+ "fhir-telemetry",
  "serde_json",
  "tokio",
 ]

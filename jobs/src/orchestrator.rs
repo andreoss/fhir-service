@@ -8,6 +8,26 @@ use std::sync::Arc;
 
 pub struct Orchestrator {
     handlers: BTreeMap<JobKind, Arc<dyn JobHandler>>,
+    telemetry: Arc<fhir_telemetry::Telemetry>,
+    ticker: fhir_store::Ticker,
+}
+
+pub fn measured(kind: JobKind) -> fhir_telemetry::Operation {
+    match kind {
+        JobKind::Import => fhir_telemetry::Operation::Import,
+        JobKind::Export => fhir_telemetry::Operation::Export,
+        JobKind::BulkDelete => fhir_telemetry::Operation::BulkDelete,
+        JobKind::BulkUpdate => fhir_telemetry::Operation::BulkUpdate,
+        JobKind::Reindex => fhir_telemetry::Operation::Reindex,
+    }
+}
+
+fn ended(result: &JobResult) -> fhir_telemetry::Outcome {
+    match result {
+        JobResult::Succeeded(_) | JobResult::Cancelled => fhir_telemetry::Outcome::Success,
+        JobResult::Rejected(_) => fhir_telemetry::Outcome::ClientFault,
+        JobResult::Failed(_) => fhir_telemetry::Outcome::ServerFault,
+    }
 }
 
 impl Default for Orchestrator {
@@ -20,12 +40,22 @@ impl Orchestrator {
     pub fn new() -> Orchestrator {
         Orchestrator {
             handlers: BTreeMap::new(),
+            telemetry: Arc::new(fhir_telemetry::Telemetry::silent()),
+            ticker: fhir_store::system_ticker(),
         }
     }
 
     pub fn with(mut self, handler: Arc<dyn JobHandler>) -> Orchestrator {
         self.handlers.insert(handler.kind(), handler);
         self
+    }
+
+    pub fn reporting(self, telemetry: Arc<fhir_telemetry::Telemetry>) -> Orchestrator {
+        Orchestrator { telemetry, ..self }
+    }
+
+    pub fn timed(self, ticker: fhir_store::Ticker) -> Orchestrator {
+        Orchestrator { ticker, ..self }
     }
 
     pub fn kinds(&self) -> Vec<JobKind> {
@@ -46,21 +76,20 @@ impl Orchestrator {
         worker: &str,
         duration: i64,
     ) -> Result<JobRecord, Error> {
+        let started = (self.ticker)();
         let handler = match self.handler(record.kind) {
             Ok(handler) => handler,
             Err(error) => {
-                return jobs
-                    .finish(&record.id, worker, JobResult::Rejected(error.to_string()))
-                    .await
+                let refused = JobResult::Rejected(error.to_string());
+                return self.concluded(jobs, record, worker, refused, started).await;
             }
         };
         let context = JobContext::of(record);
         let units = match handler.plan(&context).await {
             Ok(units) => units,
             Err(error) => {
-                return jobs
-                    .finish(&record.id, worker, JobResult::Rejected(error.to_string()))
-                    .await
+                let refused = JobResult::Rejected(error.to_string());
+                return self.concluded(jobs, record, worker, refused, started).await;
             }
         };
         let total = units.len() as u64;
@@ -76,7 +105,9 @@ impl Orchestrator {
                 .await?
                 == JobSignal::Cancel
             {
-                return jobs.finish(&record.id, worker, JobResult::Cancelled).await;
+                return self
+                    .concluded(jobs, record, worker, JobResult::Cancelled, started)
+                    .await;
             }
             match handler.process(&context, unit).await {
                 Ok(outcome) => {
@@ -86,9 +117,8 @@ impl Orchestrator {
                     summary.detail.extend(outcome.detail);
                 }
                 Err(error) => {
-                    return jobs
-                        .finish(&record.id, worker, JobResult::Failed(error.to_string()))
-                        .await
+                    let failed = JobResult::Failed(error.to_string());
+                    return self.concluded(jobs, record, worker, failed, started).await;
                 }
             }
         }
@@ -100,8 +130,23 @@ impl Orchestrator {
         let _ = jobs
             .heartbeat(&record.id, worker, duration, Some(progress))
             .await?;
-        jobs.finish(&record.id, worker, JobResult::Succeeded(report(total, &summary)))
-            .await
+        let done = JobResult::Succeeded(report(total, &summary));
+        self.concluded(jobs, record, worker, done, started).await
+    }
+
+    async fn concluded(
+        &self,
+        jobs: &dyn JobStore,
+        record: &JobRecord,
+        worker: &str,
+        result: JobResult,
+        started: i64,
+    ) -> Result<JobRecord, Error> {
+        let dimensions = fhir_telemetry::Dimensions::of(measured(record.kind), ended(&result));
+        let finished = jobs.finish(&record.id, worker, result).await?;
+        let millis = (self.ticker)().saturating_sub(started).max(0) as u64;
+        self.telemetry.record(dimensions, millis);
+        Ok(finished)
     }
 }
 

@@ -34,6 +34,7 @@ pub struct AppState {
     pub templates: Arc<dyn Templates>,
     pub terminology: Arc<dyn fhir_store::Terminology>,
     pub audit: Arc<dyn fhir_store::Audit>,
+    pub telemetry: Arc<fhir_telemetry::Telemetry>,
     pub authorization: Option<Arc<crate::smart::Authorization>>,
     pub guard: Option<Arc<crate::access::Guard>>,
 }
@@ -69,6 +70,10 @@ impl Service {
                 entries: Arc::new(tokio::sync::Semaphore::new(crate::bundle::ENTRIES_AT_ONCE)),
                 templates: Arc::new(ApprovedTemplates::default()),
                 audit: Arc::new(fhir_store::Unrecorded),
+                telemetry: Arc::new(fhir_telemetry::Telemetry::new(
+                    Arc::new(fhir_telemetry::Stream),
+                    fhir_store::system_ticker(),
+                )),
                 authorization: None,
                 guard: None,
             },
@@ -118,6 +123,19 @@ impl Service {
                 ..self.state
             },
         }
+    }
+
+    pub fn reporting(self, telemetry: Arc<fhir_telemetry::Telemetry>) -> Service {
+        Service {
+            state: AppState {
+                telemetry,
+                ..self.state
+            },
+        }
+    }
+
+    pub fn telemetry(&self) -> Arc<fhir_telemetry::Telemetry> {
+        Arc::clone(&self.state.telemetry)
     }
 
     pub fn recording(self, audit: Arc<dyn fhir_store::Audit>) -> Service {
@@ -171,7 +189,7 @@ impl Service {
     }
 
     pub fn router(&self) -> Router<()> {
-        routes().with_state(self.state.clone())
+        measured(routes().with_state(self.state.clone()), &self.state)
     }
 
     pub async fn bind(&self, addr: SocketAddr) -> Result<Bound, Error> {
@@ -190,10 +208,18 @@ impl Service {
 }
 
 pub(crate) fn over(state: &AppState, store: Arc<dyn ResourceStore>) -> Router<()> {
-    routes().with_state(AppState {
+    let held = AppState {
         store,
         ..state.clone()
-    })
+    };
+    measured(routes().with_state(held.clone()), &held)
+}
+
+fn measured(router: Router<()>, state: &AppState) -> Router<()> {
+    router.layer(axum::middleware::from_fn_with_state(
+        state.clone(),
+        crate::measure::measured,
+    ))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

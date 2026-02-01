@@ -8,6 +8,7 @@ async-trait = "0.1"
 axum = "0.8"
 fhir-core = { path = "../core" }
 fhir-store = { path = "../store" }
+fhir-telemetry = { path = "../telemetry" }
 serde_json = "1"
 time = { version = "0.3", features = ["parsing", "formatting"] }
 tokio = { version = "1", features = ["rt", "net", "sync", "io-util", "time"] }
@@ -21,6 +22,8 @@ fhir-core = { path = "../core", features = ["fixtures"] }
 jsonwebtoken = { version = "10", features = ["rust_crypto"] }
 fhir-adapter-memory = { path = "../adapter-memory" }
 fhir-jobs = { path = "../jobs" }
+fhir-store = { path = "../store" }
+fhir-telemetry = { path = "../telemetry" }
 fhir-store-contract = { path = "../contract" }
 http-body-util = "0.1"
 serde_json = "1"

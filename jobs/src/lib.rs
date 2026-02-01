@@ -9,7 +9,7 @@ pub mod work;
 
 pub use export::{ExportJob, ExportRequest, ExportScope};
 pub use handler::{JobContext, JobHandler, Unit, UnitOutcome};
-pub use orchestrator::{Orchestrator, Worker};
+pub use orchestrator::{measured, Orchestrator, Worker};
 pub use watchdog::{Schedule, Sweep, Watchdog, RETENTION};
 pub use work::{
     BulkDeleteJob, BulkDeleteRequest, BulkUpdateJob, BulkUpdateRequest, ImportJob, ReindexJob,

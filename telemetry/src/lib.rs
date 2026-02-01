@@ -41,6 +41,10 @@ impl Telemetry {
         self.metrics.measured()
     }
 
+    pub fn count(&self, dimensions: Dimensions) -> u64 {
+        self.metrics.count(dimensions)
+    }
+
     pub fn exposition(&self) -> String {
         self.metrics.exposition(self.suppressed())
     }
