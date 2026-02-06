@@ -68,6 +68,12 @@ suite!(a_failed_attempt_waits_and_runs_again, retries, "jretry", timed);
 suite!(a_job_a_stopped_worker_held_is_claimed_again, recovery, "jresume", timed);
 suite!(a_job_with_no_attempt_left_fails_on_reclaim, exhaustion, "jspent", timed);
 suite!(
+    a_resumed_job_keeps_the_identifier_it_started_with,
+    correlation,
+    "jtie",
+    timed
+);
+suite!(
     a_cancelling_job_whose_worker_stopped_ends_cancelled,
     stopped_while_cancelling,
     "jgone",

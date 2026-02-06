@@ -16,7 +16,8 @@ const QUEUE_LOCK: i64 = 0x6a_6f_62_71;
 
 const COLUMNS: &str = "job_id, kind, state, payload, progress_done, progress_total, \
                        progress_detail, attempt, attempts, outcome, created_ms, updated_ms, \
-                       available_ms, lease_ms, worker, started_ms, cancelled, owner";
+                       available_ms, lease_ms, worker, started_ms, cancelled, owner, \
+                       correlation";
 
 pub struct RelationalJobStore {
     pool: PgPool,
@@ -72,6 +73,8 @@ fn record_of(row: &PgRow) -> Result<JobRecord, Error> {
     Ok(JobRecord {
         id: JobId::parse(&text("job_id")?)?,
         owner: maybe("owner")?,
+        correlation: maybe("correlation")?
+            .and_then(|held: String| fhir_core::CorrelationId::parse(&held).ok()),
         kind: JobKind::from_str(&text("kind")?)?,
         state: JobState::from_str(&text("state")?)?,
         payload: maybe("payload")?,
@@ -108,7 +111,7 @@ impl JobStore for RelationalJobStore {
         let now = (self.ticker)();
         let statement = format!(
             "insert into {} ({COLUMNS}) values \
-             ($1, $2, $3, $4, 0, null, null, 0, $5, null, $6, $6, $6, null, null, null, false, $7) \
+             ($1, $2, $3, $4, 0, null, null, 0, $5, null, $6, $6, $6, null, null, null, false, $7, $8) \
              on conflict (job_id) do nothing",
             self.table()
         );
@@ -120,6 +123,7 @@ impl JobStore for RelationalJobStore {
             .bind(request.attempts.max(1) as i32)
             .bind(now)
             .bind(request.owner.as_deref())
+            .bind(request.correlation.as_ref().map(|held| held.as_str()))
             .execute(&self.pool)
             .await
             .map_err(|error| faulted("submitting a job", error))?;

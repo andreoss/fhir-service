@@ -215,6 +215,51 @@ pub async fn recovery(store: &dyn JobStore, ticker: &StepTicker) {
     assert_eq!(done.state, JobState::Completed);
 }
 
+pub async fn correlation(store: &dyn JobStore, ticker: &StepTicker) {
+    let started = fhir_core::CorrelationId::fresh();
+    let submitted = store
+        .submit(
+            JobRequest::new(job("k1"), JobKind::Export, "{}")
+                .correlated(started.clone())
+                .with_attempts(3),
+        )
+        .await
+        .unwrap();
+    assert_eq!(submitted.correlation.as_ref(), Some(&started));
+    assert_eq!(
+        store.fetch(&job("k1")).await.unwrap().correlation.as_ref(),
+        Some(&started)
+    );
+
+    let held = store.claim(&Lease::new("one", 1_000)).await.unwrap();
+    assert_eq!(held.len(), 1);
+    assert_eq!(held[0].correlation.as_ref(), Some(&started));
+
+    ticker.advance(1_500);
+    assert_eq!(store.reclaim().await.unwrap(), vec![job("k1")]);
+
+    let resumed = store.claim(&Lease::new("two", 1_000)).await.unwrap();
+    assert_eq!(resumed.len(), 1);
+    assert_eq!(resumed[0].attempt, 2);
+    assert_eq!(
+        resumed[0].correlation.as_ref(),
+        Some(&started),
+        "a resumed attempt keeps the identifier it started with"
+    );
+
+    let done = store
+        .finish(&job("k1"), "two", JobResult::Succeeded("{}".to_owned()))
+        .await
+        .unwrap();
+    assert_eq!(done.correlation.as_ref(), Some(&started));
+
+    let none = store
+        .submit(JobRequest::new(job("k2"), JobKind::Import, "{}"))
+        .await
+        .unwrap();
+    assert_eq!(none.correlation, None);
+}
+
 pub async fn exhaustion(store: &dyn JobStore, ticker: &StepTicker) {
     store
         .submit(queued("x1", JobKind::Reindex).with_attempts(1))

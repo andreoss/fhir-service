@@ -810,6 +810,7 @@ dependencies = [
 name = "fhir-telemetry"
 version = "0.1.0"
 dependencies = [
+ "fhir-core",
  "fhir-store",
 ]
 

@@ -191,6 +191,10 @@ const JOB_OWNER_TUNING: &str = "
 create index if not exists job_owner on job (owner, created_ms);
 ";
 
+const JOB_CORRELATION: &str = "
+alter table job add column if not exists correlation text;
+";
+
 pub const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 1,
@@ -257,6 +261,12 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "job owner index",
         required: false,
         statements: JOB_OWNER_TUNING,
+    },
+    Migration {
+        version: 12,
+        name: "job correlation",
+        required: true,
+        statements: JOB_CORRELATION,
     },
 ];
 

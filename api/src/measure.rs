@@ -1,5 +1,6 @@
 use axum::extract::{MatchedPath, Request, State};
-use axum::http::Method;
+use axum::http::{HeaderValue, Method};
+use fhir_core::CorrelationId;
 use axum::middleware::Next;
 use axum::response::Response;
 use fhir_telemetry::{Dimensions, Operation, Outcome};
@@ -76,21 +77,45 @@ fn instance(method: &Method, path: &str) -> Operation {
     }
 }
 
-pub async fn measured(State(state): State<AppState>, request: Request, next: Next) -> Response {
+pub const CORRELATION: &str = "x-correlation-id";
+
+pub fn correlation_of(headers: &axum::http::HeaderMap) -> CorrelationId {
+    CorrelationId::offered(
+        headers
+            .get(CORRELATION)
+            .and_then(|held| held.to_str().ok()),
+    )
+}
+
+pub async fn measured(
+    State(state): State<AppState>,
+    mut request: Request,
+    next: Next,
+) -> Response {
     let method = request.method().clone();
     let path = request
         .extensions()
         .get::<MatchedPath>()
         .map(|matched| matched.as_str().to_owned())
         .unwrap_or_else(|| "/".to_owned());
+    let correlation = correlation_of(request.headers());
+    if let Ok(value) = HeaderValue::from_str(correlation.as_str()) {
+        request.headers_mut().insert(CORRELATION, value.clone());
+        request.extensions_mut().insert(correlation.clone());
+    }
     let started = Instant::now();
-    let response = next.run(request).await;
+    let mut response = next.run(request).await;
     let millis = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
     let dimensions = Dimensions::of(
         operation_of(&method, &path),
         Outcome::of_status(response.status().as_u16()),
     );
-    state.telemetry.record(dimensions, millis);
+    if let Ok(value) = HeaderValue::from_str(correlation.as_str()) {
+        response.headers_mut().insert(CORRELATION, value);
+    }
+    state
+        .telemetry
+        .record_for(dimensions, millis, Some(correlation));
     response
 }
 

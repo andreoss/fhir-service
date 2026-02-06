@@ -57,6 +57,7 @@ impl JobStore for MemoryJobStore {
             id: request.id,
             kind: request.kind,
             owner: request.owner,
+            correlation: request.correlation,
             state: JobState::Queued,
             payload: Some(request.payload),
             progress: JobProgress::default(),

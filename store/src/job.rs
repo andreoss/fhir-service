@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use fhir_core::Error;
+use fhir_core::{CorrelationId, Error};
 use std::str::FromStr;
 
 const ID_LIMIT: usize = 64;
@@ -176,6 +176,7 @@ pub struct JobRequest {
     pub payload: String,
     pub attempts: u32,
     pub owner: Option<String>,
+    pub correlation: Option<CorrelationId>,
 }
 
 impl JobRequest {
@@ -186,6 +187,14 @@ impl JobRequest {
             payload: payload.into(),
             attempts: 3,
             owner: None,
+            correlation: None,
+        }
+    }
+
+    pub fn correlated(self, correlation: CorrelationId) -> JobRequest {
+        JobRequest {
+            correlation: Some(correlation),
+            ..self
         }
     }
 
@@ -207,6 +216,7 @@ impl JobRequest {
 #[derive(Debug, Clone)]
 pub struct JobRecord {
     pub owner: Option<String>,
+    pub correlation: Option<CorrelationId>,
     pub id: JobId,
     pub kind: JobKind,
     pub state: JobState,

@@ -1,21 +1,42 @@
 use std::sync::{Arc, Mutex};
 
 use crate::dimension::Dimensions;
+use fhir_core::CorrelationId;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Event {
     pub dimensions: Dimensions,
     pub millis: u64,
+    pub correlation: Option<CorrelationId>,
 }
 
 impl Event {
+    pub fn of(dimensions: Dimensions, millis: u64) -> Event {
+        Event {
+            dimensions,
+            millis,
+            correlation: None,
+        }
+    }
+
+    pub fn tied(self, correlation: Option<CorrelationId>) -> Event {
+        Event {
+            correlation,
+            ..self
+        }
+    }
+
     pub fn line(&self) -> String {
-        format!(
+        let line = format!(
             "operation={} outcome={} duration_ms={}",
             self.dimensions.operation.as_str(),
             self.dimensions.outcome.as_str(),
             self.millis
-        )
+        );
+        match &self.correlation {
+            Some(correlation) => format!("{line} correlation={correlation}"),
+            None => line,
+        }
     }
 }
 
@@ -83,13 +104,25 @@ mod tests {
 
     #[test]
     fn a_line_names_the_dimensions_and_the_duration() {
-        let event = Event {
-            dimensions: Dimensions::of(Operation::Update, Outcome::ServerFault),
-            millis: 9,
-        };
+        let event = Event::of(
+            Dimensions::of(Operation::Update, Outcome::ServerFault),
+            9,
+        );
         assert_eq!(
             event.line(),
             "operation=update outcome=server_fault duration_ms=9"
         );
+        let tied = event.tied(Some(CorrelationId::parse("0123456789abcdef0123456789abcdef").unwrap()));
+        assert_eq!(
+            tied.line(),
+            "operation=update outcome=server_fault duration_ms=9 correlation=0123456789abcdef0123456789abcdef"
+        );
+    }
+
+    #[test]
+    fn an_event_holds_no_correlation_until_it_is_tied() {
+        let event = Event::of(Dimensions::of(Operation::Read, Outcome::Success), 1);
+        assert!(event.correlation.is_none());
+        assert!(!event.line().contains("correlation"));
     }
 }

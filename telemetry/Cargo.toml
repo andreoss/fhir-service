@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+fhir-core = { path = "../core" }
 
 [dev-dependencies]
 fhir-store = { path = "../store" }

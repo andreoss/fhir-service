@@ -29,7 +29,7 @@ pub use definition::{definitions_bundle as operation_definitions_bundle, inputs,
 pub use compartment::{definition_json, definitions_bundle};
 pub use history::{history_bundle, HistoryRequest, Summary};
 pub use job::{status_location, JOBS, RETRY_AFTER};
-pub use measure::operation_of;
+pub use measure::{correlation_of, operation_of, CORRELATION};
 pub use operation::{parameters, resource_of, value_of, values_of};
 pub use parameter::{install, status_of, uninstall};
 pub use search::{parse_query, search_bundle, SearchRequest};

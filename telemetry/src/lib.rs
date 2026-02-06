@@ -7,6 +7,7 @@ pub mod metric;
 use std::sync::Arc;
 
 pub use dimension::{Dimensions, Operation, Outcome};
+pub use fhir_core::CorrelationId;
 pub use event::{Event, Held, Silent, Sink, Stream};
 pub use limit::{Limiter, Ticker, BUDGET, WINDOW_MS};
 pub use metric::{Metrics, BUCKETS};
@@ -31,9 +32,22 @@ impl Telemetry {
     }
 
     pub fn record(&self, dimensions: Dimensions, millis: u64) {
-        self.metrics.observe(dimensions, millis);
-        if self.limiter.admits(dimensions) {
-            self.sink.write(&Event { dimensions, millis }.line());
+        self.emit(Event::of(dimensions, millis));
+    }
+
+    pub fn record_for(
+        &self,
+        dimensions: Dimensions,
+        millis: u64,
+        correlation: Option<CorrelationId>,
+    ) {
+        self.emit(Event::of(dimensions, millis).tied(correlation));
+    }
+
+    fn emit(&self, event: Event) {
+        self.metrics.observe(event.dimensions, event.millis);
+        if self.limiter.admits(event.dimensions) {
+            self.sink.write(&event.line());
         }
     }
 
