@@ -2,8 +2,9 @@ use fhir_core::Error;
 
 const CREDENTIAL_LIMIT: usize = 16;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum Scrape {
+    #[default]
     Closed,
     Guarded(String),
 }
@@ -13,12 +14,6 @@ pub enum Admission {
     Unserved,
     Refused,
     Granted,
-}
-
-impl Default for Scrape {
-    fn default() -> Scrape {
-        Scrape::Closed
-    }
 }
 
 impl Scrape {
