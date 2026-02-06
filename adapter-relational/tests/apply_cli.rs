@@ -14,10 +14,47 @@ fn run(namespace: &str, args: &[&str]) -> (i32, String) {
     (output.status.code().unwrap_or(-1), text)
 }
 
+#[tokio::test]
+async fn an_unattended_run_applies_everything_pending() {
+    let Some(pool) = support::engine().await else { return };
+    let namespace = support::namespace("unattended");
+    let name = namespace.as_str().to_owned();
+
+    let (code, text) = run(&name, &["unattended"]);
+    assert_eq!(code, 0, "{text}");
+    assert!(text.contains("applied"), "{text}");
+
+    let (code, text) = run(&name, &["unattended"]);
+    assert_eq!(code, 0, "{text}");
+    assert!(text.contains("current"), "{text}");
+
+    support::drop_namespace(&pool, &namespace).await;
+}
+
+#[tokio::test]
+async fn an_unattended_run_refuses_a_schema_it_does_not_know() {
+    let Some(pool) = support::engine().await else { return };
+    let namespace = support::namespace("ahead");
+    let migrator =
+        fhir_adapter_relational::migration::Migrator::new(pool.clone(), namespace.clone());
+    migrator.latest().await.expect("the schema applies");
+    migrator
+        .record(fhir_adapter_relational::latest() + 1)
+        .await
+        .expect("a newer version records");
+
+    let (code, text) = run(namespace.as_str(), &["unattended"]);
+    assert_eq!(code, 3, "{text}");
+    assert!(text.contains("ahead"), "{text}");
+
+    support::drop_namespace(&pool, &namespace).await;
+}
+
 #[test]
 fn an_unknown_command_reports_the_ones_it_takes() {
     let (code, text) = run("fhir", &["sideways"]);
     assert_eq!(code, 2);
+    assert!(text.contains("unattended"), "{text}");
     assert!(text.contains("version"), "{text}");
     assert!(text.contains("next"), "{text}");
     assert!(text.contains("latest"), "{text}");

@@ -1,15 +1,19 @@
-use fhir_adapter_relational::migration::Migrator;
+use fhir_adapter_relational::migration::{Migrator, State};
 use fhir_adapter_relational::{Namespace, DEFAULT_URL, ENV_NAMESPACE, ENV_URL};
 use sqlx::postgres::PgPoolOptions;
 
-const USAGE: &str = "usage: apply version | next | latest | force <version>";
+const USAGE: &str = "usage: apply version | next | latest | force <version> | unattended";
+const REFUSED: i32 = 3;
 
 enum Command {
     Version,
     Next,
     Latest,
     Force(u32),
+    Unattended,
 }
+
+struct Refused(String);
 
 fn command(args: &[String]) -> Option<Command> {
     match args.first().map(String::as_str) {
@@ -17,6 +21,7 @@ fn command(args: &[String]) -> Option<Command> {
         Some("next") => Some(Command::Next),
         Some("latest") => Some(Command::Latest),
         Some("force") => args.get(1).and_then(|raw| raw.parse().ok()).map(Command::Force),
+        Some("unattended") => Some(Command::Unattended),
         _ => None,
     }
 }
@@ -28,13 +33,20 @@ async fn main() {
         eprintln!("{USAGE}");
         std::process::exit(2);
     };
-    if let Err(reason) = run(command).await {
-        eprintln!("{reason}");
-        std::process::exit(1);
+    match run(command).await {
+        Ok(None) => {}
+        Ok(Some(Refused(reason))) => {
+            eprintln!("{reason}");
+            std::process::exit(REFUSED);
+        }
+        Err(reason) => {
+            eprintln!("{reason}");
+            std::process::exit(1);
+        }
     }
 }
 
-async fn run(command: Command) -> Result<(), String> {
+async fn run(command: Command) -> Result<Option<Refused>, String> {
     let raw = std::env::var(ENV_NAMESPACE).unwrap_or_else(|_| Namespace::default().as_str().to_owned());
     let namespace = Namespace::parse(&raw).map_err(|error| error.to_string())?;
     let url = std::env::var(ENV_URL).unwrap_or_else(|_| DEFAULT_URL.to_owned());
@@ -71,6 +83,21 @@ async fn run(command: Command) -> Result<(), String> {
             migrator.force(version).await.map_err(|error| error.to_string())?;
             println!("forced {version}");
         }
+        Command::Unattended => {
+            let report = migrator.compatibility().await.map_err(|error| error.to_string())?;
+            if report.state == State::Ahead {
+                let found = report.current.unwrap_or_default();
+                return Ok(Some(Refused(format!(
+                    "schema {found} is ahead of this build at {}",
+                    report.instance
+                ))));
+            }
+            let applied = migrator.latest().await.map_err(|error| error.to_string())?;
+            match applied {
+                0 => println!("current {}", report.instance),
+                count => println!("applied {count} to {}", report.instance),
+            }
+        }
     }
-    Ok(())
+    Ok(None)
 }
