@@ -195,6 +195,10 @@ const JOB_CORRELATION: &str = "
 alter table job add column if not exists correlation text;
 ";
 
+const JOB_CORRELATION_TUNING: &str = "
+create index if not exists job_correlation on job (correlation, created_ms);
+";
+
 pub const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 1,
@@ -267,6 +271,12 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "job correlation",
         required: true,
         statements: JOB_CORRELATION,
+    },
+    Migration {
+        version: 13,
+        name: "job correlation index",
+        required: false,
+        statements: JOB_CORRELATION_TUNING,
     },
 ];
 

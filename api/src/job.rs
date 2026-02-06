@@ -211,7 +211,8 @@ async fn submit(state: &AppState, kind: JobKind, headers: &HeaderMap, body: &[u8
     let request = match access.secured {
         true => JobRequest::new(id.clone(), kind, payload).owned_by(&access.actor),
         false => JobRequest::new(id.clone(), kind, payload),
-    };
+    }
+    .correlated(crate::measure::correlation_of(headers));
     match jobs.submit(request).await {
         Ok(_) => accepted(&host_of(headers), &id),
         Err(error) => AppError::from(error).into_response_now(),

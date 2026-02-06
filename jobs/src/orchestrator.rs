@@ -143,9 +143,10 @@ impl Orchestrator {
         started: i64,
     ) -> Result<JobRecord, Error> {
         let dimensions = fhir_telemetry::Dimensions::of(measured(record.kind), ended(&result));
+        let correlation = record.correlation.clone();
         let finished = jobs.finish(&record.id, worker, result).await?;
         let millis = (self.ticker)().saturating_sub(started).max(0) as u64;
-        self.telemetry.record(dimensions, millis);
+        self.telemetry.record_for(dimensions, millis, correlation);
         Ok(finished)
     }
 }
