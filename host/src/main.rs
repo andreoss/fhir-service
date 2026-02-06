@@ -57,9 +57,16 @@ async fn run() -> Result<(), Error> {
     if let Some(outputs) = &outputs {
         service = service.with_outputs(Arc::clone(outputs));
     }
+    service = service.scraped(config.scrape.clone());
     if let Some(jobs) = &jobs {
         service = service.with_jobs(Arc::clone(jobs));
-        spawn_worker(Arc::clone(jobs), store, outputs, config.version);
+        spawn_worker(
+            Arc::clone(jobs),
+            store,
+            outputs,
+            config.version,
+            service.telemetry(),
+        );
         spawn_watchdog(Arc::clone(jobs));
     }
     eprintln!("serving {config}");
@@ -173,6 +180,7 @@ fn spawn_worker(
     store: Arc<dyn ResourceStore>,
     outputs: Option<Arc<dyn fhir_store::BulkStore>>,
     version: fhir_core::FhirVersion,
+    telemetry: Arc<fhir_telemetry::Telemetry>,
 ) {
     let mut registry = fhir_jobs::Orchestrator::new()
         .with(Arc::new(fhir_jobs::ImportJob::new(Arc::clone(&store), version)));
@@ -192,7 +200,7 @@ fn spawn_worker(
             )))
             .with(Arc::new(fhir_jobs::ExportJob::new(store, sink)));
     }
-    let orchestrator = Arc::new(registry);
+    let orchestrator = Arc::new(registry.reporting(telemetry));
     let worker = fhir_jobs::Worker::new(jobs, orchestrator, "host", LEASE_MILLIS);
     tokio::spawn(async move {
         loop {

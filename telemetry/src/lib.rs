@@ -1,4 +1,5 @@
 
+pub mod access;
 pub mod dimension;
 pub mod event;
 pub mod limit;
@@ -6,6 +7,7 @@ pub mod metric;
 
 use std::sync::Arc;
 
+pub use access::{Admission, Scrape};
 pub use dimension::{Dimensions, Operation, Outcome};
 pub use fhir_core::CorrelationId;
 pub use event::{Event, Held, Silent, Sink, Stream};

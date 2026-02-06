@@ -1,6 +1,7 @@
 use fhir_api::Authorization;
 use fhir_core::security::bearer::KeySet;
 use fhir_core::{Error, FhirVersion};
+use fhir_telemetry::Scrape;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::net::SocketAddr;
@@ -28,6 +29,7 @@ pub const ENV_AUTH_INTROSPECT: &str = "FHIR_AUTH_INTROSPECT";
 pub const ENV_AUTH_SCOPES: &str = "FHIR_AUTH_SCOPES";
 pub const ENV_AUTH_CAPABILITIES: &str = "FHIR_AUTH_CAPABILITIES";
 pub const ENV_AUTH_KEYS: &str = "FHIR_AUTH_KEYS";
+pub const ENV_METRICS_CREDENTIAL: &str = "FHIR_METRICS_CREDENTIAL";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Backend {
@@ -71,6 +73,7 @@ pub struct Config {
     pub data_dir: Option<PathBuf>,
     pub authorization: Option<Authorization>,
     pub keys: Option<KeySet>,
+    pub scrape: Scrape,
 }
 
 fn listed(env: &BTreeMap<String, String>, key: &str) -> Vec<String> {
@@ -116,6 +119,17 @@ fn keys(env: &BTreeMap<String, String>) -> Result<Option<KeySet>, Error> {
     let document = serde_json::from_str(raw)
         .map_err(|_| Error::Config(format!("{ENV_AUTH_KEYS} is not a key set")))?;
     KeySet::parse(&document).map(Some)
+}
+
+fn scrape(env: &BTreeMap<String, String>) -> Result<Scrape, Error> {
+    match get(env, ENV_METRICS_CREDENTIAL) {
+        Some(credential) => Scrape::guarded(credential).map_err(|_| {
+            Error::Config(format!(
+                "{ENV_METRICS_CREDENTIAL} is at least sixteen characters"
+            ))
+        }),
+        None => Ok(Scrape::closed()),
+    }
 }
 
 impl Config {
@@ -180,6 +194,7 @@ impl Config {
             data_dir,
             authorization: authorization(env)?,
             keys: keys(env)?,
+            scrape: scrape(env)?,
         })
     }
 }
@@ -188,7 +203,7 @@ impl fmt::Display for Config {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "backend={} version={} bind={} data_dir={:?} database_url=redacted authorization={}",
+            "backend={} version={} bind={} data_dir={:?} database_url=redacted authorization={} metrics={}",
             self.backend,
             self.version,
             self.bind,
@@ -196,6 +211,10 @@ impl fmt::Display for Config {
             match self.authorization {
                 Some(_) => "active",
                 None => "none",
+            },
+            match self.scrape.serves() {
+                true => "guarded",
+                false => "restricted",
             }
         )
     }

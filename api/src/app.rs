@@ -35,6 +35,7 @@ pub struct AppState {
     pub terminology: Arc<dyn fhir_store::Terminology>,
     pub audit: Arc<dyn fhir_store::Audit>,
     pub telemetry: Arc<fhir_telemetry::Telemetry>,
+    pub scrape: Arc<fhir_telemetry::Scrape>,
     pub authorization: Option<Arc<crate::smart::Authorization>>,
     pub guard: Option<Arc<crate::access::Guard>>,
 }
@@ -70,6 +71,7 @@ impl Service {
                 entries: Arc::new(tokio::sync::Semaphore::new(crate::bundle::ENTRIES_AT_ONCE)),
                 templates: Arc::new(ApprovedTemplates::default()),
                 audit: Arc::new(fhir_store::Unrecorded),
+                scrape: Arc::new(fhir_telemetry::Scrape::closed()),
                 telemetry: Arc::new(fhir_telemetry::Telemetry::new(
                     Arc::new(fhir_telemetry::Stream),
                     fhir_store::system_ticker(),
@@ -136,6 +138,15 @@ impl Service {
 
     pub fn telemetry(&self) -> Arc<fhir_telemetry::Telemetry> {
         Arc::clone(&self.state.telemetry)
+    }
+
+    pub fn scraped(self, scrape: fhir_telemetry::Scrape) -> Service {
+        Service {
+            state: AppState {
+                scrape: Arc::new(scrape),
+                ..self.state
+            },
+        }
     }
 
     pub fn recording(self, audit: Arc<dyn fhir_store::Audit>) -> Service {
@@ -414,6 +425,7 @@ fn routes() -> Router<AppState> {
         .fold(Router::new(), |router, held| {
             router.route(held.route.path, held.router)
         })
+        .route(crate::scrape::METRICS, get(crate::scrape::metrics))
         .fallback(not_found)
         .method_not_allowed_fallback(method_not_allowed)
 }

@@ -11,6 +11,7 @@ fhir-api = { path = "../api" }
 fhir-core = { path = "../core" }
 fhir-jobs = { path = "../jobs" }
 fhir-store = { path = "../store" }
+fhir-telemetry = { path = "../telemetry" }
 serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "time"] }
 

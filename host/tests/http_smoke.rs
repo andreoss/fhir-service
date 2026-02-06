@@ -10,11 +10,21 @@ struct Reply {
 }
 
 fn spawn_server() -> (Child, u16) {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_fhir-host"))
+    spawn_with(&[])
+}
+
+fn spawn_with(extra: &[(&str, &str)]) -> (Child, u16) {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_fhir-host"));
+    command
         .env("FHIR_BACKEND", "memory")
         .env("FHIR_BIND", "127.0.0.1:0")
         .env("FHIR_VERSION", "R4")
         .env_remove("FHIR_DATABASE_URL")
+        .env_remove("FHIR_METRICS_CREDENTIAL");
+    for (name, value) in extra {
+        command.env(name, value);
+    }
+    let mut child = command
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
@@ -1451,4 +1461,85 @@ fn live_a_token_the_published_key_does_not_verify_is_refused() {
         assert_eq!(issue_code(body), "login", "{reason}: {body}");
     }
     assert_eq!(absent.status, 404, "{}", absent.body);
+}
+
+const CREDENTIAL: &str = "a-live-reader-credential";
+
+#[test]
+fn an_unconfigured_instance_does_not_serve_its_measurements() {
+    let (child, port) = spawn_server();
+    let read = request(port, "GET", "/Patient/pt-confidential-77", &[], &[]);
+    let bare = request(port, "GET", "/_metrics", &[], &[]);
+    let offered = request(
+        port,
+        "GET",
+        "/_metrics",
+        &[("Authorization", "Bearer a-live-reader-credential")],
+        &[],
+    );
+    stop(child);
+
+    assert_eq!(read.status, 404, "{}", read.body);
+    assert_eq!(bare.status, 404, "{}", bare.body);
+    assert_eq!(offered.status, 404, "{}", offered.body);
+    for reply in [&bare, &offered] {
+        assert!(!reply.body.contains("fhir_operation_total"), "{}", reply.body);
+        assert!(!reply.body.contains("duration_ms"), "{}", reply.body);
+    }
+}
+
+#[test]
+fn a_guarded_instance_serves_measurements_only_to_its_reader() {
+    let (child, port) = spawn_with(&[("FHIR_METRICS_CREDENTIAL", CREDENTIAL)]);
+    let held = format!("Bearer {CREDENTIAL}");
+    let statement = request(port, "GET", "/metadata", &[], &[]);
+    let read = request(port, "GET", "/Patient/pt-confidential-77", &[], &[]);
+    let bare = request(port, "GET", "/_metrics", &[], &[]);
+    let wrong = request(
+        port,
+        "GET",
+        "/_metrics",
+        &[("Authorization", "Bearer another-reader-credential")],
+        &[],
+    );
+    let served = request(port, "GET", "/_metrics", &[("Authorization", held.as_str())], &[]);
+    stop(child);
+
+    assert_eq!(statement.status, 200);
+    assert_eq!(read.status, 404);
+    assert_eq!(bare.status, 403, "{}", bare.body);
+    assert_eq!(wrong.status, 403, "{}", wrong.body);
+    assert_eq!(served.status, 200, "{}", served.body);
+    assert!(header(&served, "content-type").starts_with("text/plain"));
+    assert!(served
+        .body
+        .contains("fhir_operation_total{operation=\"conformance\",outcome=\"success\"} 1"));
+    assert!(served
+        .body
+        .contains("fhir_operation_total{operation=\"read\",outcome=\"client_fault\"} 1"));
+    assert!(served.body.contains("fhir_operation_duration_ms_bucket"));
+    for secret in ["pt-confidential-77", CREDENTIAL] {
+        assert!(!served.body.contains(secret), "{secret} was served");
+    }
+}
+
+#[test]
+fn every_live_answer_carries_an_identifier_of_the_shape_we_issue() {
+    let (child, port) = spawn_server();
+    let plain = request(port, "GET", "/metadata", &[], &[]);
+    let offered = request(
+        port,
+        "GET",
+        "/metadata",
+        &[("X-Correlation-Id", "patient-smith-4711")],
+        &[],
+    );
+    stop(child);
+
+    for reply in [&plain, &offered] {
+        let carried = header(reply, "x-correlation-id");
+        assert_eq!(carried.len(), 32, "{carried:?}");
+        assert!(carried.chars().all(|held| held.is_ascii_hexdigit()));
+    }
+    assert_ne!(header(&offered, "x-correlation-id"), "patient-smith-4711");
 }
