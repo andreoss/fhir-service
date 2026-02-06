@@ -1,3 +1,4 @@
+pub mod correlation;
 pub mod convert;
 pub mod envelope;
 pub mod error;
@@ -15,6 +16,7 @@ pub mod validate;
 pub mod version;
 
 pub use convert::{convert, ApprovedTemplates, Conversion, InputType, TemplateCollection, Templates};
+pub use correlation::CorrelationId;
 pub use envelope::{with_assigned_meta, ResourceEnvelope, PLACEHOLDER_INSTANT, PLACEHOLDER_VERSION};
 pub use error::Error;
 pub use etag::WeakEtag;
