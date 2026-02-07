@@ -1,22 +1,66 @@
 use fhir_core::Error;
-use std::collections::hash_map::RandomState;
-use std::hash::BuildHasher;
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
 use std::sync::OnceLock;
 
 const TAG: usize = 16;
 const TOKEN: usize = 32;
 
-fn keys() -> &'static RandomState {
-    static KEYS: OnceLock<RandomState> = OnceLock::new();
-    KEYS.get_or_init(RandomState::new)
+pub const ENV_CONTINUATION_KEY: &str = "FHIR_CONTINUATION_KEY";
+
+struct Key([u8; 32]);
+
+impl Key {
+    fn of(secret: &str) -> Key {
+        Key(digest(secret.as_bytes(), b"continuation"))
+    }
+
+    fn generated() -> Key {
+        let mut held = [0u8; 32];
+        held[..16].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
+        held[16..].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
+        Key(held)
+    }
+
+    fn from_env() -> Key {
+        match std::env::var(ENV_CONTINUATION_KEY) {
+            Ok(secret) if !secret.trim().is_empty() => Key::of(secret.trim()),
+            _ => Key::generated(),
+        }
+    }
+
+    fn number(&self, label: &str, scope: &str, offset: u64) -> u64 {
+        let mut message = Vec::new();
+        message.extend_from_slice(label.as_bytes());
+        message.push(0);
+        message.extend_from_slice(scope.as_bytes());
+        message.push(0);
+        message.extend_from_slice(&offset.to_be_bytes());
+        let held = digest(&self.0, &message);
+        u64::from_be_bytes(held[..8].try_into().unwrap_or_default())
+    }
+}
+
+fn digest(secret: &[u8], message: &[u8]) -> [u8; 32] {
+    let mut keyed =
+        <Hmac<Sha256> as Mac>::new_from_slice(secret).unwrap_or_else(|_| Hmac::new_from_slice(&[0u8; 32]).expect("a fixed key is accepted"));
+    keyed.update(message);
+    let mut held = [0u8; 32];
+    held.copy_from_slice(&keyed.finalize().into_bytes());
+    held
+}
+
+fn keys() -> &'static Key {
+    static KEYS: OnceLock<Key> = OnceLock::new();
+    KEYS.get_or_init(Key::from_env)
 }
 
 fn tag(scope: &str, offset: u64) -> u64 {
-    keys().hash_one(("tag", scope, offset))
+    keys().number("tag", scope, offset)
 }
 
 fn mask(scope: &str) -> u64 {
-    keys().hash_one(("mask", scope))
+    keys().number("mask", scope, 0)
 }
 
 pub fn encode(offset: usize, scope: &str) -> String {
@@ -67,6 +111,31 @@ pub fn with_token(self_url: &str, token: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn issued(key: &Key, offset: u64, scope: &str) -> String {
+        format!(
+            "{:016x}{:016x}",
+            key.number("tag", scope, offset),
+            offset ^ key.number("mask", scope, 0)
+        )
+    }
+
+    #[test]
+    fn one_secret_gives_every_instance_the_same_tokens() {
+        let here = Key::of("a-shared-continuation-key-value");
+        let there = Key::of("a-shared-continuation-key-value");
+        assert_eq!(issued(&here, 25, "_count=2"), issued(&there, 25, "_count=2"));
+
+        let elsewhere = Key::of("another-key-entirely");
+        assert_ne!(issued(&here, 25, "_count=2"), issued(&elsewhere, 25, "_count=2"));
+    }
+
+    #[test]
+    fn an_instance_without_a_secret_keeps_its_tokens_to_itself() {
+        let here = Key::generated();
+        let there = Key::generated();
+        assert_ne!(issued(&here, 25, "_count=2"), issued(&there, 25, "_count=2"));
+    }
 
     #[test]
     fn a_token_round_trips_inside_its_own_query() {

@@ -12,6 +12,18 @@ fn invalid_backend_fails_fast_at_startup() {
 }
 
 #[test]
+fn a_connection_count_of_nothing_fails_fast_at_startup() {
+    let output = Command::new(env!("CARGO_BIN_EXE_fhir-host"))
+        .env("FHIR_BACKEND", "memory")
+        .env("FHIR_STORE_CONNECTIONS", "0")
+        .output()
+        .expect("failed to spawn binary");
+    assert!(!output.status.success(), "an empty pool must exit non-zero");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("FHIR_STORE_CONNECTIONS"), "stderr was: {stderr}");
+}
+
+#[test]
 fn a_backend_that_cannot_be_reached_fails_fast_at_startup() {
     let output = Command::new(env!("CARGO_BIN_EXE_fhir-host"))
         .env("FHIR_BACKEND", "relational")

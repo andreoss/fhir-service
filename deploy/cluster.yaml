@@ -1,0 +1,84 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ${FHIR_NAME}-config
+  namespace: ${FHIR_NAMESPACE}
+data:
+  FHIR_BIND: 0.0.0.0:${FHIR_PORT}
+  FHIR_BACKEND: ${FHIR_BACKEND}
+  FHIR_VERSION: ${FHIR_VERSION}
+  FHIR_STORE_CONNECTIONS: "${FHIR_STORE_CONNECTIONS}"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${FHIR_NAME}
+  namespace: ${FHIR_NAMESPACE}
+spec:
+  replicas: ${FHIR_REPLICAS}
+  selector:
+    matchLabels:
+      app: ${FHIR_NAME}
+  template:
+    metadata:
+      labels:
+        app: ${FHIR_NAME}
+    spec:
+      containers:
+        - name: service
+          image: ${FHIR_IMAGE}
+          ports:
+            - containerPort: ${FHIR_PORT}
+          envFrom:
+            - configMapRef:
+                name: ${FHIR_NAME}-config
+          env:
+            - name: FHIR_CONTINUATION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: ${FHIR_SECRET_NAME}
+                  key: continuation-key
+            - name: FHIR_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: ${FHIR_SECRET_NAME}
+                  key: database-url
+            - name: FHIR_DOCUMENT_URL
+              valueFrom:
+                secretKeyRef:
+                  name: ${FHIR_SECRET_NAME}
+                  key: document-url
+            - name: FHIR_METRICS_CREDENTIAL
+              valueFrom:
+                secretKeyRef:
+                  name: ${FHIR_SECRET_NAME}
+                  key: metrics-credential
+          resources:
+            requests:
+              cpu: ${FHIR_CPU_REQUEST}
+              memory: ${FHIR_MEMORY_REQUEST}
+            limits:
+              cpu: ${FHIR_CPU_LIMIT}
+              memory: ${FHIR_MEMORY_LIMIT}
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: ${FHIR_PORT}
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: ${FHIR_PORT}
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${FHIR_NAME}
+  namespace: ${FHIR_NAMESPACE}
+spec:
+  selector:
+    app: ${FHIR_NAME}
+  ports:
+    - port: ${FHIR_PORT}
+      targetPort: ${FHIR_PORT}

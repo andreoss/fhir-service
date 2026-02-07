@@ -115,8 +115,16 @@ impl RelationalStore {
     }
 
     pub async fn connect(url: &str, namespace: Namespace) -> Result<RelationalStore, Error> {
+        RelationalStore::connect_holding(url, namespace, POOL_SIZE).await
+    }
+
+    pub async fn connect_holding(
+        url: &str,
+        namespace: Namespace,
+        connections: u32,
+    ) -> Result<RelationalStore, Error> {
         let pool = sqlx::postgres::PgPoolOptions::new()
-            .max_connections(POOL_SIZE)
+            .max_connections(connections.max(1))
             .acquire_timeout(std::time::Duration::from_secs(10))
             .connect(url)
             .await

@@ -645,6 +645,56 @@ fn live_continuation_tokens_are_opaque_and_scoped() {
     assert_eq!(issue_code(&tampered.body), "invalid");
 }
 
+#[test]
+fn live_a_shared_key_keeps_a_token_across_a_restart() {
+    let shared = [("FHIR_CONTINUATION_KEY", "a-shared-continuation-key-value")];
+    let (first_child, first_port) = spawn_with(&shared);
+    seed_advanced(first_port);
+    let first = request(first_port, "GET", "/Patient?_count=1&_sort=_id", &[], &[]);
+    let token = next_token(&first.body);
+    stop(first_child);
+
+    let (second_child, second_port) = spawn_with(&shared);
+    seed_advanced(second_port);
+    let carried = request(
+        second_port,
+        "GET",
+        &format!("/Patient?_count=1&_sort=_id&ct={token}"),
+        &[],
+        &[],
+    );
+    stop(second_child);
+
+    let (other_child, other_port) = spawn_with(&[("FHIR_CONTINUATION_KEY", "another-key-entirely")]);
+    seed_advanced(other_port);
+    let refused = request(
+        other_port,
+        "GET",
+        &format!("/Patient?_count=1&_sort=_id&ct={token}"),
+        &[],
+        &[],
+    );
+    stop(other_child);
+
+    assert_eq!(carried.status, 200, "{}", carried.body);
+    assert_eq!(ids(&carried.body), vec!["pt-a2".to_owned()]);
+    assert_eq!(refused.status, 400, "{}", refused.body);
+}
+
+#[test]
+fn live_the_entry_limit_follows_the_connection_count() {
+    let (child, port) = spawn_with(&[("FHIR_STORE_CONNECTIONS", "2")]);
+    let bundle = br#"{"resourceType":"Bundle","type":"batch","entry":[
+        {"request":{"method":"GET","url":"Patient/absent-one"}},
+        {"request":{"method":"GET","url":"Patient/absent-two"}},
+        {"request":{"method":"GET","url":"Patient/absent-three"}}
+    ]}"#;
+    let reply = request(port, "POST", "/", &[("Content-Type", "application/fhir+json")], bundle);
+    stop(child);
+
+    assert_eq!(reply.status, 200, "{}", reply.body);
+}
+
 fn live_definition(id: &str, code: &str) -> Vec<u8> {
     format!(
         r#"{{"resourceType":"SearchParameter","id":"{id}","url":"urn:p:{code}","status":"active","code":"{code}","base":["Patient"],"type":"token","expression":"Patient.extension.valueCode"}}"#

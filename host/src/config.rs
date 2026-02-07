@@ -31,6 +31,12 @@ pub const ENV_AUTH_CAPABILITIES: &str = "FHIR_AUTH_CAPABILITIES";
 pub const ENV_AUTH_KEYS: &str = "FHIR_AUTH_KEYS";
 pub const ENV_METRICS_CREDENTIAL: &str = "FHIR_METRICS_CREDENTIAL";
 
+pub const ENV_STORE_CONNECTIONS: &str = "FHIR_STORE_CONNECTIONS";
+
+pub const DEFAULT_STORE_CONNECTIONS: u32 = 16;
+
+pub const MOST_STORE_CONNECTIONS: u32 = 1_024;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Backend {
     Memory,
@@ -71,6 +77,7 @@ pub struct Config {
     pub database_url: String,
     pub document_url: String,
     pub data_dir: Option<PathBuf>,
+    pub connections: u32,
     pub authorization: Option<Authorization>,
     pub keys: Option<KeySet>,
     pub scrape: Scrape,
@@ -133,6 +140,10 @@ fn scrape(env: &BTreeMap<String, String>) -> Result<Scrape, Error> {
 }
 
 impl Config {
+    pub fn entries(&self) -> usize {
+        (self.connections / 2).max(1) as usize
+    }
+
     pub fn from_env() -> Result<Config, Error> {
         Config::parse(&std::env::vars().collect())
     }
@@ -167,6 +178,18 @@ impl Config {
 
         let data_dir = get(env, ENV_DATA_DIR).map(PathBuf::from);
 
+        let connections = match get(env, ENV_STORE_CONNECTIONS) {
+            Some(raw) => match raw.parse::<u32>() {
+                Ok(held) if (1..=MOST_STORE_CONNECTIONS).contains(&held) => held,
+                _ => {
+                    return Err(Error::Config(format!(
+                        "invalid {ENV_STORE_CONNECTIONS} {raw:?}; expected 1 to {MOST_STORE_CONNECTIONS}"
+                    )))
+                }
+            },
+            None => DEFAULT_STORE_CONNECTIONS,
+        };
+
         match backend {
             Backend::Memory => {}
             Backend::Relational => {
@@ -192,6 +215,7 @@ impl Config {
             database_url,
             document_url,
             data_dir,
+            connections,
             authorization: authorization(env)?,
             keys: keys(env)?,
             scrape: scrape(env)?,
@@ -266,6 +290,32 @@ mod tests {
         assert_eq!(active.scopes, vec!["system/*.read".to_owned(), "system/*.write".to_owned()]);
         assert_eq!(active.capabilities, vec!["client-confidential-symmetric".to_owned()]);
         assert!(config.to_string().contains("authorization=active"));
+    }
+
+    #[test]
+    fn the_entry_limit_is_chosen_with_the_connection_count() {
+        let mut env = env_empty();
+        let config = Config::parse(&env).expect("defaults must parse");
+        assert_eq!(config.connections, DEFAULT_STORE_CONNECTIONS);
+        assert_eq!(config.entries(), 8);
+
+        env.insert(ENV_STORE_CONNECTIONS.to_owned(), "2".to_owned());
+        let narrow = Config::parse(&env).expect("a smaller pool must parse");
+        assert_eq!(narrow.connections, 2);
+        assert_eq!(narrow.entries(), 1);
+
+        env.insert(ENV_STORE_CONNECTIONS.to_owned(), "1".to_owned());
+        assert_eq!(Config::parse(&env).expect("one connection parses").entries(), 1);
+    }
+
+    #[test]
+    fn a_connection_count_outside_the_range_fails_fast() {
+        let mut env = env_empty();
+        for raw in ["0", "none", "-1", "100000"] {
+            env.insert(ENV_STORE_CONNECTIONS.to_owned(), raw.to_owned());
+            let error = Config::parse(&env).expect_err("an unusable count must fail");
+            assert!(error.to_string().contains(ENV_STORE_CONNECTIONS), "{raw}");
+        }
     }
 
     #[test]

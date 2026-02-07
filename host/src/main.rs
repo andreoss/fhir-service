@@ -30,7 +30,9 @@ async fn run() -> Result<(), Error> {
         name: "store",
         check: store_dependency,
     }];
-    let mut service = Service::started(Arc::clone(&store), config.version, dependencies).await?;
+    let mut service = Service::started(Arc::clone(&store), config.version, dependencies)
+        .await?
+        .with_entries(config.entries());
     if let Some(authorization) = config.authorization.clone() {
         service = service.with_authorization(authorization);
         let keys: Arc<dyn Keys> = match config.keys.clone() {
