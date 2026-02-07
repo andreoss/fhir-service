@@ -8,18 +8,6 @@ const POLL_MILLIS: u64 = 50;
 const SWEEP_MILLIS: u64 = 1_000;
 const DISCOVERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
-#[cfg(feature = "backend-memory")]
-use fhir_adapter_memory::MemoryStore;
-
-#[cfg(feature = "backend-document")]
-use fhir_adapter_document::DocumentStore;
-
-#[cfg(feature = "backend-relational")]
-use fhir_adapter_relational::RelationalStore;
-
-#[cfg(any(feature = "backend-relational", feature = "backend-document"))]
-use fhir_store::Namespace;
-
 #[tokio::main]
 async fn main() {
     match run().await {
@@ -33,7 +21,7 @@ async fn main() {
 
 async fn run() -> Result<(), Error> {
     let config = fhir_host::Config::from_env()?;
-    let (store, jobs, outputs) = build_stores(&config).await?;
+    let (store, jobs, outputs) = fhir_host::stores::open(&config).await?;
     let store_dependency = {
         let store = Arc::clone(&store);
         Arc::new(move || store.health().map_err(|error| error.to_string()))
@@ -73,106 +61,6 @@ async fn run() -> Result<(), Error> {
     let bound = service.bind(config.bind).await?;
     println!("listening on {}", bound.local_addr()?);
     bound.serve().await
-}
-
-type Stores = (
-    Arc<dyn ResourceStore>,
-    Option<Arc<dyn fhir_store::JobStore>>,
-    Option<Arc<dyn fhir_store::BulkStore>>,
-);
-
-async fn build_stores(config: &fhir_host::Config) -> Result<Stores, Error> {
-    let store = build_store(config).await?;
-    let jobs = build_jobs(config).await?;
-    let outputs = build_outputs(config).await?;
-    Ok((store, jobs, outputs))
-}
-
-async fn build_outputs(
-    config: &fhir_host::Config,
-) -> Result<Option<Arc<dyn fhir_store::BulkStore>>, Error> {
-    match config.backend {
-        #[cfg(feature = "backend-memory")]
-        fhir_host::Backend::Memory => Ok(Some(Arc::new(
-            fhir_adapter_memory::MemoryBulkStore::new(),
-        ))),
-        #[cfg(not(feature = "backend-memory"))]
-        fhir_host::Backend::Memory => Ok(None),
-        #[cfg(feature = "backend-relational")]
-        fhir_host::Backend::Relational => {
-            let namespace = match std::env::var(fhir_adapter_relational::ENV_NAMESPACE) {
-                Ok(name) => Namespace::parse(&name)?,
-                Err(_) => Namespace::default(),
-            };
-            let store = RelationalStore::connect(&config.database_url, namespace).await?;
-            Ok(Some(Arc::new(store.outputs())))
-        }
-        #[cfg(not(feature = "backend-relational"))]
-        fhir_host::Backend::Relational => Ok(None),
-        fhir_host::Backend::Document => Ok(None),
-    }
-}
-
-async fn build_store(config: &fhir_host::Config) -> Result<Arc<dyn ResourceStore>, Error> {
-    match config.backend {
-        #[cfg(feature = "backend-memory")]
-        fhir_host::Backend::Memory => Ok(Arc::new(MemoryStore::default())),
-        #[cfg(not(feature = "backend-memory"))]
-        fhir_host::Backend::Memory => Err(Error::Config(
-            "memory backend is not enabled in this build; rebuild with --features backend-memory".to_owned(),
-        )),
-        #[cfg(feature = "backend-relational")]
-        fhir_host::Backend::Relational => {
-            let namespace = match std::env::var(fhir_adapter_relational::ENV_NAMESPACE) {
-                Ok(name) => Namespace::parse(&name)?,
-                Err(_) => Namespace::default(),
-            };
-            let store = RelationalStore::connect(&config.database_url, namespace).await?;
-            store.migrate().await?;
-            Ok(Arc::new(store))
-        }
-        #[cfg(not(feature = "backend-relational"))]
-        fhir_host::Backend::Relational => Err(Error::Config(
-            "relational backend is not enabled in this build; rebuild with --features backend-relational or set FHIR_BACKEND=memory".to_owned(),
-        )),
-        #[cfg(feature = "backend-document")]
-        fhir_host::Backend::Document => {
-            let namespace = match std::env::var(fhir_adapter_document::ENV_NAMESPACE) {
-                Ok(name) => Namespace::parse(&name)?,
-                Err(_) => Namespace::default(),
-            };
-            let store = DocumentStore::connect(&config.document_url, namespace).await?;
-            store.initialise().await?;
-            Ok(Arc::new(store))
-        }
-        #[cfg(not(feature = "backend-document"))]
-        fhir_host::Backend::Document => Err(Error::Config(
-            "document backend is not enabled in this build; rebuild with --features backend-document or set FHIR_BACKEND=memory".to_owned(),
-        )),
-    }
-}
-
-async fn build_jobs(config: &fhir_host::Config) -> Result<Option<Arc<dyn fhir_store::JobStore>>, Error> {
-    match config.backend {
-        #[cfg(feature = "backend-memory")]
-        fhir_host::Backend::Memory => Ok(Some(Arc::new(
-            fhir_adapter_memory::MemoryJobStore::default(),
-        ))),
-        #[cfg(not(feature = "backend-memory"))]
-        fhir_host::Backend::Memory => Ok(None),
-        #[cfg(feature = "backend-relational")]
-        fhir_host::Backend::Relational => {
-            let namespace = match std::env::var(fhir_adapter_relational::ENV_NAMESPACE) {
-                Ok(name) => Namespace::parse(&name)?,
-                Err(_) => Namespace::default(),
-            };
-            let store = RelationalStore::connect(&config.database_url, namespace).await?;
-            Ok(Some(Arc::new(store.jobs())))
-        }
-        #[cfg(not(feature = "backend-relational"))]
-        fhir_host::Backend::Relational => Ok(None),
-        fhir_host::Backend::Document => Ok(None),
-    }
 }
 
 fn spawn_worker(
