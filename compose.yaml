@@ -33,3 +33,30 @@ services:
       timeout: 5s
       retries: 30
       start_period: 10s
+
+  service:
+    build:
+      context: .
+      dockerfile: Containerfile
+    profiles: ["service"]
+    environment:
+      FHIR_BIND: 0.0.0.0:8080
+      FHIR_BACKEND: ${FHIR_BACKEND:-relational}
+      FHIR_VERSION: ${FHIR_VERSION:-R4}
+      FHIR_DATABASE_URL: ${FHIR_DATABASE_URL:-postgres://fhir:fhir@relational:5432/fhir}
+      FHIR_DOCUMENT_URL: ${FHIR_DOCUMENT_URL:-mongodb://document:27017/?directConnection=true}
+      FHIR_CONTINUATION_KEY: ${FHIR_CONTINUATION_KEY:-}
+      FHIR_STORE_CONNECTIONS: ${FHIR_STORE_CONNECTIONS:-8}
+    ports:
+      - "${FHIR_PORT:-8080}:8080"
+    depends_on:
+      relational:
+        condition: service_healthy
+      document:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/probe", "127.0.0.1:8080"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+      start_period: 5s

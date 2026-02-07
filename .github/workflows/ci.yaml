@@ -21,6 +21,8 @@ jobs:
         run: docker compose up -d --wait
       - name: test
         run: cargo test --workspace
+      - name: image
+        run: docker build --file Containerfile --tag fhir-service:${{ github.sha }} .
       - name: engines down
         if: always()
         run: docker compose down -v

@@ -15,6 +15,9 @@ docker compose up -d --wait
 cargo run --bin fhir-host
 ----
 
+One binary in a minimal image: `docker build --file Containerfile .`. The
+cluster template is in `deploy/`.
+
 == Serving
 
 [source,http]
