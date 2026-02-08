@@ -481,6 +481,44 @@ mod tests {
     }
 
     #[test]
+    fn an_of_type_value_without_all_three_parts_is_refused() {
+        assert!(SearchValue::of_type("urn:s|code").is_err());
+        assert!(SearchValue::of_type("urn:s|code|").is_err());
+        assert!(SearchValue::of_type("only").is_err());
+        let held = SearchValue::of_type("|code|value").expect("a value with any system");
+        assert!(matches!(held, SearchValue::OfType { .. }));
+    }
+
+    #[test]
+    fn a_value_that_cannot_be_read_as_a_number_is_refused() {
+        assert!(SearchValue::parse(ValueType::Number, "many").is_err());
+        assert!(SearchValue::parse(ValueType::Number, "geinf").is_err());
+        assert!(SearchValue::parse(ValueType::Number, "ge4.5").is_ok());
+    }
+
+    #[test]
+    fn a_composite_and_a_missing_value_never_match_an_element() {
+        let composite = SearchValue::composite(
+            SearchValue::Text("a".to_owned()),
+            SearchValue::Text("b".to_owned()),
+        );
+        assert!(!composite.matches(&json!("a")));
+        assert!(!SearchValue::Missing(true).matches(&json!("a")));
+    }
+
+    #[test]
+    fn a_number_is_matched_however_the_element_carries_it() {
+        let held = SearchValue::parse(ValueType::Number, "4.5").expect("a number parses");
+        assert!(held.matches(&json!(4.5)));
+        assert!(held.matches(&json!("4.5")));
+        assert!(held.matches(&json!([1, 4.5])));
+        assert!(held.matches(&json!({"value": 4.5})));
+        assert!(!held.matches(&json!("not a number")));
+        assert!(!held.matches(&json!(true)));
+        assert!(!held.matches(&Value::Null));
+    }
+
+    #[test]
     fn a_malformed_date_is_an_invalid_parameter() {
         let error = SearchValue::parse(ValueType::Date, "whenever").unwrap_err();
         assert!(matches!(error, Error::InvalidParameter(_)));

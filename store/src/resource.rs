@@ -83,3 +83,103 @@ pub trait ResourceStore: Send + Sync {
 
     fn health(&self) -> Result<(), Error>;
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fhir_core::search::ParameterSpec;
+    use serde_json::json;
+
+    struct Bare;
+
+    #[async_trait]
+    impl ResourceStore for Bare {
+        async fn create(&self, _envelope: ResourceEnvelope) -> Result<ResourceEnvelope, Error> {
+            Err(Error::NotFound)
+        }
+
+        async fn read(&self, _id: &ResourceId) -> Result<ResourceEnvelope, Error> {
+            Err(Error::NotFound)
+        }
+
+        async fn vread(
+            &self,
+            _id: &ResourceId,
+            _version: &VersionId,
+        ) -> Result<ResourceEnvelope, Error> {
+            Err(Error::NotFound)
+        }
+
+        async fn update(
+            &self,
+            _envelope: ResourceEnvelope,
+            _expected_version: Option<&VersionId>,
+        ) -> Result<ResourceEnvelope, Error> {
+            Err(Error::NotFound)
+        }
+
+        async fn search(&self, _query: &SearchQuery) -> Result<SearchPage, Error> {
+            Err(Error::NotFound)
+        }
+
+        async fn delete(&self, _id: &ResourceId) -> Result<ResourceEnvelope, Error> {
+            Err(Error::NotFound)
+        }
+
+        async fn hard_delete(&self, _id: &ResourceId) -> Result<(), Error> {
+            Err(Error::NotFound)
+        }
+
+        async fn purge_history(&self, _id: &ResourceId) -> Result<usize, Error> {
+            Err(Error::NotFound)
+        }
+
+        async fn history(
+            &self,
+            _scope: &HistoryScope,
+            _query: &HistoryQuery,
+        ) -> Result<HistoryPage, Error> {
+            Err(Error::NotFound)
+        }
+
+        fn health(&self) -> Result<(), Error> {
+            Ok(())
+        }
+    }
+
+    fn spec() -> ParameterSpec {
+        ParameterSpec::parse(&json!({
+            "resourceType": "SearchParameter",
+            "url": "urn:p:a",
+            "status": "active",
+            "code": "a",
+            "base": ["Patient"],
+            "type": "token",
+            "expression": "Patient.extension.valueCode"
+        }))
+        .expect("a valid definition")
+    }
+
+    fn unsupported(error: Error) -> bool {
+        matches!(error, Error::UnsupportedParameter(_))
+    }
+
+    #[tokio::test]
+    async fn a_store_without_an_index_says_so_rather_than_pretending() {
+        let store = Bare;
+        let id = ResourceId::parse("one").expect("a valid id");
+        assert!(unsupported(store.index_parameter(&spec()).await.unwrap_err()));
+        assert!(unsupported(store.drop_parameter("urn:p:a").await.unwrap_err()));
+        assert!(unsupported(store.reindex(&[spec()]).await.unwrap_err()));
+        assert!(unsupported(
+            store.reindex_resource(&[spec()], &id).await.unwrap_err()
+        ));
+        assert_eq!(store.index_report("urn:p:a"), None);
+    }
+
+    #[tokio::test]
+    async fn a_store_without_an_atomic_scope_says_so_rather_than_pretending() {
+        let store = Bare;
+        assert!(matches!(store.begin().await.err(), Some(Error::Internal(_))));
+        assert!(store.health().is_ok());
+    }
+}

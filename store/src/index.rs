@@ -719,4 +719,41 @@ mod tests {
         assert!(right.is_some(), "{:?}", rows.quantities);
         assert_eq!(left.unwrap().ordinal, right.unwrap().ordinal);
     }
+
+    #[test]
+    fn a_number_is_drawn_from_every_shape_that_carries_one() {
+        let mut found = Vec::new();
+        numbers_of(&serde_json::json!(4.5), &mut found);
+        numbers_of(&serde_json::json!("6.5"), &mut found);
+        numbers_of(&serde_json::json!([1.5, {"value": 2.5}]), &mut found);
+        numbers_of(&serde_json::json!({"unit": "mg"}), &mut found);
+        numbers_of(&serde_json::json!(true), &mut found);
+        numbers_of(&Value::Null, &mut found);
+        numbers_of(&serde_json::json!("not a number"), &mut found);
+        assert_eq!(found, vec![4.5, 6.5, 1.5, 2.5]);
+    }
+
+    #[test]
+    fn a_token_is_drawn_from_every_shape_that_carries_one() {
+        let mut found = Vec::new();
+        tokens_of(&serde_json::json!(7), &mut found);
+        tokens_of(&Value::Null, &mut found);
+        tokens_of(&serde_json::json!({"system": "urn:s", "value": "v1"}), &mut found);
+        assert_eq!(
+            found,
+            vec![
+                (None, "7".to_owned()),
+                (Some("urn:s".to_owned()), "v1".to_owned())
+            ]
+        );
+    }
+
+    #[test]
+    fn a_span_is_taken_from_whichever_end_is_given() {
+        assert!(span(None, None).is_none());
+        assert!(span(Some("2026"), None).is_some());
+        assert!(span(None, Some("2026")).is_some());
+        assert!(span(Some("2026"), Some("2027")).is_some());
+        assert!(span(Some("not a date"), None).is_none());
+    }
 }

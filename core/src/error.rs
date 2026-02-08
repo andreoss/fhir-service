@@ -236,4 +236,40 @@ mod tests {
         let version = VersionId::parse("2").unwrap();
         assert_eq!(WeakEtag::from(&version).to_string(), "W/\"2\"");
     }
+
+    #[test]
+    fn every_failure_says_what_went_wrong_and_maps_to_a_status() {
+        let held = vec![
+            Error::InvalidResourceType("X".to_owned()),
+            Error::InvalidResourceId("X".to_owned()),
+            Error::InvalidVersion("X".to_owned()),
+            Error::InvalidEtag("X".to_owned()),
+            Error::InvalidFhirVersion("X".to_owned()),
+            Error::InvalidInstant("X".to_owned()),
+            Error::InvalidJson("X".to_owned()),
+            Error::InvalidEnvelope("X".to_owned()),
+            Error::Config("X".to_owned()),
+            Error::NotFound,
+            Error::VersionConflict,
+            Error::Duplicate("X".to_owned()),
+            Error::Internal("X".to_owned()),
+            Error::Deleted,
+            Error::MethodNotAllowed,
+            Error::MultipleMatches,
+            Error::InvalidPatch("X".to_owned()),
+            Error::InvalidParameter("X".to_owned()),
+            Error::UnsupportedParameter("X".to_owned()),
+            Error::Forbidden("X".to_owned()),
+            Error::NoMatch("X".to_owned()),
+            Error::Unauthenticated("X".to_owned()),
+        ];
+        for error in &held {
+            assert!(!error.to_string().trim().is_empty(), "{error:?}");
+            assert!((400..=599).contains(&error.http_status()), "{error:?}");
+            assert!(
+                !error.to_operation_outcome().to_fhir_json().is_empty(),
+                "{error:?}"
+            );
+        }
+    }
 }
