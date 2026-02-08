@@ -5,6 +5,9 @@ on:
     branches: ["master"]
   pull_request:
 
+env:
+  FHIR_IMAGE: fhir-service:${{ github.sha }}
+
 jobs:
   pipeline:
     runs-on: ubuntu-latest
@@ -22,7 +25,18 @@ jobs:
       - name: test
         run: cargo test --workspace
       - name: image
-        run: docker build --file Containerfile --tag fhir-service:${{ github.sha }} .
+        run: docker build --file Containerfile --tag "$FHIR_IMAGE" .
+      - name: publish
+        if: github.ref == 'refs/heads/master'
+        env:
+          FHIR_REGISTRY: ${{ vars.FHIR_REGISTRY }}
+        run: |
+          if [ -z "${FHIR_REGISTRY:-}" ]; then
+            echo "publish skipped: no registry named"
+            exit 0
+          fi
+          docker tag "$FHIR_IMAGE" "$FHIR_REGISTRY/$FHIR_IMAGE"
+          docker push "$FHIR_REGISTRY/$FHIR_IMAGE"
       - name: engines down
         if: always()
         run: docker compose down -v
