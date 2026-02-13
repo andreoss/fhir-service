@@ -21,6 +21,8 @@ pub const ENV_VERSION: &str = "FHIR_VERSION";
 pub const ENV_DATABASE_URL: &str = "FHIR_DATABASE_URL";
 pub const ENV_DATA_DIR: &str = "FHIR_DATA_DIR";
 
+pub const ENV_TERMINOLOGY_DIR: &str = "FHIR_TERMINOLOGY_DIR";
+
 pub const ENV_DOCUMENT_URL: &str = "FHIR_DOCUMENT_URL";
 pub const ENV_AUTH_ISSUER: &str = "FHIR_AUTH_ISSUER";
 pub const ENV_AUTH_AUTHORIZE: &str = "FHIR_AUTH_AUTHORIZE";
@@ -77,6 +79,7 @@ pub struct Config {
     pub database_url: String,
     pub document_url: String,
     pub data_dir: Option<PathBuf>,
+    pub terminology_dir: Option<PathBuf>,
     pub connections: u32,
     pub authorization: Option<Authorization>,
     pub keys: Option<KeySet>,
@@ -178,6 +181,8 @@ impl Config {
 
         let data_dir = get(env, ENV_DATA_DIR).map(PathBuf::from);
 
+        let terminology_dir = get(env, ENV_TERMINOLOGY_DIR).map(PathBuf::from);
+
         let connections = match get(env, ENV_STORE_CONNECTIONS) {
             Some(raw) => match raw.parse::<u32>() {
                 Ok(held) if (1..=MOST_STORE_CONNECTIONS).contains(&held) => held,
@@ -215,6 +220,7 @@ impl Config {
             database_url,
             document_url,
             data_dir,
+            terminology_dir,
             connections,
             authorization: authorization(env)?,
             keys: keys(env)?,
@@ -412,5 +418,49 @@ mod tests {
         let config = Config::parse(&env).expect("empty values must fall back to defaults");
         assert_eq!(config.backend, Backend::Memory);
         assert_eq!(config.bind.to_string(), DEFAULT_BIND);
+    }
+}
+#[cfg(test)]
+mod supplied_tests {
+    use super::*;
+
+    #[test]
+    fn an_unset_directory_leaves_the_published_content_alone() {
+        let config = Config::parse(&BTreeMap::new()).expect("defaults must parse");
+        assert_eq!(config.terminology_dir, None);
+        let held = crate::terminology::loaded(&config).expect("no directory loads nothing");
+        assert_eq!(held.systems().len(), fhir_core::Catalogue::of(config.version).systems().len());
+    }
+
+    #[test]
+    fn a_directory_of_code_systems_is_loaded_over_the_published_content() {
+        let mut env = BTreeMap::new();
+        let dir = std::path::Path::new("../../scratch/terminology-supplied");
+        std::fs::create_dir_all(dir).expect("the directory is writable");
+        std::fs::write(
+            dir.join("held.json"),
+            br#"{"resourceType":"CodeSystem","url":"urn:supplied","version":"1",
+                 "content":"complete","concept":[{"code":"a","concept":[{"code":"b"}]}]}"#,
+        )
+        .expect("the file is writable");
+        std::fs::write(dir.join("ignored.txt"), b"not json").expect("the file is writable");
+        env.insert(ENV_TERMINOLOGY_DIR.to_owned(), dir.display().to_string());
+        let config = Config::parse(&env).expect("a named directory parses");
+        let held = crate::terminology::loaded(&config).expect("the directory loads");
+        assert!(held.system("urn:supplied", Some("1")).is_some());
+        let under: Vec<String> = held
+            .descendants(Some("urn:supplied"), "a")
+            .into_iter()
+            .map(|concept| concept.code)
+            .collect();
+        assert_eq!(under, vec!["a".to_owned(), "b".to_owned()]);
+    }
+
+    #[test]
+    fn a_directory_that_is_not_there_fails_fast() {
+        let mut env = BTreeMap::new();
+        env.insert(ENV_TERMINOLOGY_DIR.to_owned(), "no/such/place".to_owned());
+        let config = Config::parse(&env).expect("a named directory parses");
+        assert!(crate::terminology::loaded(&config).is_err());
     }
 }

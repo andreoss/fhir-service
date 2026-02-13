@@ -44,6 +44,13 @@ async fn run() -> Result<(), Error> {
             config.version,
         )));
     }
+    if config.terminology_dir.is_some() {
+        let catalogue = Arc::new(fhir_host::terminology::loaded(&config)?);
+        service = service.with_terminology(Arc::new(
+            fhir_api::StoredTerminology::new(Arc::clone(&store), config.version)
+                .with_catalogue(catalogue),
+        ));
+    }
     if let Some(outputs) = &outputs {
         service = service.with_outputs(Arc::clone(outputs));
     }

@@ -57,7 +57,10 @@ impl Service {
         version: FhirVersion,
         dependencies: Vec<Dependency>,
     ) -> Service {
-        let terminology = Arc::new(crate::terminology::StoredTerminology::new(Arc::clone(&store)));
+        let terminology = Arc::new(crate::terminology::StoredTerminology::new(
+            Arc::clone(&store),
+            version,
+        ));
         Service {
             state: AppState {
                 store,

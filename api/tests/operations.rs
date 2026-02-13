@@ -922,3 +922,98 @@ async fn validate_names_the_rule_that_failed() {
     assert!(text.contains("Observation.code"), "{text}");
     assert!(text.contains("Observation.gender"), "{text}");
 }
+
+const CONFIDENTIALITY: &str = "http://terminology.hl7.org/CodeSystem/v3-Confidentiality";
+const CONFIDENTIALITY_ENCODED: &str =
+    "http%3A%2F%2Fterminology.hl7.org%2FCodeSystem%2Fv3-Confidentiality";
+
+fn published_set() -> serde_json::Value {
+    serde_json::json!({
+        "resourceType": "ValueSet",
+        "id": "vs-published",
+        "url": "urn:vs-published",
+        "status": "active",
+        "compose": {"include": [{
+            "system": CONFIDENTIALITY,
+            "filter": [{"property": "concept", "op": "is-a", "value": "_Confidentiality"}]
+        }]}
+    })
+}
+
+#[tokio::test]
+async fn expand_answers_from_published_content_no_one_stored() {
+    let app = service();
+    create(&app, published_set()).await;
+    let reply = request(
+        &app,
+        "GET",
+        "/ValueSet/$expand?url=urn:vs-published&excludeNested=true",
+        &[],
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    let value = json(&reply);
+    let held = codes(&value);
+    assert!(held.contains(&"_Confidentiality".to_owned()));
+    assert!(held.contains(&"R".to_owned()));
+    assert_eq!(value["expansion"]["contains"][0]["system"], CONFIDENTIALITY);
+}
+
+#[tokio::test]
+async fn stored_content_overrides_the_published_system() {
+    let app = service();
+    create(
+        &app,
+        serde_json::json!({
+            "resourceType": "CodeSystem",
+            "id": "cs-local",
+            "url": CONFIDENTIALITY,
+            "status": "active",
+            "content": "complete",
+            "concept": [{"code": "local"}]
+        }),
+    )
+    .await;
+    create(
+        &app,
+        serde_json::json!({
+            "resourceType": "ValueSet",
+            "id": "vs-local",
+            "url": "urn:vs-local",
+            "status": "active",
+            "compose": {"include": [{"system": CONFIDENTIALITY}]}
+        }),
+    )
+    .await;
+    let reply = request(
+        &app,
+        "GET",
+        "/ValueSet/$expand?url=urn:vs-local&excludeNested=true",
+        &[],
+    )
+    .await;
+    assert_eq!(codes(&json(&reply)), vec!["local".to_owned()]);
+}
+
+#[tokio::test]
+async fn subsumption_resolves_over_a_published_hierarchy() {
+    let app = service();
+    create(&app, coded("ob-p1", Some(CONFIDENTIALITY), "R")).await;
+    create(&app, coded("ob-p2", Some(CONFIDENTIALITY), "_Confidentiality")).await;
+    assert_eq!(
+        found(
+            &app,
+            &format!("/Observation?code:below={CONFIDENTIALITY_ENCODED}%7C_Confidentiality")
+        )
+        .await,
+        vec!["ob-p1".to_owned(), "ob-p2".to_owned()]
+    );
+    assert_eq!(
+        found(
+            &app,
+            &format!("/Observation?code:above={CONFIDENTIALITY_ENCODED}%7CR")
+        )
+        .await,
+        vec!["ob-p1".to_owned(), "ob-p2".to_owned()]
+    );
+}

@@ -1507,3 +1507,68 @@ fn every_live_answer_carries_an_identifier_of_the_shape_we_issue() {
     }
     assert_ne!(header(&offered, "x-correlation-id"), "patient-smith-4711");
 }
+
+const PUBLISHED_SET: &[u8] = br#"{"resourceType":"ValueSet","id":"vs-live","url":"urn:vs-live",
+"status":"active","compose":{"include":[{"system":
+"http://terminology.hl7.org/CodeSystem/v3-Confidentiality",
+"filter":[{"property":"concept","op":"is-a","value":"_Confidentiality"}]}]}}"#;
+
+#[test]
+fn expansion_answers_from_published_code_system_content() {
+    let (child, port) = spawn_server();
+    let created = request(port, "POST", "/ValueSet", &[], PUBLISHED_SET);
+    let reply = request(
+        port,
+        "GET",
+        "/ValueSet/$expand?url=urn:vs-live&excludeNested=true",
+        &[],
+        &[],
+    );
+    stop(child);
+    assert_eq!(created.status, 201, "create failed: {}", created.body);
+    assert_eq!(reply.status, 200, "expand failed: {}", reply.body);
+    assert!(reply.body.contains("\"code\":\"R\""), "{}", reply.body);
+    assert!(
+        reply
+            .body
+            .contains("http://terminology.hl7.org/CodeSystem/v3-Confidentiality"),
+        "{}",
+        reply.body
+    );
+}
+
+#[test]
+fn supplied_code_system_content_is_loaded_at_startup() {
+    let directory = std::path::Path::new("../../scratch/terminology-live");
+    std::fs::create_dir_all(directory).expect("the directory is writable");
+    std::fs::write(
+        directory.join("supplied.json"),
+        br#"{"resourceType":"CodeSystem","url":"urn:supplied","version":"1",
+             "content":"complete","concept":[{"code":"a","display":"A",
+             "concept":[{"code":"b","display":"B"}]}]}"#,
+    )
+    .expect("the file is writable");
+    let (child, port) = spawn_with(&[(
+        "FHIR_TERMINOLOGY_DIR",
+        &directory.display().to_string(),
+    )]);
+    let created = request(
+        port,
+        "POST",
+        "/ValueSet",
+        &[],
+        br#"{"resourceType":"ValueSet","id":"vs-supplied","url":"urn:vs-supplied",
+             "status":"active","compose":{"include":[{"system":"urn:supplied"}]}}"#,
+    );
+    let reply = request(
+        port,
+        "GET",
+        "/ValueSet/$expand?url=urn:vs-supplied&excludeNested=true",
+        &[],
+        &[],
+    );
+    stop(child);
+    assert_eq!(created.status, 201, "create failed: {}", created.body);
+    assert_eq!(reply.status, 200, "expand failed: {}", reply.body);
+    assert!(reply.body.contains("\"code\":\"b\""), "{}", reply.body);
+}
