@@ -14,7 +14,7 @@ use serde_json::Value;
 use crate::app::AppState;
 use crate::query::param;
 use crate::search::{ResultControl, SearchRequest, CONTROL};
-use crate::handlers::{allowed, AppError};
+use crate::handlers::{allowed, served, AppError};
 use fhir_core::security::scope::DataAction;
 
 const FHIR_JSON: &str = "application/fhir+json";
@@ -107,7 +107,7 @@ pub async fn validate_type(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, AppError> {
-    let resource_type = type_name.parse::<ResourceType>()?;
+    let resource_type = served(state.version, &type_name)?;
     allowed(&state, &headers, DataAction::Read, Some(resource_type), None).await?;
     validated(&state, Some(resource_type), None, query.as_deref(), &body).await
 }
@@ -119,7 +119,7 @@ pub async fn validate_instance(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, AppError> {
-    let resource_type = type_name.parse::<ResourceType>()?;
+    let resource_type = served(state.version, &type_name)?;
     allowed(&state, &headers, DataAction::Read, Some(resource_type), None).await?;
     let id = id_text.parse::<ResourceId>()?;
     validated(&state, Some(resource_type), Some(id), query.as_deref(), &body).await
@@ -375,7 +375,7 @@ pub async fn includes_type(
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
     allowed(&state, &headers, DataAction::Read, None, None).await?;
-    let resource_type = type_name.parse::<ResourceType>()?;
+    let resource_type = served(state.version, &type_name)?;
     let path = format!("/{resource_type}/$includes");
     related(&state, Some(resource_type), path, query, &headers).await
 }

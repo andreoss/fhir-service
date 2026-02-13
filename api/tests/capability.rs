@@ -558,3 +558,29 @@ async fn the_build_the_statement_reports_is_the_build_versions_reports() {
         .clone();
     assert_eq!(statement(&app).await["software"]["version"], build);
 }
+
+#[tokio::test]
+async fn a_statement_lists_only_the_types_its_version_defines() {
+    for version in FhirVersion::ALL {
+        let app = service(version);
+        let statement = statement(&app).await;
+        let listed: Vec<String> = statement["rest"][0]["resource"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .map(|entry| entry["type"].as_str().unwrap_or_default().to_owned())
+            .collect();
+        let model = fhir_core::Model::of(version);
+        assert!(!listed.is_empty(), "{version}");
+        assert!(
+            listed.iter().all(|name| model.has_resource(name)),
+            "{version} listed a type it does not define"
+        );
+        assert_eq!(
+            listed.contains(&"Citation".to_owned()),
+            matches!(version, FhirVersion::R4b | FhirVersion::R5),
+            "{version}"
+        );
+    }
+}

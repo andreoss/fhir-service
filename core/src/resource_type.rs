@@ -1,154 +1,26 @@
-use crate::Error;
+use crate::model::Model;
+use crate::{Error, FhirVersion};
 use std::fmt;
 use std::str::FromStr;
+use std::sync::OnceLock;
 
-pub const RESOURCE_TYPES: &[&str] = &[
-    "Account",
-    "ActivityDefinition",
-    "AdverseEvent",
-    "AllergyIntolerance",
-    "Appointment",
-    "AppointmentResponse",
-    "AuditEvent",
-    "Basic",
-    "Binary",
-    "BiologicallyDerivedProduct",
-    "BodyStructure",
-    "Bundle",
-    "CapabilityStatement",
-    "CarePlan",
-    "CareTeam",
-    "CatalogEntry",
-    "ChargeItem",
-    "ChargeItemDefinition",
-    "Claim",
-    "ClaimResponse",
-    "ClinicalImpression",
-    "CodeSystem",
-    "Communication",
-    "CommunicationRequest",
-    "CompartmentDefinition",
-    "Composition",
-    "ConceptMap",
-    "Condition",
-    "Consent",
-    "Contract",
-    "Coverage",
-    "CoverageEligibilityRequest",
-    "CoverageEligibilityResponse",
-    "DetectedIssue",
-    "Device",
-    "DeviceDefinition",
-    "DeviceMetric",
-    "DeviceRequest",
-    "DeviceUseStatement",
-    "DiagnosticReport",
-    "DocumentManifest",
-    "DocumentReference",
-    "EffectEvidenceSynthesis",
-    "Encounter",
-    "Endpoint",
-    "EnrollmentRequest",
-    "EnrollmentResponse",
-    "EpisodeOfCare",
-    "EventDefinition",
-    "Evidence",
-    "EvidenceVariable",
-    "ExampleScenario",
-    "ExplanationOfBenefit",
-    "FamilyMemberHistory",
-    "Flag",
-    "Goal",
-    "GraphDefinition",
-    "Group",
-    "GuidanceResponse",
-    "HealthcareService",
-    "ImagingStudy",
-    "Immunization",
-    "ImmunizationEvaluation",
-    "ImmunizationRecommendation",
-    "ImplementationGuide",
-    "InsurancePlan",
-    "Invoice",
-    "Library",
-    "Linkage",
-    "List",
-    "Location",
-    "Measure",
-    "MeasureReport",
-    "Media",
-    "Medication",
-    "MedicationAdministration",
-    "MedicationDispense",
-    "MedicationKnowledge",
-    "MedicationRequest",
-    "MedicationStatement",
-    "MedicinalProduct",
-    "MedicinalProductAuthorization",
-    "MedicinalProductContraindication",
-    "MedicinalProductIndication",
-    "MedicinalProductIngredient",
-    "MedicinalProductInteraction",
-    "MedicinalProductManufactured",
-    "MedicinalProductPackaged",
-    "MedicinalProductPharmaceutical",
-    "MedicinalProductUndesirableEffect",
-    "MessageDefinition",
-    "MessageHeader",
-    "MolecularSequence",
-    "NamingSystem",
-    "NutritionOrder",
-    "Observation",
-    "ObservationDefinition",
-    "OperationDefinition",
-    "OperationOutcome",
-    "Organization",
-    "OrganizationAffiliation",
-    "Patient",
-    "PaymentNotice",
-    "PaymentReconciliation",
-    "Person",
-    "PlanDefinition",
-    "Practitioner",
-    "PractitionerRole",
-    "Procedure",
-    "Provenance",
-    "Questionnaire",
-    "QuestionnaireResponse",
-    "RelatedPerson",
-    "RequestGroup",
-    "ResearchDefinition",
-    "ResearchElementDefinition",
-    "ResearchStudy",
-    "ResearchSubject",
-    "RiskAssessment",
-    "RiskEvidenceSynthesis",
-    "Schedule",
-    "SearchParameter",
-    "ServiceRequest",
-    "Slot",
-    "Specimen",
-    "SpecimenDefinition",
-    "StructureDefinition",
-    "StructureMap",
-    "Subscription",
-    "Substance",
-    "SubstanceNucleicAcid",
-    "SubstancePolymer",
-    "SubstanceProtein",
-    "SubstanceReferenceInformation",
-    "SubstanceSourceMaterial",
-    "SubstanceSpecification",
-    "SupplyDelivery",
-    "SupplyRequest",
-    "Task",
-    "TerminologyCapabilities",
-    "TestReport",
-    "TestScript",
-    "ValueSet",
-    "VerificationResult",
-    "VisionPrescription",
-];
+fn union() -> &'static [String] {
+    static HELD: OnceLock<Vec<String>> = OnceLock::new();
+    HELD.get_or_init(|| {
+        let mut names: Vec<String> = FhirVersion::ALL
+            .into_iter()
+            .flat_map(|version| Model::of(version).resources().map(str::to_owned).collect::<Vec<_>>())
+            .collect::<std::collections::BTreeSet<String>>()
+            .into_iter()
+            .collect();
+        names.sort();
+        names
+    })
+}
+
+pub fn resource_types() -> &'static [String] {
+    union()
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ResourceType(&'static str);
@@ -159,7 +31,20 @@ impl ResourceType {
     }
 
     pub fn all() -> Vec<ResourceType> {
-        RESOURCE_TYPES.iter().map(|name| ResourceType(name)).collect()
+        union().iter().map(|name| ResourceType(name)).collect()
+    }
+
+    pub fn served(version: FhirVersion) -> Vec<ResourceType> {
+        let model = Model::of(version);
+        union()
+            .iter()
+            .filter(|name| model.has_resource(name))
+            .map(|name| ResourceType(name))
+            .collect()
+    }
+
+    pub fn served_by(&self, version: FhirVersion) -> bool {
+        Model::of(version).has_resource(self.0)
     }
 }
 
@@ -168,8 +53,8 @@ impl FromStr for ResourceType {
 
     fn from_str(value: &str) -> Result<Self, Error> {
         let trimmed = value.trim();
-        match RESOURCE_TYPES.binary_search(&trimmed) {
-            Ok(index) => Ok(ResourceType(RESOURCE_TYPES[index])),
+        match union().binary_search_by(|name| name.as_str().cmp(trimmed)) {
+            Ok(index) => Ok(ResourceType(&union()[index])),
             Err(_) => Err(Error::InvalidResourceType(value.to_owned())),
         }
     }

@@ -78,3 +78,50 @@ fn live_a_version_the_service_does_not_serve_is_refused() {
     let said = String::from_utf8_lossy(&output.stderr);
     assert!(said.contains("FHIR_VERSION"), "{said}");
 }
+
+#[test]
+fn live_each_version_serves_the_types_it_defines_and_refuses_the_rest() {
+    let citation = br#"{"resourceType":"Citation","id":"ct-1","status":"active"}"#;
+    for (version, _) in VERSIONS {
+        let (child, port) = spawn_with(&[("FHIR_VERSION", version)]);
+        let headers = [("Content-Type", "application/fhir+json")];
+        let created = request(port, "POST", "/Citation", &headers, citation);
+        let statement = request(port, "GET", "/metadata", &[], &[]);
+        stop(child);
+
+        let defines = version == "R4B" || version == "R5";
+        match defines {
+            true => assert_eq!(created.status, 201, "{version}: {}", created.body),
+            false => assert_eq!(created.status, 400, "{version}: {}", created.body),
+        }
+        assert_eq!(
+            statement.body.contains("\"Citation\""),
+            defines,
+            "{version} statement disagrees with the types it serves"
+        );
+    }
+}
+
+#[test]
+fn live_a_body_that_does_not_match_its_type_is_refused_by_every_version() {
+    for (version, _) in VERSIONS {
+        let (child, port) = spawn_with(&[("FHIR_VERSION", version)]);
+        let headers = [("Content-Type", "application/fhir+json")];
+        let bad = request(port, "POST", "/Patient", &headers, br#"{"resourceType":"Patient","id":"pt-x1","favourite":"tea"}"#);
+        let read = request(port, "GET", "/Patient/pt-x1", &[], &[]);
+        let validated = request(
+            port,
+            "POST",
+            "/Observation/$validate",
+            &headers,
+            br#"{"resourceType":"Observation","id":"ob-x1","status":"draft"}"#,
+        );
+        stop(child);
+
+        assert_eq!(bad.status, 400, "{version}: {}", bad.body);
+        assert!(bad.body.contains("structure"), "{version}: {}", bad.body);
+        assert_eq!(read.status, 404, "{version}: {}", read.body);
+        assert_eq!(validated.status, 200, "{version}: {}", validated.body);
+        assert!(validated.body.contains("cardinality"), "{version}: {}", validated.body);
+    }
+}

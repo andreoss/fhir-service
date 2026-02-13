@@ -57,7 +57,7 @@ pub async fn read(
     Path((type_name, id_text)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
-    let resource_type = type_name.parse::<ResourceType>()?;
+    let resource_type = served(state.version, &type_name)?;
     let id = id_text.parse::<ResourceId>()?;
     let access = allowed(&state, &headers, DataAction::Read, Some(resource_type), Some(&id)).await?;
     let envelope = state.store.read(&id).await?;
@@ -76,7 +76,7 @@ pub async fn vread(
     Path((type_name, id_text, version_text)): Path<(String, String, String)>,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
-    let resource_type = type_name.parse::<ResourceType>()?;
+    let resource_type = served(state.version, &type_name)?;
     let id = id_text.parse::<ResourceId>()?;
     let access = allowed(&state, &headers, DataAction::Read, Some(resource_type), Some(&id)).await?;
     let version = version_text.parse::<VersionId>()?;
@@ -97,7 +97,7 @@ pub async fn create(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, AppError> {
-    let resource_type = type_name.parse::<ResourceType>()?;
+    let resource_type = served(state.version, &type_name)?;
     let access = allowed(&state, &headers, DataAction::Write, Some(resource_type), None).await?;
     if let Some(condition) = headers.get(IF_NONE_EXIST) {
         let raw = condition
@@ -131,7 +131,7 @@ pub async fn conditional_update(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, AppError> {
-    let resource_type = type_name.parse::<ResourceType>()?;
+    let resource_type = served(state.version, &type_name)?;
     let access = allowed(&state, &headers, DataAction::Write, Some(resource_type), None).await?;
     let mut selection = require_condition(parse_query(&state.registry, Some(resource_type), query.as_deref())?, "conditional update")?;
     confine(&mut selection, confining(&state, &access, &headers, DataAction::Write)?)?;
@@ -158,7 +158,7 @@ pub async fn update(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, AppError> {
-    let resource_type = type_name.parse::<ResourceType>()?;
+    let resource_type = served(state.version, &type_name)?;
     let id = id_text.parse::<ResourceId>()?;
     let access = allowed(&state, &headers, DataAction::Write, Some(resource_type), Some(&id)).await?;
     let expected = expected_version(&headers)?;
@@ -204,7 +204,7 @@ pub async fn delete_instance(
     RawQuery(query): RawQuery,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
-    let resource_type = type_name.parse::<ResourceType>()?;
+    let resource_type = served(state.version, &type_name)?;
     let id = id_text.parse::<ResourceId>()?;
     let access = allowed(&state, &headers, DataAction::Write, Some(resource_type), Some(&id)).await?;
     let current = state.store.read(&id).await?;
@@ -229,7 +229,7 @@ pub async fn conditional_delete(
     RawQuery(query): RawQuery,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
-    let resource_type = type_name.parse::<ResourceType>()?;
+    let resource_type = served(state.version, &type_name)?;
     let access = allowed(&state, &headers, DataAction::Write, Some(resource_type), None).await?;
     let mut selection = require_condition(parse_query(&state.registry, Some(resource_type), query.as_deref())?, "conditional delete")?;
     confine(&mut selection, confining(&state, &access, &headers, DataAction::Write)?)?;
@@ -245,7 +245,7 @@ pub async fn patch_instance(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, AppError> {
-    let resource_type = type_name.parse::<ResourceType>()?;
+    let resource_type = served(state.version, &type_name)?;
     let id = id_text.parse::<ResourceId>()?;
     let access = allowed(&state, &headers, DataAction::Write, Some(resource_type), Some(&id)).await?;
     let current = state.store.read(&id).await?;
@@ -266,7 +266,7 @@ pub async fn conditional_patch(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, AppError> {
-    let resource_type = type_name.parse::<ResourceType>()?;
+    let resource_type = served(state.version, &type_name)?;
     let access = allowed(&state, &headers, DataAction::Write, Some(resource_type), None).await?;
     let mut selection = require_condition(parse_query(&state.registry, Some(resource_type), query.as_deref())?, "conditional patch")?;
     confine(&mut selection, confining(&state, &access, &headers, DataAction::Write)?)?;
@@ -281,7 +281,7 @@ pub async fn purge_history(
     Path((type_name, id_text)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
-    let resource_type = type_name.parse::<ResourceType>()?;
+    let resource_type = served(state.version, &type_name)?;
     let id = id_text.parse::<ResourceId>()?;
     let access = allowed(&state, &headers, DataAction::Write, Some(resource_type), Some(&id)).await?;
     let current = state.store.read(&id).await?;
@@ -553,7 +553,7 @@ pub async fn type_history(
     RawQuery(query): RawQuery,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
-    let resource_type = type_name.parse::<ResourceType>()?;
+    let resource_type = served(state.version, &type_name)?;
     allowed(&state, &headers, DataAction::Read, Some(resource_type), None).await?;
     let path = format!("/{resource_type}/_history");
     respond_history(&state, HistoryScope::Type(resource_type), path, query, &headers).await
@@ -565,7 +565,7 @@ pub async fn instance_history(
     RawQuery(query): RawQuery,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
-    let resource_type = type_name.parse::<ResourceType>()?;
+    let resource_type = served(state.version, &type_name)?;
     let id = id_text.parse::<ResourceId>()?;
     let access = allowed(&state, &headers, DataAction::Read, Some(resource_type), Some(&id)).await?;
     let path = format!("/{resource_type}/{id}/_history");
@@ -606,7 +606,7 @@ pub async fn search_type(
     RawQuery(query): RawQuery,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
-    let resource_type = type_name.parse::<ResourceType>()?;
+    let resource_type = served(state.version, &type_name)?;
     allowed(&state, &headers, DataAction::Read, Some(resource_type), None).await?;
     let path = format!("/{resource_type}");
     respond_search(&state, Some(resource_type), path, query, &headers).await
@@ -906,5 +906,18 @@ fn covers(grant: &Option<Grant>, scope: &HistoryScope) -> Result<(), Error> {
                 false => refused("system"),
             }
         }
+    }
+}
+
+pub(crate) fn served(
+    version: fhir_core::FhirVersion,
+    name: &str,
+) -> Result<ResourceType, Error> {
+    let held = name.parse::<ResourceType>()?;
+    match held.served_by(version) {
+        true => Ok(held),
+        false => Err(Error::InvalidResourceType(format!(
+            "{name} is not a resource type of {version}"
+        ))),
     }
 }

@@ -236,7 +236,7 @@ fn common_entries() -> Value {
 fn reverse_includes(state: &AppState) -> (BTreeMap<String, BTreeSet<String>>, BTreeSet<String>) {
     let mut per_target: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let mut any = BTreeSet::new();
-    for kind in ResourceType::all() {
+    for kind in ResourceType::served(state.version) {
         for def in state.registry.references(kind) {
             let spelling = format!("{}:{}", kind.as_str(), def.name);
             if def.targets.is_empty() {
@@ -307,7 +307,7 @@ pub fn statement(state: &AppState, base: &str) -> Value {
     let surface = surface();
     let operations = operations();
     let reverse = reverse_includes(state);
-    let resources: Vec<Value> = ResourceType::all()
+    let resources: Vec<Value> = ResourceType::served(state.version)
         .into_iter()
         .map(|kind| resource_entry(state, kind, &surface, &operations, &reverse, base))
         .collect();

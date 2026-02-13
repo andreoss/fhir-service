@@ -83,3 +83,42 @@ fn the_types_a_version_defines_are_the_types_it_serves() {
     assert!(Model::of(FhirVersion::R4).has_resource("DeviceUseStatement"));
     assert!(!Model::of(FhirVersion::R5).has_resource("DeviceUseStatement"));
 }
+
+#[test]
+fn the_names_the_service_parses_are_the_names_the_versions_define() {
+    let union: std::collections::BTreeSet<String> = FhirVersion::ALL
+        .into_iter()
+        .flat_map(|version| Model::of(version).resources().map(str::to_owned).collect::<Vec<_>>())
+        .collect();
+    for name in &union {
+        assert!(
+            name.parse::<fhir_core::ResourceType>().is_ok(),
+            "{name} is defined by a version and is not parsed"
+        );
+    }
+    for held in fhir_core::ResourceType::all() {
+        assert!(
+            union.contains(held.as_str()),
+            "{held} is parsed and no version defines it"
+        );
+    }
+}
+
+#[test]
+fn a_type_a_version_does_not_define_is_not_served_by_it() {
+    for version in FhirVersion::ALL {
+        let model = Model::of(version);
+        let served: Vec<String> = fhir_core::ResourceType::served(version)
+            .iter()
+            .map(|held| held.to_string())
+            .collect();
+        assert_eq!(served.len(), model.resources().count(), "{version}");
+        assert!(served.iter().all(|name| model.has_resource(name)), "{version}");
+    }
+    assert!(fhir_core::ResourceType::served(FhirVersion::Stu3)
+        .iter()
+        .all(|held| held.as_str() != "Citation"));
+    assert!(fhir_core::ResourceType::served(FhirVersion::R5)
+        .iter()
+        .any(|held| held.as_str() == "Citation"));
+}
