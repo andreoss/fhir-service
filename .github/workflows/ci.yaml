@@ -7,6 +7,7 @@ on:
 
 env:
   FHIR_IMAGE: fhir-service:${{ github.sha }}
+  FHIR_COVERAGE_FLOOR: "85"
 
 jobs:
   pipeline:
@@ -24,6 +25,16 @@ jobs:
         run: docker compose up -d --wait
       - name: test
         run: cargo test --workspace
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - name: coverage
+        run: |
+          mkdir -p scratch
+          cargo llvm-cov --workspace --summary-only --json \
+            --output-path scratch/coverage.json
+          covered=$(jq -r '.data[0].totals.lines.percent' scratch/coverage.json)
+          echo "lines covered: $covered (floor $FHIR_COVERAGE_FLOOR)"
+          awk -v c="$covered" -v f="$FHIR_COVERAGE_FLOOR" \
+            'BEGIN { exit (c + 0 >= f + 0) ? 0 : 1 }'
       - name: image
         run: docker build --file Containerfile --tag "$FHIR_IMAGE" .
       - name: publish
