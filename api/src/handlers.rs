@@ -514,8 +514,29 @@ fn write_envelope(
         Some(true) => {}
     }
     fhir_core::with_assigned_meta(&mut value)?;
+    matches_definitions(version, &value)?;
     let bytes = serde_json::to_vec(&value).map_err(|error| Error::InvalidJson(error.to_string()))?;
     ResourceEnvelope::parse(version, &bytes)
+}
+
+fn matches_definitions(version: fhir_core::FhirVersion, value: &Value) -> Result<(), Error> {
+    let findings = fhir_core::Model::of(version).check(value);
+    match findings.is_empty() {
+        true => Ok(()),
+        false => Err(Error::InvalidEnvelope(refusal(&findings))),
+    }
+}
+
+fn refusal(findings: &[fhir_core::Finding]) -> String {
+    let listed: Vec<String> = findings
+        .iter()
+        .take(3)
+        .map(|finding| format!("{} at {}: {}", finding.rule, finding.path, finding.detail))
+        .collect();
+    match findings.len() > listed.len() {
+        true => format!("{}; and {} more", listed.join("; "), findings.len() - listed.len()),
+        false => listed.join("; "),
+    }
 }
 pub async fn system_history(
     State(state): State<AppState>,

@@ -240,6 +240,7 @@ fn observation(id: &str, patient: &str) -> serde_json::Value {
         "resourceType": "Observation",
         "id": id,
         "status": "final",
+        "code": {"text": "probe"},
         "subject": {"reference": format!("Patient/{patient}")}
     })
 }
@@ -578,7 +579,8 @@ fn document(id: &str, patient: &str, date: &str, code: &str) -> serde_json::Valu
         "status": "current",
         "type": {"coding": [{"system": "urn:doc", "code": code}]},
         "subject": {"reference": format!("Patient/{patient}")},
-        "date": date
+        "date": format!("{date}T00:00:00Z"),
+        "content": [{"attachment": {"url": "urn:doc:body"}}]
     })
 }
 
@@ -695,6 +697,8 @@ fn code_system() -> serde_json::Value {
         "id": "cs-1",
         "url": "urn:cs",
         "version": "1.0",
+        "status": "active",
+        "content": "complete",
         "concept": [{
             "code": "top",
             "display": "Top",

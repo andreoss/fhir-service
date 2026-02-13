@@ -412,7 +412,7 @@ fn live_search_selects_pages_and_reports_totals() {
 #[test]
 fn live_search_matches_typed_values_and_rejects_the_unsupported() {
     let (child, port) = spawn_server();
-    let observation = br#"{"resourceType":"Observation","id":"ob-k1","status":"final","code":{"coding":[{"system":"http://loinc.org","code":"8867-4"}]},"subject":{"reference":"Patient/pt-k1"},"effectiveDateTime":"2026-09-06T04:00:00Z","valueQuantity":{"value":72.5,"system":"http://unitsofmeasure.org","code":"/min"}}"#;
+    let observation = br#"{"resourceType":"Observation","id":"ob-k1","status":"final","code":{"text":"probe"},"code":{"coding":[{"system":"http://loinc.org","code":"8867-4"}]},"subject":{"reference":"Patient/pt-k1"},"effectiveDateTime":"2026-09-06T04:00:00Z","valueQuantity":{"value":72.5,"system":"http://unitsofmeasure.org","code":"/min"}}"#;
     request(port, "POST", "/Observation", &[], observation);
     let by_code = request(port, "GET", "/Observation?code=http%3A%2F%2Floinc.org%7C8867-4", &[], &[]);
     let by_reference = request(port, "GET", "/Observation?patient=pt-k1", &[], &[]);
@@ -453,8 +453,8 @@ fn seed_advanced(port: u16) {
     let clinic = br#"{"resourceType":"Organization","id":"org-a1","name":"Mercy","active":true}"#;
     let ann = br#"{"resourceType":"Patient","id":"pt-a1","gender":"female","name":[{"family":"Sorensen"}],"managingOrganization":{"reference":"Organization/org-a1"},"identifier":[{"type":{"coding":[{"system":"urn:t","code":"MR"}]},"system":"urn:mrn","value":"12345"}]}"#;
     let bo = br#"{"resourceType":"Patient","id":"pt-a2","gender":"male","name":[{"family":"Okonkwo"}]}"#;
-    let warm = br#"{"resourceType":"Observation","id":"ob-a1","status":"final","code":{"text":"Body Temperature","coding":[{"system":"urn:s","code":"vital.temperature"}]},"subject":{"reference":"Patient/pt-a1"}}"#;
-    let survey = br#"{"resourceType":"Observation","id":"ob-a2","status":"registered","code":{"coding":[{"system":"urn:s","code":"survey"}]},"subject":{"reference":"Patient/pt-a2"}}"#;
+    let warm = br#"{"resourceType":"Observation","id":"ob-a1","status":"final","code":{"text":"probe"},"code":{"text":"Body Temperature","coding":[{"system":"urn:s","code":"vital.temperature"}]},"subject":{"reference":"Patient/pt-a1"}}"#;
+    let survey = br#"{"resourceType":"Observation","id":"ob-a2","status":"registered","code":{"text":"probe"},"code":{"coding":[{"system":"urn:s","code":"survey"}]},"subject":{"reference":"Patient/pt-a2"}}"#;
     let set = br#"{"resourceType":"ValueSet","id":"vs-a1","url":"http://x/vitals","status":"active","compose":{"include":[{"system":"urn:s","concept":[{"code":"vital.temperature"}]}]}}"#;
     request(port, "POST", "/Organization", &[], clinic);
     request(port, "POST", "/Patient", &[], ann);
@@ -611,7 +611,7 @@ fn live_the_entry_limit_follows_the_connection_count() {
 
 fn live_definition(id: &str, code: &str) -> Vec<u8> {
     format!(
-        r#"{{"resourceType":"SearchParameter","id":"{id}","url":"urn:p:{code}","status":"active","code":"{code}","base":["Patient"],"type":"token","expression":"Patient.extension.valueCode"}}"#
+        r#"{{"resourceType":"SearchParameter","id":"{id}","name":"{code}","description":"a parameter","url":"urn:p:{code}","status":"active","code":"{code}","base":["Patient"],"type":"token","expression":"Patient.extension.valueCode"}}"#
     )
     .into_bytes()
 }
@@ -680,8 +680,8 @@ fn live_search_is_confined_to_the_granted_scope() {
     let (child, port) = spawn_server();
     let patient = br#"{"resourceType":"Patient","id":"pt-g1","active":true}"#;
     let other = br#"{"resourceType":"Patient","id":"pt-g2","active":true}"#;
-    let mine = br#"{"resourceType":"Observation","id":"ob-g1","status":"final","subject":{"reference":"Patient/pt-g1"}}"#;
-    let theirs = br#"{"resourceType":"Observation","id":"ob-g2","status":"final","subject":{"reference":"Patient/pt-g2"}}"#;
+    let mine = br#"{"resourceType":"Observation","id":"ob-g1","status":"final","code":{"text":"probe"},"subject":{"reference":"Patient/pt-g1"}}"#;
+    let theirs = br#"{"resourceType":"Observation","id":"ob-g2","status":"final","code":{"text":"probe"},"subject":{"reference":"Patient/pt-g2"}}"#;
     request(port, "POST", "/Patient", &[], patient);
     request(port, "POST", "/Patient", &[], other);
     request(port, "POST", "/Observation", &[], mine);
@@ -1071,9 +1071,9 @@ fn a_reindex_of_one_resource_makes_it_findable_again() {
 fn seed_operations(port: u16) {
     let patient = br#"{"resourceType":"Patient","id":"pt-o1","gender":"female","identifier":[{"system":"urn:mrn","value":"90210"}],"birthDate":"1980-04-01"}"#;
     let other = br#"{"resourceType":"Patient","id":"pt-o2","gender":"male"}"#;
-    let observation = br#"{"resourceType":"Observation","id":"ob-o1","status":"final","code":{"coding":[{"system":"urn:cs","code":"leaf"}]},"subject":{"reference":"Patient/pt-o1"}}"#;
-    let document = br#"{"resourceType":"DocumentReference","id":"dr-o1","status":"current","type":{"coding":[{"system":"urn:doc","code":"note"}]},"subject":{"reference":"Patient/pt-o1"},"date":"2026-03-01"}"#;
-    let system = br#"{"resourceType":"CodeSystem","id":"cs-o1","url":"urn:cs","version":"1.0","concept":[{"code":"top","display":"Top","concept":[{"code":"mid","display":"Middle","concept":[{"code":"leaf","display":"Leaf"}]}]}]}"#;
+    let observation = br#"{"resourceType":"Observation","id":"ob-o1","status":"final","code":{"text":"probe"},"code":{"coding":[{"system":"urn:cs","code":"leaf"}]},"subject":{"reference":"Patient/pt-o1"}}"#;
+    let document = br#"{"resourceType":"DocumentReference","id":"dr-o1","status":"current","type":{"coding":[{"system":"urn:doc","code":"note"}]},"subject":{"reference":"Patient/pt-o1"},"date":"2026-03-01T00:00:00Z","content":[{"attachment":{"url":"urn:doc:body"}}]}"#;
+    let system = br#"{"resourceType":"CodeSystem","id":"cs-o1","url":"urn:cs","version":"1.0","status":"active","content":"complete","concept":[{"code":"top","display":"Top","concept":[{"code":"mid","display":"Middle","concept":[{"code":"leaf","display":"Leaf"}]}]}]}"#;
     let set = br#"{"resourceType":"ValueSet","id":"vs-o1","url":"urn:vs","status":"active","compose":{"include":[{"system":"urn:cs"}]}}"#;
     request(port, "POST", "/Patient", &[], patient);
     request(port, "POST", "/Patient", &[], other);

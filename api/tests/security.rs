@@ -150,7 +150,7 @@ async fn a_bundle_entry_outside_the_scope_fails_the_entry_or_the_bundle() {
     let app = guarded();
     let listed = |id: &str| {
         format!(
-            r#"{{"resource":{{"resourceType":"Patient","id":"{id}","active":true}},"request":{{"method":"POST","url":"Patient"}}}},{{"resource":{{"resourceType":"Observation","id":"ob-{id}","status":"final"}},"request":{{"method":"POST","url":"Observation"}}}}"#
+            r#"{{"resource":{{"resourceType":"Patient","id":"{id}","active":true}},"request":{{"method":"POST","url":"Patient"}}}},{{"resource":{{"resourceType":"Observation","id":"ob-{id}","status":"final","code":{{"text":"probe"}}}},"request":{{"method":"POST","url":"Observation"}}}}"#
         )
     };
     let batch = format!(
@@ -242,9 +242,9 @@ async fn seeded(app: &Service) {
         call(app, "POST", "/Patient", write, &body).await;
     }
     for body in [
-        br#"{"resourceType":"Observation","id":"ob-a","status":"final","subject":{"reference":"Patient/pt-a"}}"#.to_vec(),
-        br#"{"resourceType":"Observation","id":"ob-b","status":"final","subject":{"reference":"Patient/pt-b"}}"#.to_vec(),
-        br#"{"resourceType":"Observation","id":"ob-c","status":"amended","subject":{"reference":"Patient/pt-a"}}"#.to_vec(),
+        br#"{"resourceType":"Observation","id":"ob-a","status":"final","code":{"text":"probe"},"subject":{"reference":"Patient/pt-a"}}"#.to_vec(),
+        br#"{"resourceType":"Observation","id":"ob-b","status":"final","code":{"text":"probe"},"subject":{"reference":"Patient/pt-b"}}"#.to_vec(),
+        br#"{"resourceType":"Observation","id":"ob-c","status":"amended","code":{"text":"probe"},"subject":{"reference":"Patient/pt-a"}}"#.to_vec(),
     ] {
         call(app, "POST", "/Observation", write, &body).await;
     }

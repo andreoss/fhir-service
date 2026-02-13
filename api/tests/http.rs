@@ -870,7 +870,7 @@ async fn seeded_history() -> Service {
     request(&app, "POST", "/Patient", &[], &patient("pt-h1", true)).await;
     request(&app, "PUT", "/Patient/pt-h1", &[], &patient("pt-h1", false)).await;
     request(&app, "DELETE", "/Patient/pt-h1", &[], &[]).await;
-    request(&app, "POST", "/Observation", &[], br#"{"resourceType":"Observation","id":"ob-h1","status":"final"}"#).await;
+    request(&app, "POST", "/Observation", &[], br#"{"resourceType":"Observation","id":"ob-h1","status":"final","code":{"text":"probe"}}"#).await;
     app
 }
 
@@ -1247,11 +1247,11 @@ async fn clinical() -> Service {
     let bo = br#"{"resourceType":"Patient","id":"pt-v2","name":[{"family":"Okonkwo","given":["Bo"]}],"birthDate":"1995-11-20"}"#;
     request(&app, "POST", "/Patient", &[], ana).await;
     request(&app, "POST", "/Patient", &[], bo).await;
-    let rate = br#"{"resourceType":"Observation","id":"ob-v1","status":"final","code":{"coding":[{"system":"http://loinc.org","code":"8867-4"}]},"subject":{"reference":"Patient/pt-v1"},"effectiveDateTime":"2026-09-06T04:00:00Z","valueQuantity":{"value":72.5,"system":"http://unitsofmeasure.org","code":"/min"}}"#;
-    let pressure = br#"{"resourceType":"Observation","id":"ob-v2","status":"final","code":{"coding":[{"system":"http://loinc.org","code":"85354-9"}]},"subject":{"reference":"Patient/pt-v2"},"effectiveDateTime":"2026-09-06T04:00:00Z","component":[{"code":{"coding":[{"system":"http://loinc.org","code":"8480-6"}]},"valueQuantity":{"value":120,"system":"http://unitsofmeasure.org","code":"mm[Hg]"}}]}"#;
+    let rate = br#"{"resourceType":"Observation","id":"ob-v1","status":"final","code":{"text":"probe"},"code":{"coding":[{"system":"http://loinc.org","code":"8867-4"}]},"subject":{"reference":"Patient/pt-v1"},"effectiveDateTime":"2026-09-06T04:00:00Z","valueQuantity":{"value":72.5,"system":"http://unitsofmeasure.org","code":"/min"}}"#;
+    let pressure = br#"{"resourceType":"Observation","id":"ob-v2","status":"final","code":{"text":"probe"},"code":{"coding":[{"system":"http://loinc.org","code":"85354-9"}]},"subject":{"reference":"Patient/pt-v2"},"effectiveDateTime":"2026-09-06T04:00:00Z","component":[{"code":{"coding":[{"system":"http://loinc.org","code":"8480-6"}]},"valueQuantity":{"value":120,"system":"http://unitsofmeasure.org","code":"mm[Hg]"}}]}"#;
     request(&app, "POST", "/Observation", &[], rate).await;
     request(&app, "POST", "/Observation", &[], pressure).await;
-    let risk = br#"{"resourceType":"RiskAssessment","id":"ra-v1","subject":{"reference":"Patient/pt-v1"},"prediction":[{"probabilityDecimal":0.42}]}"#;
+    let risk = br#"{"resourceType":"RiskAssessment","id":"ra-v1","status":"final","subject":{"reference":"Patient/pt-v1"},"prediction":[{"probabilityDecimal":0.42}]}"#;
     request(&app, "POST", "/RiskAssessment", &[], risk).await;
     app
 }
@@ -1337,8 +1337,8 @@ async fn qualified() -> Service {
     let bo = br#"{"resourceType":"Patient","id":"pt-m2","name":[{"family":"Okonkwo"}],"gender":"male"}"#;
     request(&app, "POST", "/Patient", &[], ann).await;
     request(&app, "POST", "/Patient", &[], bo).await;
-    let warm = br#"{"resourceType":"Observation","id":"ob-m1","status":"final","code":{"text":"Body Temperature","coding":[{"system":"urn:s","code":"vital.temperature"}]},"subject":{"reference":"Patient/pt-m1"}}"#;
-    let other = br#"{"resourceType":"Observation","id":"ob-m2","status":"registered","code":{"coding":[{"system":"urn:s","code":"survey"}]},"subject":{"identifier":{"system":"urn:mrn","value":"12345"}}}"#;
+    let warm = br#"{"resourceType":"Observation","id":"ob-m1","status":"final","code":{"text":"probe"},"code":{"text":"Body Temperature","coding":[{"system":"urn:s","code":"vital.temperature"}]},"subject":{"reference":"Patient/pt-m1"}}"#;
+    let other = br#"{"resourceType":"Observation","id":"ob-m2","status":"registered","code":{"text":"probe"},"code":{"coding":[{"system":"urn:s","code":"survey"}]},"subject":{"identifier":{"system":"urn:mrn","value":"12345"}}}"#;
     request(&app, "POST", "/Observation", &[], warm).await;
     request(&app, "POST", "/Observation", &[], other).await;
     let set = br#"{"resourceType":"ValueSet","id":"vs-m1","url":"http://x/vitals","status":"active","compose":{"include":[{"system":"urn:s","concept":[{"code":"vital.temperature"}]}]}}"#;
@@ -1726,8 +1726,8 @@ async fn granted() -> Service {
     let app = service();
     request(&app, "POST", "/Patient", &[], br#"{"resourceType":"Patient","id":"pt-g1","active":true}"#).await;
     request(&app, "POST", "/Patient", &[], br#"{"resourceType":"Patient","id":"pt-g2","active":true}"#).await;
-    let mine = br#"{"resourceType":"Observation","id":"ob-g1","status":"final","subject":{"reference":"Patient/pt-g1"}}"#;
-    let other = br#"{"resourceType":"Observation","id":"ob-g2","status":"final","subject":{"reference":"Patient/pt-g2"}}"#;
+    let mine = br#"{"resourceType":"Observation","id":"ob-g1","status":"final","code":{"text":"probe"},"subject":{"reference":"Patient/pt-g1"}}"#;
+    let other = br#"{"resourceType":"Observation","id":"ob-g2","status":"final","code":{"text":"probe"},"subject":{"reference":"Patient/pt-g2"}}"#;
     request(&app, "POST", "/Observation", &[], mine).await;
     request(&app, "POST", "/Observation", &[], other).await;
     app
@@ -1821,7 +1821,7 @@ async fn an_empty_value_is_reported_unsupported() {
 
 fn definition(id: &str, code: &str, expression: &str, status: &str) -> Vec<u8> {
     format!(
-        r#"{{"resourceType":"SearchParameter","id":"{id}","url":"urn:p:{code}","status":"{status}","code":"{code}","base":["Patient"],"type":"token","expression":"{expression}"}}"#
+        r#"{{"resourceType":"SearchParameter","id":"{id}","name":"{code}","description":"a parameter","url":"urn:p:{code}","status":"{status}","code":"{code}","base":["Patient"],"type":"token","expression":"{expression}"}}"#
     )
     .into_bytes()
 }
@@ -1846,7 +1846,7 @@ async fn a_definition_registers_a_custom_parameter() {
 #[tokio::test]
 async fn a_malformed_definition_registers_nothing() {
     let app = service();
-    let body = br#"{"resourceType":"SearchParameter","id":"sp-2","url":"urn:p:bad","status":"active","code":"bad","base":["Patient"],"type":"token"}"#;
+    let body = br#"{"resourceType":"SearchParameter","id":"sp-2","name":"bad","description":"a parameter","url":"urn:p:bad","status":"active","code":"bad","base":["Patient"],"type":"token"}"#;
     let reply = request(&app, "POST", "/SearchParameter", &[], body).await;
     assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{}", reply.body);
     assert!(!diagnostics(&app, "/Patient?bad=1").await.contains("is supported"));
@@ -1859,7 +1859,7 @@ async fn a_rejected_definition_leaves_the_registry_untouched() {
     let app = service();
     let first = definition("sp-3", "risk-band", "Patient.extension.valueCode", "active");
     request(&app, "POST", "/SearchParameter", &[], &first).await;
-    let clash = br#"{"resourceType":"SearchParameter","id":"sp-4","url":"urn:p:other","status":"active","code":"risk-band","base":["Patient"],"type":"token","expression":"Patient.extension.valueString"}"#;
+    let clash = br#"{"resourceType":"SearchParameter","id":"sp-4","name":"other","description":"a parameter","url":"urn:p:other","status":"active","code":"risk-band","base":["Patient"],"type":"token","expression":"Patient.extension.valueString"}"#;
     let reply = request(&app, "POST", "/SearchParameter", &[], clash).await;
     assert_eq!(reply.status, StatusCode::CONFLICT, "{}", reply.body);
     let duplicate = definition("sp-3", "other-band", "Patient.extension.valueCode", "active");
@@ -1999,7 +1999,7 @@ async fn a_reindex_reports_the_resources_it_could_not_index() {
     let app = service();
     request(&app, "POST", "/Patient", &[], &banded("pt-r4", "1980-04-01")).await;
     request(&app, "POST", "/Patient", &[], &banded("pt-r5", "whenever")).await;
-    let body = br#"{"resourceType":"SearchParameter","id":"sp-11","url":"urn:p:band-date","status":"active","code":"band-date","base":["Patient"],"type":"date","expression":"Patient.extension.valueCode"}"#;
+    let body = br#"{"resourceType":"SearchParameter","id":"sp-11","name":"band-date","description":"a parameter","url":"urn:p:band-date","status":"active","code":"band-date","base":["Patient"],"type":"date","expression":"Patient.extension.valueCode"}"#;
     request(&app, "POST", "/SearchParameter", &[], body).await;
     let report = statuses(&app, "POST", "/SearchParameter/$reindex", &[]).await;
     let entry = &report["parameter"][0];
@@ -2117,4 +2117,46 @@ async fn a_stale_definition_update_changes_nothing() {
     assert_eq!(reply.status, StatusCode::CONFLICT, "{}", reply.body);
     assert!(!diagnostics(&app, "/Patient?risk-stale=x").await.contains("is supported"));
     assert!(diagnostics(&app, "/Patient?risk-band=x").await.contains("is supported"));
+}
+
+#[tokio::test]
+async fn a_body_with_an_element_the_type_does_not_define_is_refused() {
+    let app = service();
+    let body = br#"{"resourceType":"Patient","id":"pt-9","favourite":"tea"}"#.to_vec();
+    let reply = request(&app, "POST", "/Patient", &[], &body).await;
+    assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{}", reply.body);
+    assert!(reply.body.contains("structure"), "{}", reply.body);
+    assert!(reply.body.contains("favourite"), "{}", reply.body);
+    let read = request(&app, "GET", "/Patient/pt-9", &[], &[]).await;
+    assert_eq!(read.status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn a_body_with_a_primitive_of_the_wrong_shape_is_refused() {
+    let app = service();
+    let body = br#"{"resourceType":"Patient","id":"pt-8","active":"yes"}"#.to_vec();
+    let reply = request(&app, "POST", "/Patient", &[], &body).await;
+    assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{}", reply.body);
+    assert!(reply.body.contains("active"), "{}", reply.body);
+}
+
+#[tokio::test]
+async fn a_body_with_a_code_outside_a_bound_value_set_is_refused() {
+    let app = service();
+    let body = br#"{"resourceType":"Patient","id":"pt-7","gender":"lady"}"#.to_vec();
+    let reply = request(&app, "POST", "/Patient", &[], &body).await;
+    assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{}", reply.body);
+    assert!(reply.body.contains("binding"), "{}", reply.body);
+}
+
+#[tokio::test]
+async fn an_update_with_a_body_that_does_not_match_its_type_leaves_the_stored_one() {
+    let app = service();
+    request(&app, "POST", "/Patient", &[], &patient("pt-6", true)).await;
+    let body = br#"{"resourceType":"Patient","id":"pt-6","favourite":"tea"}"#.to_vec();
+    let reply = request(&app, "PUT", "/Patient/pt-6", &[("if-match", "W/\"1\"")], &body).await;
+    assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{}", reply.body);
+    let read = request(&app, "GET", "/Patient/pt-6", &[], &[]).await;
+    assert_eq!(read.status, StatusCode::OK);
+    assert_eq!(header(&read, "etag"), "W/\"1\"");
 }

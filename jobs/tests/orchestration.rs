@@ -188,7 +188,7 @@ async fn an_orchestrator_reports_the_kinds_it_runs() {
 #[tokio::test]
 async fn a_reindex_backfills_the_stored_parameters() {
     let store = seeded().await;
-    let definition = br#"{"resourceType":"SearchParameter","id":"sp-1","meta":{"versionId":"1","lastUpdated":"2026-09-06T04:00:00.000Z"},"url":"urn:p:band","status":"active","code":"band","base":["Patient"],"type":"string","expression":"Patient.name.family"}"#;
+    let definition = br#"{"resourceType":"SearchParameter","id":"sp-1","meta":{"versionId":"1","lastUpdated":"2026-09-06T04:00:00.000Z"},"name":"band","description":"a parameter","url":"urn:p:band","status":"active","code":"band","base":["Patient"],"type":"string","expression":"Patient.name.family"}"#;
     let envelope = fhir_core::ResourceEnvelope::parse(FhirVersion::R4, definition).unwrap();
     store.create(envelope).await.unwrap();
     let (jobs, _ticker) = queue();

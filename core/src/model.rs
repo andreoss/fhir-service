@@ -363,14 +363,14 @@ impl Model {
             }
             return;
         }
-        if self.nodes.contains_key(code) {
-            self.nested(code, at, item, findings);
-            self.coded(element, code, at, item, findings);
-            return;
-        }
         let backbone = format!("{node}.{}", element.base());
         if self.nodes.contains_key(&backbone) {
             self.nested(&backbone, at, item, findings);
+            return;
+        }
+        if self.nodes.contains_key(code) {
+            self.nested(code, at, item, findings);
+            self.coded(element, code, at, item, findings);
         }
     }
 

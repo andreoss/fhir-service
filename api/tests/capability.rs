@@ -203,6 +203,7 @@ async fn a_registered_parameter_reaches_the_statement() {
         "id": "patient-nickname",
         "url": "http://example.org/SearchParameter/patient-nickname",
         "name": "nickname",
+        "description": "a parameter",
         "status": "active",
         "code": "nickname",
         "base": ["Patient"],
