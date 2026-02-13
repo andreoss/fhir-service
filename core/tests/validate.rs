@@ -11,6 +11,7 @@ fn codes(report: &fhir_core::validate::Report) -> Vec<String> {
 
 fn asked<'a>(body: &'a serde_json::Value) -> Request<'a> {
     Request {
+        version: fhir_core::FhirVersion::R4,
         resource_type: None,
         id: None,
         profile: None,
@@ -115,4 +116,76 @@ fn a_mode_is_read_from_its_spelling() {
     assert_eq!("update".parse::<Mode>().unwrap(), Mode::Update);
     assert_eq!("delete".parse::<Mode>().unwrap(), Mode::Delete);
     assert!("nonesuch".parse::<Mode>().is_err());
+}
+
+#[test]
+fn a_missing_required_element_names_the_cardinality_rule() {
+    let body = json!({"resourceType": "Observation", "status": "final"});
+    let report = validate(&asked(&body));
+    assert!(report.has_errors());
+    let text = report.to_fhir_json_text();
+    assert!(text.contains("cardinality"), "{text}");
+    assert!(text.contains("Observation.code"), "{text}");
+}
+
+#[test]
+fn a_code_outside_a_bound_value_set_names_the_binding_rule() {
+    let body = json!({"resourceType": "Patient", "gender": "lady"});
+    let report = validate(&asked(&body));
+    assert!(report.has_errors());
+    let text = report.to_fhir_json_text();
+    assert!(text.contains("binding"), "{text}");
+}
+
+#[test]
+fn an_element_outside_the_definitions_names_the_structure_rule() {
+    let body = json!({"resourceType": "Patient", "favourite": "tea"});
+    let report = validate(&asked(&body));
+    assert!(report.has_errors());
+    assert!(report.to_fhir_json_text().contains("structure"), "not named");
+}
+
+#[test]
+fn a_malformed_narrative_names_the_narrative_rule() {
+    let body = json!({"resourceType": "Patient", "text": {"status": "invented", "div": "x"}});
+    let report = validate(&asked(&body));
+    assert!(report.has_errors());
+    assert!(report.to_fhir_json_text().contains("narrative"), "not named");
+}
+
+#[test]
+fn a_profile_of_another_type_names_the_profile_rule() {
+    let body = json!({
+        "resourceType": "Patient",
+        "meta": {"profile": ["http://hl7.org/fhir/StructureDefinition/Observation"]}
+    });
+    let mut request = asked(&body);
+    request.profile = Some("http://hl7.org/fhir/StructureDefinition/Observation");
+    let report = validate(&request);
+    assert!(report.has_errors());
+    assert!(report.to_fhir_json_text().contains("profile"), "not named");
+}
+
+#[test]
+fn a_profile_the_definitions_do_not_carry_is_reported_as_unchecked() {
+    let body = json!({
+        "resourceType": "Patient",
+        "meta": {"profile": ["http://example.test/StructureDefinition/local"]}
+    });
+    let mut request = asked(&body);
+    request.profile = Some("http://example.test/StructureDefinition/local");
+    let report = validate(&request);
+    assert!(!report.has_errors(), "{}", report.to_fhir_json_text());
+    assert!(report.to_fhir_json_text().contains("profile"), "not named");
+}
+
+#[test]
+fn a_resource_of_another_version_is_reported_against_the_version_asked_for() {
+    let body = json!({"resourceType": "EvidenceVariable", "status": "active", "characteristic": [{"definitionReference": {"reference": "Group/g-1"}}]});
+    let mut request = asked(&body);
+    request.version = fhir_core::FhirVersion::Stu3;
+    let report = validate(&request);
+    assert!(report.has_errors());
+    request.version = fhir_core::FhirVersion::R4;
+    assert!(!validate(&request).has_errors(), "{}", validate(&request).to_fhir_json_text());
 }

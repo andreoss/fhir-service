@@ -165,6 +165,7 @@ async fn validated(
         }
     };
     let report = validate(&ValidationRequest {
+        version: state.version,
         resource_type,
         id,
         profile: profile.as_deref(),

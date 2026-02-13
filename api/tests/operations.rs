@@ -895,3 +895,30 @@ async fn a_code_no_system_defines_is_compared_as_it_stands() {
         vec!["ob-s3".to_owned()]
     );
 }
+
+#[tokio::test]
+async fn validate_names_the_rule_that_failed() {
+    let app = service();
+    let body = br#"{"resourceType":"Observation","id":"ob-r1","status":"draft","gender":"x","text":{"status":"invented","div":"plain"}}"#;
+    let reply = request(&app, "POST", "/Observation/$validate?profile=http://x/one", body).await;
+    assert_eq!(reply.status, StatusCode::OK);
+    let named: Vec<String> = json(&reply)["issue"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .map(|issue| {
+            format!(
+                "{} {}",
+                issue["diagnostics"].as_str().unwrap_or_default(),
+                issue["expression"][0].as_str().unwrap_or_default()
+            )
+        })
+        .collect();
+    let text = named.join(" | ");
+    for rule in ["structure", "cardinality", "binding", "profile", "narrative"] {
+        assert!(text.contains(rule), "{rule} was not named in {text}");
+    }
+    assert!(text.contains("Observation.code"), "{text}");
+    assert!(text.contains("Observation.gender"), "{text}");
+}

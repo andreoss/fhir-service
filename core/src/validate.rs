@@ -1,6 +1,7 @@
 
+use crate::model::{Model, Rule};
 use crate::outcome::{IssueCode, IssueSeverity};
-use crate::{Error, ResourceId, ResourceType};
+use crate::{Error, FhirVersion, ResourceId, ResourceType};
 use serde_json::{Map, Value};
 use std::str::FromStr;
 
@@ -88,6 +89,7 @@ impl Report {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Request<'a> {
+    pub version: FhirVersion,
     pub resource_type: Option<ResourceType>,
     pub id: Option<ResourceId>,
     pub profile: Option<&'a str>,
@@ -105,10 +107,22 @@ pub fn validate(request: &Request) -> Report {
         return Report { issues };
     };
     structure(object, request, &mut issues);
+    definitions(request, &mut issues);
     profile(object, request, &mut issues);
     narrative(object, &mut issues);
     empty_elements(object, String::new(), &mut issues);
     informational(issues)
+}
+
+fn definitions(request: &Request, issues: &mut Vec<Issue>) {
+    for finding in Model::of(request.version).check(request.body) {
+        issues.push(Issue {
+            severity: IssueSeverity::Error,
+            code: IssueCode::Invalid,
+            diagnostics: format!("{}: {}", finding.rule, finding.detail),
+            expression: Some(finding.path),
+        });
+    }
 }
 
 fn informational(issues: Vec<Issue>) -> Report {
@@ -187,9 +201,29 @@ fn profile(object: &Map<String, Value>, request: &Request, issues: &mut Vec<Issu
         .unwrap_or(false);
     if !claimed {
         issues.push(error(
-            &format!("the resource does not claim profile {wanted:?}"),
+            &format!("{}: the resource does not claim profile {wanted:?}", Rule::Profile),
             Some("meta.profile"),
         ));
+        return;
+    }
+    let model = Model::of(request.version);
+    let held = object.get("resourceType").and_then(Value::as_str);
+    match (model.profiled(wanted), held) {
+        (Some(named), Some(held)) if named != held => issues.push(error(
+            &format!("{}: profile {wanted:?} constrains a {named}, not a {held}", Rule::Profile),
+            Some("meta.profile"),
+        )),
+        (Some(_), _) => {}
+        (None, _) => issues.push(Issue {
+            severity: IssueSeverity::Information,
+            code: IssueCode::Informational,
+            diagnostics: format!(
+                "{}: profile {wanted:?} is not among the definitions of {}, so its rules were not checked",
+                Rule::Profile,
+                request.version
+            ),
+            expression: Some("meta.profile".to_owned()),
+        }),
     }
 }
 
@@ -198,18 +232,24 @@ fn narrative(object: &Map<String, Value>, issues: &mut Vec<Issue>) {
     match text.get("status").and_then(Value::as_str) {
         Some(status) if NARRATIVE_STATUS.contains(&status) => {}
         Some(status) => issues.push(error(
-            &format!("narrative status {status:?} is not a known status"),
+            &format!("{}: status {status:?} is not a narrative status", Rule::Narrative),
             Some("text.status"),
         )),
-        None => issues.push(error("the narrative carries no status", Some("text.status"))),
+        None => issues.push(error(
+            &format!("{}: the narrative carries no status", Rule::Narrative),
+            Some("text.status"),
+        )),
     }
     match text.get("div").and_then(Value::as_str) {
         Some(div) if div.trim_start().starts_with("<div") && div.trim_end().ends_with("</div>") => {}
         Some(_) => issues.push(error(
-            "the narrative is not an xhtml division",
+            &format!("{}: the narrative is not an xhtml division", Rule::Narrative),
             Some("text.div"),
         )),
-        None => issues.push(error("the narrative carries no text", Some("text.div"))),
+        None => issues.push(error(
+            &format!("{}: the narrative carries no text", Rule::Narrative),
+            Some("text.div"),
+        )),
     }
 }
 
@@ -258,6 +298,7 @@ mod tests {
     fn an_unknown_resource_type_is_reported() {
         let body = serde_json::json!({"resourceType": "Nonesuch"});
         let report = validate(&Request {
+            version: FhirVersion::R4,
             resource_type: None,
             id: None,
             profile: None,
@@ -271,6 +312,7 @@ mod tests {
     fn a_body_that_is_not_an_object_is_reported() {
         let body = serde_json::json!("text");
         let report = validate(&Request {
+            version: FhirVersion::R4,
             resource_type: None,
             id: None,
             profile: None,
@@ -285,6 +327,7 @@ mod tests {
     fn an_addressed_id_the_body_lacks_is_reported() {
         let body = serde_json::json!({"resourceType": "Patient"});
         let report = validate(&Request {
+            version: FhirVersion::R4,
             resource_type: None,
             id: Some("pt-1".parse().unwrap()),
             profile: None,
@@ -301,6 +344,7 @@ mod tests {
             "name": [{"given": []}]
         });
         let report = validate(&Request {
+            version: FhirVersion::R4,
             resource_type: None,
             id: None,
             profile: None,
