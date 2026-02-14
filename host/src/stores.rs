@@ -38,7 +38,7 @@ pub async fn resources(config: &Config) -> Result<Arc<dyn ResourceStore>, Error>
         )),
         #[cfg(feature = "backend-relational")]
         Backend::Relational => {
-            let store = RelationalStore::connect_holding(&config.database_url, relational_namespace()?, config.connections).await?;
+            let store = RelationalStore::connect_waiting(&config.database_url, relational_namespace()?, config.connections, config.wait).await?;
             store.migrate().await?;
             Ok(Arc::new(store))
         }
@@ -67,7 +67,7 @@ pub async fn queue(config: &Config) -> Result<Option<Arc<dyn JobStore>>, Error> 
         Backend::Memory => Ok(None),
         #[cfg(feature = "backend-relational")]
         Backend::Relational => {
-            let store = RelationalStore::connect_holding(&config.database_url, relational_namespace()?, config.connections).await?;
+            let store = RelationalStore::connect_waiting(&config.database_url, relational_namespace()?, config.connections, config.wait).await?;
             Ok(Some(Arc::new(store.jobs())))
         }
         #[cfg(not(feature = "backend-relational"))]
@@ -84,7 +84,7 @@ pub async fn outputs(config: &Config) -> Result<Option<Arc<dyn BulkStore>>, Erro
         Backend::Memory => Ok(None),
         #[cfg(feature = "backend-relational")]
         Backend::Relational => {
-            let store = RelationalStore::connect_holding(&config.database_url, relational_namespace()?, config.connections).await?;
+            let store = RelationalStore::connect_waiting(&config.database_url, relational_namespace()?, config.connections, config.wait).await?;
             Ok(Some(Arc::new(store.outputs())))
         }
         #[cfg(not(feature = "backend-relational"))]

@@ -3,6 +3,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
+const DEFAULT_BUDGET: std::time::Duration = std::time::Duration::from_secs(30);
+
 pub struct Admission {
     _permit: OwnedSemaphorePermit,
     running: Arc<AtomicUsize>,
@@ -16,7 +18,9 @@ impl Drop for Admission {
 
 pub struct Throttle {
     permits: Arc<Semaphore>,
+    reserved: Arc<Semaphore>,
     limit: usize,
+    budget: std::time::Duration,
     running: Arc<AtomicUsize>,
     peak: AtomicUsize,
 }
@@ -26,10 +30,29 @@ impl Throttle {
         let limit = limit.max(1);
         Throttle {
             permits: Arc::new(Semaphore::new(limit)),
+            reserved: Arc::new(Semaphore::new(0)),
             limit,
+            budget: DEFAULT_BUDGET,
             running: Arc::new(AtomicUsize::new(0)),
             peak: AtomicUsize::new(0),
         }
+    }
+
+    pub fn waiting(self, budget: std::time::Duration) -> Throttle {
+        Throttle { budget, ..self }
+    }
+
+    pub fn reserving(self, places: usize) -> Throttle {
+        let places = places.min(self.limit.saturating_sub(1));
+        Throttle {
+            permits: Arc::new(Semaphore::new(self.limit - places)),
+            reserved: Arc::new(Semaphore::new(places)),
+            ..self
+        }
+    }
+
+    pub fn budget(&self) -> std::time::Duration {
+        self.budget
     }
 
     pub fn limit(&self) -> usize {
@@ -45,16 +68,41 @@ impl Throttle {
     }
 
     pub async fn admit(&self) -> Result<Admission, Error> {
-        let permit = Arc::clone(&self.permits)
-            .acquire_owned()
-            .await
-            .map_err(|_| Error::Internal("the store stopped admitting work".to_owned()))?;
+        self.taken(Arc::clone(&self.permits)).await
+    }
+
+    pub async fn admit_cheap(&self) -> Result<Admission, Error> {
+        match Arc::clone(&self.reserved).try_acquire_owned() {
+            Ok(permit) => Ok(self.held(permit)),
+            Err(_) => self.taken(Arc::clone(&self.permits)).await,
+        }
+    }
+
+    async fn taken(&self, lane: Arc<Semaphore>) -> Result<Admission, Error> {
+        let waited = tokio::time::timeout(self.budget, lane.acquire_owned()).await;
+        let permit = match waited {
+            Ok(Ok(permit)) => permit,
+            Ok(Err(_)) => {
+                return Err(Error::Internal(
+                    "the store stopped admitting work".to_owned(),
+                ))
+            }
+            Err(_) => {
+                return Err(Error::Unavailable(
+                    "the store is holding every connection it has".to_owned(),
+                ))
+            }
+        };
+        Ok(self.held(permit))
+    }
+
+    fn held(&self, permit: OwnedSemaphorePermit) -> Admission {
         let running = self.running.fetch_add(1, Ordering::SeqCst) + 1;
         self.peak.fetch_max(running, Ordering::SeqCst);
-        Ok(Admission {
+        Admission {
             _permit: permit,
             running: Arc::clone(&self.running),
-        })
+        }
     }
 }
 
@@ -95,6 +143,31 @@ mod tests {
         }
         assert_eq!(throttle.running(), 0);
         assert_eq!(throttle.limit(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_wait_longer_than_the_budget_is_refused_with_a_retry_hint() {
+        let throttle = Throttle::new(1).waiting(std::time::Duration::from_millis(20));
+        let _held = throttle.admit().await.unwrap();
+        let started = std::time::Instant::now();
+        let refused = throttle.admit().await;
+        assert!(started.elapsed() < std::time::Duration::from_millis(500));
+        assert!(matches!(refused, Err(Error::Unavailable(_))));
+        assert_eq!(refused.err().and_then(|error| error.retry_after()), Some(2));
+    }
+
+    #[tokio::test]
+    async fn a_cheap_read_is_not_queued_behind_stalled_callers() {
+        let throttle = Throttle::new(4)
+            .reserving(1)
+            .waiting(std::time::Duration::from_millis(20));
+        let mut stalled = Vec::new();
+        for _ in 0..3 {
+            stalled.push(throttle.admit().await.unwrap());
+        }
+        assert!(throttle.admit().await.is_err());
+        assert!(throttle.admit_cheap().await.is_ok());
+        drop(stalled);
     }
 
     #[tokio::test]

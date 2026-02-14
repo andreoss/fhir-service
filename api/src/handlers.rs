@@ -43,12 +43,18 @@ impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let outcome = self.0.to_operation_outcome();
         let status = StatusCode::from_u16(outcome.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-        (
+        let mut response = (
             status,
             [(header::CONTENT_TYPE, FHIR_JSON), (header::CACHE_CONTROL, "no-store")],
             outcome.to_fhir_json(),
         )
-            .into_response()
+            .into_response();
+        if let Some(seconds) = self.0.retry_after() {
+            if let Ok(value) = header::HeaderValue::from_str(&seconds.to_string()) {
+                response.headers_mut().insert(header::RETRY_AFTER, value);
+            }
+        }
+        response
     }
 }
 

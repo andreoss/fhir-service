@@ -36,6 +36,9 @@ pub fn classified(context: &str, error: sqlx::Error) -> Error {
             return Error::Duplicate(format!("{context}: the value is already held"));
         }
     }
+    if classify(&error) == Fault::Transient {
+        return Error::Unavailable(format!("{context}: the store is not answering"));
+    }
     Error::Internal(format!("{context}: {error}"))
 }
 
@@ -120,7 +123,22 @@ mod tests {
             Err::<u32, sqlx::Error>(transient())
         })
         .await;
-        assert!(matches!(failure, Err(Error::Internal(_))));
+        assert!(matches!(failure, Err(Error::Unavailable(_))));
         assert_eq!(seen.load(Ordering::SeqCst), 4);
+    }
+
+    #[test]
+    fn a_dependency_that_is_absent_is_not_a_defect_in_the_request() {
+        let refused = classified("starting a write", sqlx::Error::PoolTimedOut);
+        assert!(matches!(refused, Error::Unavailable(_)));
+        assert_eq!(refused.http_status(), 503);
+        assert_eq!(refused.retry_after(), Some(2));
+    }
+
+    #[test]
+    fn a_statement_the_engine_refuses_stays_a_defect_in_the_request() {
+        let refused = classified("reading", sqlx::Error::RowNotFound);
+        assert!(matches!(refused, Error::Internal(_)));
+        assert_eq!(refused.retry_after(), None);
     }
 }

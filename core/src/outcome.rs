@@ -36,6 +36,7 @@ pub enum IssueCode {
     Processing,
     Informational,
     BusinessRule,
+    Transient,
 }
 
 impl IssueCode {
@@ -54,6 +55,7 @@ impl IssueCode {
             IssueCode::Processing => "processing",
             IssueCode::Informational => "informational",
             IssueCode::BusinessRule => "business-rule",
+            IssueCode::Transient => "transient",
         }
     }
 
@@ -70,6 +72,7 @@ impl IssueCode {
             IssueCode::Processing => 500,
             IssueCode::Informational => 200,
             IssueCode::BusinessRule => 422,
+            IssueCode::Transient => 503,
         }
     }
 }

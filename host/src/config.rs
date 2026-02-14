@@ -39,6 +39,12 @@ pub const DEFAULT_STORE_CONNECTIONS: u32 = 16;
 
 pub const MOST_STORE_CONNECTIONS: u32 = 1_024;
 
+pub const ENV_STORE_WAIT: &str = "FHIR_STORE_WAIT_MILLIS";
+
+pub const DEFAULT_STORE_WAIT: std::time::Duration = std::time::Duration::from_millis(1_000);
+
+pub const MOST_STORE_WAIT_MILLIS: u64 = 60_000;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Backend {
     Memory,
@@ -81,6 +87,7 @@ pub struct Config {
     pub data_dir: Option<PathBuf>,
     pub terminology_dir: Option<PathBuf>,
     pub connections: u32,
+    pub wait: std::time::Duration,
     pub authorization: Option<Authorization>,
     pub keys: Option<KeySet>,
     pub scrape: Scrape,
@@ -195,6 +202,20 @@ impl Config {
             None => DEFAULT_STORE_CONNECTIONS,
         };
 
+        let wait = match get(env, ENV_STORE_WAIT) {
+            Some(raw) => match raw.parse::<u64>() {
+                Ok(held) if (1..=MOST_STORE_WAIT_MILLIS).contains(&held) => {
+                    std::time::Duration::from_millis(held)
+                }
+                _ => {
+                    return Err(Error::Config(format!(
+                        "invalid {ENV_STORE_WAIT} {raw:?}; expected 1 to {MOST_STORE_WAIT_MILLIS}"
+                    )))
+                }
+            },
+            None => DEFAULT_STORE_WAIT,
+        };
+
         match backend {
             Backend::Memory => {}
             Backend::Relational => {
@@ -222,6 +243,7 @@ impl Config {
             data_dir,
             terminology_dir,
             connections,
+            wait,
             authorization: authorization(env)?,
             keys: keys(env)?,
             scrape: scrape(env)?,
@@ -312,6 +334,28 @@ mod tests {
 
         env.insert(ENV_STORE_CONNECTIONS.to_owned(), "1".to_owned());
         assert_eq!(Config::parse(&env).expect("one connection parses").entries(), 1);
+    }
+
+    #[test]
+    fn the_connection_wait_is_bounded_and_configurable() {
+        let mut env = env_empty();
+        let config = Config::parse(&env).expect("defaults must parse");
+        assert_eq!(config.wait, DEFAULT_STORE_WAIT);
+        assert!(config.wait <= std::time::Duration::from_secs(5));
+
+        env.insert(ENV_STORE_WAIT.to_owned(), "250".to_owned());
+        let brief = Config::parse(&env).expect("a named wait must parse");
+        assert_eq!(brief.wait, std::time::Duration::from_millis(250));
+    }
+
+    #[test]
+    fn a_wait_outside_the_range_fails_fast() {
+        let mut env = env_empty();
+        for raw in ["0", "none", "-1", "600000"] {
+            env.insert(ENV_STORE_WAIT.to_owned(), raw.to_owned());
+            let error = Config::parse(&env).expect_err("an unusable wait must fail");
+            assert!(error.to_string().contains(ENV_STORE_WAIT), "{raw}");
+        }
     }
 
     #[test]

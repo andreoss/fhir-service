@@ -323,36 +323,36 @@ async fn unsupported_method_returns_outcome_405() {
     assert_eq!(value["issue"][0]["code"], "not-allowed");
 }
 
-struct FailingStore;
+struct FailingStore(fn() -> Error);
 
 #[async_trait]
 impl ResourceStore for FailingStore {
     async fn create(&self, _: ResourceEnvelope) -> Result<ResourceEnvelope, Error> {
-        Err(Error::Internal("boom".to_owned()))
+        Err((self.0)())
     }
     async fn read(&self, _: &ResourceId) -> Result<ResourceEnvelope, Error> {
-        Err(Error::Internal("boom".to_owned()))
+        Err((self.0)())
     }
     async fn vread(&self, _: &ResourceId, _: &VersionId) -> Result<ResourceEnvelope, Error> {
-        Err(Error::Internal("boom".to_owned()))
+        Err((self.0)())
     }
     async fn update(&self, _: ResourceEnvelope, _: Option<&VersionId>) -> Result<ResourceEnvelope, Error> {
-        Err(Error::Internal("boom".to_owned()))
+        Err((self.0)())
     }
     async fn search(&self, _: &SearchQuery) -> Result<SearchPage, Error> {
-        Err(Error::Internal("boom".to_owned()))
+        Err((self.0)())
     }
     async fn delete(&self, _: &ResourceId) -> Result<ResourceEnvelope, Error> {
-        Err(Error::Internal("boom".to_owned()))
+        Err((self.0)())
     }
     async fn hard_delete(&self, _: &ResourceId) -> Result<(), Error> {
-        Err(Error::Internal("boom".to_owned()))
+        Err((self.0)())
     }
     async fn purge_history(&self, _: &ResourceId) -> Result<usize, Error> {
-        Err(Error::Internal("boom".to_owned()))
+        Err((self.0)())
     }
     async fn history(&self, _: &HistoryScope, _: &HistoryQuery) -> Result<HistoryPage, Error> {
-        Err(Error::Internal("boom".to_owned()))
+        Err((self.0)())
     }
     async fn health(&self) -> Result<(), Error> {
         Ok(())
@@ -361,7 +361,7 @@ impl ResourceStore for FailingStore {
 
 #[tokio::test]
 async fn internal_store_failure_is_a_500_outcome_without_leaks() {
-    let app = Service::new(Arc::new(FailingStore), FhirVersion::R4, vec![]);
+    let app = Service::new(Arc::new(FailingStore(|| Error::Internal("boom".to_owned()))), FhirVersion::R4, vec![]);
     let reply = request(&app, "GET", "/Patient/boom", &[], &[]).await;
     assert_eq!(reply.status, StatusCode::INTERNAL_SERVER_ERROR);
     assert_eq!(header(&reply, "content-type"), "application/fhir+json");
@@ -2159,4 +2159,16 @@ async fn an_update_with_a_body_that_does_not_match_its_type_leaves_the_stored_on
     let read = request(&app, "GET", "/Patient/pt-6", &[], &[]).await;
     assert_eq!(read.status, StatusCode::OK);
     assert_eq!(header(&read, "etag"), "W/\"1\"");
+}
+
+#[tokio::test]
+async fn a_store_that_cannot_answer_is_a_503_with_a_retry_hint() {
+    let app = Service::new(Arc::new(FailingStore(|| Error::Unavailable("the store is busy".to_owned()))), FhirVersion::R4, vec![]);
+    let reply = request(&app, "GET", "/Patient/waiting", &[], &[]).await;
+    assert_eq!(reply.status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(header(&reply, "retry-after"), "2");
+    let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
+    assert_eq!(value["issue"][0]["code"], "transient");
+    let detail = value["issue"][0]["diagnostics"].as_str().unwrap();
+    assert!(detail.contains("may be repeated"), "{detail}");
 }

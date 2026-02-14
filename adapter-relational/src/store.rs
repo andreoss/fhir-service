@@ -21,6 +21,16 @@ use std::sync::{Arc, RwLock};
 
 const POOL_SIZE: u32 = 16;
 const PROBE: std::time::Duration = std::time::Duration::from_secs(2);
+const DEFAULT_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
+
+const RESERVED_SHARE: u32 = 4;
+
+fn admitting(connections: u32, wait: std::time::Duration) -> Throttle {
+    let reserved = (connections / RESERVED_SHARE).max(1);
+    Throttle::new(connections as usize)
+        .reserving(reserved as usize)
+        .waiting(wait)
+}
 
 const INDEX_TABLES: [&str; 8] = [
     "index_token",
@@ -124,13 +134,23 @@ impl RelationalStore {
         namespace: Namespace,
         connections: u32,
     ) -> Result<RelationalStore, Error> {
+        RelationalStore::connect_waiting(url, namespace, connections, DEFAULT_WAIT).await
+    }
+
+    pub async fn connect_waiting(
+        url: &str,
+        namespace: Namespace,
+        connections: u32,
+        wait: std::time::Duration,
+    ) -> Result<RelationalStore, Error> {
+        let held = connections.max(1);
         let pool = sqlx::postgres::PgPoolOptions::new()
-            .max_connections(connections.max(1))
-            .acquire_timeout(std::time::Duration::from_secs(10))
+            .max_connections(held)
+            .acquire_timeout(wait)
             .connect(url)
             .await
             .map_err(|error| Error::Config(format!("the store is not reachable: {error}")))?;
-        Ok(RelationalStore::new(pool, namespace))
+        Ok(RelationalStore::new(pool, namespace).with_throttle(admitting(held, wait)))
     }
 
     pub fn connect_later(url: &str, namespace: Namespace) -> RelationalStore {
@@ -174,6 +194,10 @@ impl RelationalStore {
 
     pub(crate) async fn admit(&self) -> Result<Admission, Error> {
         self.throttle.admit().await
+    }
+
+    pub(crate) async fn admit_cheap(&self) -> Result<Admission, Error> {
+        self.throttle.admit_cheap().await
     }
 
     pub fn namespace(&self) -> &Namespace {
@@ -797,7 +821,7 @@ impl ResourceStore for RelationalStore {
     }
 
     async fn read(&self, id: &ResourceId) -> Result<ResourceEnvelope, Error> {
-        let _place = self.admit().await?;
+        let _place = self.admit_cheap().await?;
         let statement = format!(
             "select {COLUMNS} from {} where resource_id = $1 and is_current",
             self.table("resource")
@@ -811,7 +835,7 @@ impl ResourceStore for RelationalStore {
     }
 
     async fn vread(&self, id: &ResourceId, version: &VersionId) -> Result<ResourceEnvelope, Error> {
-        let _place = self.admit().await?;
+        let _place = self.admit_cheap().await?;
         let statement = format!(
             "select {COLUMNS} from {} where resource_id = $1 and version_number = $2",
             self.table("resource")

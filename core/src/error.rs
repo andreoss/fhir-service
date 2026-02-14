@@ -25,9 +25,19 @@ pub enum Error {
     Forbidden(String),
     NoMatch(String),
     Unauthenticated(String),
+    Unavailable(String),
 }
 
+pub const RETRY_SECONDS: u32 = 2;
+
 impl Error {
+    pub fn retry_after(&self) -> Option<u32> {
+        match self {
+            Error::Unavailable(_) => Some(RETRY_SECONDS),
+            _ => None,
+        }
+    }
+
     pub fn http_status(&self) -> u16 {
         self.to_operation_outcome().http_status()
     }
@@ -97,6 +107,10 @@ impl Error {
             Error::NoMatch(message) => {
                 OperationOutcome::error(IssueCode::BusinessRule, message.clone())
             }
+            Error::Unavailable(message) => OperationOutcome::error(
+                IssueCode::Transient,
+                format!("{message}; the request may be repeated in {RETRY_SECONDS} seconds"),
+            ),
         }
     }
 }
@@ -126,6 +140,7 @@ impl fmt::Display for Error {
             Error::Forbidden(message) => write!(f, "out of scope: {message}"),
             Error::Unauthenticated(message) => write!(f, "not authenticated: {message}"),
             Error::NoMatch(message) => write!(f, "{message}"),
+            Error::Unavailable(message) => write!(f, "temporarily unavailable: {message}"),
         }
     }
 }
@@ -262,6 +277,7 @@ mod tests {
             Error::Forbidden("X".to_owned()),
             Error::NoMatch("X".to_owned()),
             Error::Unauthenticated("X".to_owned()),
+            Error::Unavailable("X".to_owned()),
         ];
         for error in &held {
             assert!(!error.to_string().trim().is_empty(), "{error:?}");
@@ -271,5 +287,24 @@ mod tests {
                 "{error:?}"
             );
         }
+    }
+}
+#[cfg(test)]
+mod budget {
+    use super::*;
+    use crate::IssueCode;
+
+    #[test]
+    fn an_absent_dependency_is_not_a_defect_in_the_request() {
+        let error = Error::Unavailable("the store is busy".to_owned());
+        assert_eq!(error.http_status(), 503);
+        assert_eq!(error.to_operation_outcome().code, IssueCode::Transient);
+    }
+
+    #[test]
+    fn an_absent_dependency_says_when_to_come_back() {
+        let error = Error::Unavailable("the store is busy".to_owned());
+        assert_eq!(error.retry_after(), Some(RETRY_SECONDS));
+        assert_eq!(Error::NotFound.retry_after(), None);
     }
 }
