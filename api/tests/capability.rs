@@ -584,3 +584,46 @@ async fn a_statement_lists_only_the_types_its_version_defines() {
         );
     }
 }
+
+#[tokio::test]
+async fn the_statement_names_the_software_it_describes() {
+    for version in [FhirVersion::Stu3, FhirVersion::R4, FhirVersion::R4b, FhirVersion::R5] {
+        let held = statement(&service(version)).await;
+        assert!(
+            held["software"]["name"].as_str().is_some_and(|name| !name.is_empty()),
+            "{version} names no software"
+        );
+        assert!(held["software"]["version"].as_str().is_some());
+    }
+}
+
+#[tokio::test]
+async fn a_statement_carries_only_the_elements_its_version_defines() {
+    for version in [FhirVersion::Stu3, FhirVersion::R4, FhirVersion::R4b] {
+        let held = statement(&service(version)).await;
+        let first = &held["rest"][0]["resource"][0];
+        assert!(first["conditionalPatch"].is_null(), "{version} claims a later element");
+    }
+    let held = statement(&service(FhirVersion::R5)).await;
+    assert!(held["rest"][0]["resource"][0]["conditionalPatch"].is_boolean());
+}
+
+#[tokio::test]
+async fn the_earliest_version_shapes_its_statement_as_that_version_defines_it() {
+    let held = statement(&service(FhirVersion::Stu3)).await;
+    assert_eq!(held["acceptUnknown"], "no");
+    assert!(
+        held["rest"][0]["resource"][0]["operation"].is_null(),
+        "operations are declared at the system level"
+    );
+    let system = &held["rest"][0]["operation"][0];
+    assert!(system["name"].as_str().is_some());
+    assert!(
+        system["definition"]["reference"].as_str().is_some(),
+        "the definition is a reference in that version"
+    );
+    let later = statement(&service(FhirVersion::R4)).await;
+    assert!(later["acceptUnknown"].is_null());
+    assert!(later["rest"][0]["operation"][0]["definition"].is_string());
+    assert!(later["rest"][0]["resource"][0]["operation"].is_array());
+}

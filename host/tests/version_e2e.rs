@@ -125,3 +125,29 @@ fn live_a_body_that_does_not_match_its_type_is_refused_by_every_version() {
         assert!(validated.body.contains("cardinality"), "{version}: {}", validated.body);
     }
 }
+
+#[test]
+fn live_each_version_emits_the_shapes_that_version_defines() {
+    for (version, _) in VERSIONS {
+        let (child, port) = spawn_with(&[("FHIR_VERSION", version)]);
+        let created = request(port, "POST", "/Patient", &[], &patient("pv-1"));
+        let statement = request(port, "GET", "/metadata", &[], &[]);
+        let history = request(port, "GET", "/Patient/_history", &[], &[]);
+        stop(child);
+        assert_eq!(created.status, 201, "{version}: {}", created.body);
+        let held = json(&statement.body);
+        let profile = &held["rest"][0]["resource"][0]["profile"];
+        let entry = &json(&history.body)["entry"][0];
+        match version {
+            "STU3" => {
+                assert!(profile["reference"].as_str().is_some(), "{version}: {profile}");
+                assert!(entry["response"].is_null(), "{version}: {entry}");
+            }
+            _ => {
+                assert!(profile.as_str().is_some(), "{version}: {profile}");
+                assert!(entry["response"]["status"].as_str().is_some(), "{version}");
+            }
+        }
+        assert!(entry["request"]["method"].as_str().is_some(), "{version}");
+    }
+}

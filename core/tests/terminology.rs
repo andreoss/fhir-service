@@ -1,5 +1,5 @@
 use fhir_core::terminology::{
-    ancestors, concepts, descendants, expand, expansion_json, ExpansionRequest,
+    ancestors, concepts, descendants, expand, expansion_json, ExpansionRequest, Stamp,
 };
 use serde_json::json;
 
@@ -135,7 +135,7 @@ fn a_display_language_and_designations_are_honoured() {
     let expansion = expand(&set(), &systems, &request).unwrap();
     let top = expansion.concepts.iter().find(|held| held.code == "top").unwrap();
     assert_eq!(top.display.as_deref(), Some("Boven"));
-    let rendered = expansion_json(&expansion, &request);
+    let rendered = expansion_json(&expansion, &request, &stamp());
     assert_eq!(rendered["expansion"]["contains"][0]["designation"][0]["value"], "Boven");
     assert_eq!(rendered["resourceType"], "ValueSet");
     assert_eq!(rendered["expansion"]["total"], 4);
@@ -189,4 +189,31 @@ fn a_composed_subtree_and_an_exclusion_are_honoured() {
 fn a_set_composing_an_unknown_system_is_refused() {
     let expansion = expand(&set(), &[], &asked());
     assert!(expansion.is_err());
+}
+
+#[test]
+fn an_expansion_is_stamped_and_carries_no_empty_element() {
+    let expansion = expand(&set(), &[system()], &asked()).unwrap();
+    let rendered = expansion_json(&expansion, &asked(), &stamp());
+    assert_eq!(
+        rendered["expansion"]["timestamp"],
+        "2026-09-07T00:00:00.000Z"
+    );
+    assert_eq!(
+        rendered["expansion"]["identifier"],
+        "urn:uuid:00000000-0000-4000-8000-000000000000"
+    );
+    assert!(rendered["expansion"]["parameter"].is_null());
+    let mut request = asked();
+    request.active_only = true;
+    let held = expand(&set(), &[system()], &request).unwrap();
+    let rendered = expansion_json(&held, &request, &stamp());
+    assert!(rendered["expansion"]["parameter"].is_array());
+}
+
+fn stamp() -> Stamp {
+    Stamp {
+        identifier: "urn:uuid:00000000-0000-4000-8000-000000000000".to_owned(),
+        timestamp: "2026-09-07T00:00:00.000Z".to_owned(),
+    }
 }

@@ -591,7 +591,7 @@ async fn respond_history(
         Some(raw) if !raw.is_empty() => format!("{base}{path}?{raw}"),
         _ => format!("{base}{path}"),
     };
-    let body = history_bundle(&base, &self_url, &page, request.summary);
+    let body = history_bundle(&base, &self_url, &page, request.summary, state.version);
     Ok((
         StatusCode::OK,
         [(header::CONTENT_TYPE, FHIR_JSON), (header::CACHE_CONTROL, "no-store")],

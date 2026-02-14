@@ -4,7 +4,7 @@ use axum::http::header::{self, HeaderMap};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use fhir_core::convert::{convert, Conversion, InputType};
-use fhir_core::terminology::{expansion_json, ExpansionRequest};
+use fhir_core::terminology::{expansion_json, ExpansionRequest, Stamp};
 use fhir_core::validate::{validate, Mode, Request as ValidationRequest};
 use fhir_core::search::{Compartment, Filter};
 use fhir_core::{Error, ResourceId, ResourceType};
@@ -615,7 +615,11 @@ async fn expanded(state: &AppState, asked: &[(String, String)]) -> Result<Respon
         value_set_version: held("valueSetVersion"),
     };
     let expansion = state.terminology.expand(&url, &request).await?;
-    let body = expansion_json(&expansion, &request);
+    let stamp = Stamp {
+        identifier: format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+        timestamp: fhir_store::system_clock()().as_str().to_owned(),
+    };
+    let body = expansion_json(&expansion, &request, &stamp);
     Ok(rendered(
         serde_json::to_vec(&body).map_err(|error| Error::Internal(error.to_string()))?,
     ))

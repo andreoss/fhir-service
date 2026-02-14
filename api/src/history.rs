@@ -1,4 +1,4 @@
-use fhir_core::{Error, InstantPeriod, ResourceEnvelope, WeakEtag};
+use fhir_core::{Error, FhirVersion, InstantPeriod, ResourceEnvelope, WeakEtag};
 use fhir_store::{HistoryOrder, HistoryPage, HistoryQuery};
 use serde_json::{Map, Value};
 use uuid::Uuid;
@@ -68,7 +68,13 @@ impl HistoryRequest {
     }
 }
 
-pub fn history_bundle(base: &str, self_url: &str, page: &HistoryPage, summary: Summary) -> Vec<u8> {
+pub fn history_bundle(
+    base: &str,
+    self_url: &str,
+    page: &HistoryPage,
+    summary: Summary,
+    version: FhirVersion,
+) -> Vec<u8> {
     let mut links = vec![serde_json::json!({ "relation": "self", "url": self_url })];
     let consumed = page.offset + page.entries.len();
     if consumed < page.total && !page.entries.is_empty() {
@@ -87,7 +93,7 @@ pub fn history_bundle(base: &str, self_url: &str, page: &HistoryPage, summary: S
         let entries: Vec<Value> = page
             .entries
             .iter()
-            .map(|envelope| entry(base, envelope, summary))
+            .map(|envelope| entry(base, envelope, summary, version))
             .collect();
         bundle.insert("entry".to_owned(), Value::Array(entries));
     }
@@ -101,7 +107,12 @@ fn period(raw: Option<&str>, name: &str) -> Result<Option<InstantPeriod>, Error>
     }
 }
 
-fn entry(base: &str, envelope: &ResourceEnvelope, summary: Summary) -> Value {
+fn entry(
+    base: &str,
+    envelope: &ResourceEnvelope,
+    summary: Summary,
+    version: FhirVersion,
+) -> Value {
     let resource_type = envelope.resource_type().as_str().to_owned();
     let id = envelope.id().as_str().to_owned();
     let (method, url, status) = if envelope.is_deleted() {
@@ -117,14 +128,16 @@ fn entry(base: &str, envelope: &ResourceEnvelope, summary: Summary) -> Value {
         entry.insert("resource".to_owned(), resource);
     }
     entry.insert("request".to_owned(), serde_json::json!({ "method": method, "url": url }));
-    entry.insert(
-        "response".to_owned(),
-        serde_json::json!({
-            "status": status,
-            "etag": WeakEtag::from(envelope.version_id()).to_string(),
-            "lastModified": envelope.last_updated().as_str(),
-        }),
-    );
+    if !matches!(version, FhirVersion::Stu3) {
+        entry.insert(
+            "response".to_owned(),
+            serde_json::json!({
+                "status": status,
+                "etag": WeakEtag::from(envelope.version_id()).to_string(),
+                "lastModified": envelope.last_updated().as_str(),
+            }),
+        );
+    }
     Value::Object(entry)
 }
 

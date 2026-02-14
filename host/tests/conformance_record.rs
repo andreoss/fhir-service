@@ -129,3 +129,45 @@ fn the_suites_that_remain_unproven_are_named() {
         assert!(held.contains(version), "{version} is not named");
     }
 }
+
+fn kept(version: &str) -> Value {
+    let path = folder()
+        .join("external")
+        .join(format!("{}.json", version.to_ascii_lowercase()));
+    let text = std::fs::read_to_string(&path)
+        .unwrap_or_else(|_| panic!("{version} has no report from outside this repository"));
+    serde_json::from_str(&text).expect("the report is json")
+}
+
+fn severities(report: &Value, wanted: &[&str]) -> Vec<String> {
+    report["entry"]
+        .as_array()
+        .map(|entries| entries.as_slice())
+        .unwrap_or_default()
+        .iter()
+        .flat_map(|entry| {
+            entry["resource"]["issue"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+        })
+        .filter(|issue| {
+            issue["severity"]
+                .as_str()
+                .is_some_and(|held| wanted.contains(&held))
+        })
+        .map(|issue| issue["details"]["text"].as_str().unwrap_or_default().to_owned())
+        .collect()
+}
+
+#[test]
+fn the_report_from_outside_names_every_version_and_carries_no_error() {
+    for version in VERSIONS {
+        let report = kept(version);
+        assert_eq!(report["resourceType"], "Bundle", "{version}");
+        let judged = report["entry"].as_array().map(Vec::len).unwrap_or_default();
+        assert!(judged > 1, "{version} was judged on {judged} answers");
+        let failed = severities(&report, &["error", "fatal"]);
+        assert!(failed.is_empty(), "{version}: {failed:?}");
+    }
+}

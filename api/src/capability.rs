@@ -1,7 +1,7 @@
 use axum::extract::State;
 use axum::http::header::{self, HeaderMap};
 use axum::response::{IntoResponse, Response};
-use fhir_core::ResourceType;
+use fhir_core::{FhirVersion, ResourceType};
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -11,6 +11,8 @@ use crate::handlers::AppError;
 const FHIR_JSON: &str = "application/fhir+json";
 
 pub const BUILD: &str = env!("CARGO_PKG_VERSION");
+
+pub const SOFTWARE: &str = "specification server";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Level {
@@ -280,27 +282,58 @@ fn resource_entry(
     let applying: Vec<Value> = operations
         .iter()
         .filter(|operation| operation.applies(&name))
-        .map(|operation| {
-            json!({"name": operation.code, "definition": operation.definition(base)})
-        })
+        .map(|operation| declared(operation, state.version, base))
         .collect();
-    json!({
+    let mut entry = json!({
         "type": name,
-        "profile": format!("http://hl7.org/fhir/StructureDefinition/{name}"),
+        "profile": profile_of(&name, state.version),
         "interaction": coded(&codes),
         "versioning": "versioned",
         "readHistory": true,
         "updateCreate": true,
         "conditionalCreate": surface.conditional.contains(&Verb::Post),
         "conditionalUpdate": surface.conditional.contains(&Verb::Put),
-        "conditionalPatch": surface.conditional.contains(&Verb::Patch),
         "conditionalDelete": if surface.conditional.contains(&Verb::Delete) { "single" } else { "not-supported" },
         "referencePolicy": ["literal", "local"],
         "searchInclude": includes,
         "searchRevInclude": reverses.into_iter().collect::<Vec<String>>(),
         "searchParam": parameter_entries(state, kind),
-        "operation": applying,
-    })
+    });
+    let held = entry.as_object_mut().expect("the entry is an object");
+    if patch_is_conditional(state.version) {
+        held.insert(
+            "conditionalPatch".to_owned(),
+            json!(surface.conditional.contains(&Verb::Patch)),
+        );
+    }
+    if operations_are_typed(state.version) {
+        held.insert("operation".to_owned(), Value::Array(applying));
+    }
+    entry
+}
+
+fn profile_of(name: &str, version: FhirVersion) -> Value {
+    let url = format!("http://hl7.org/fhir/StructureDefinition/{name}");
+    match version {
+        FhirVersion::Stu3 => json!({"reference": url}),
+        _ => json!(url),
+    }
+}
+
+fn patch_is_conditional(version: FhirVersion) -> bool {
+    matches!(version, FhirVersion::R5)
+}
+
+fn operations_are_typed(version: FhirVersion) -> bool {
+    !matches!(version, FhirVersion::Stu3)
+}
+
+fn declared(operation: &Operation, version: FhirVersion, base: &str) -> Value {
+    let url = operation.definition(base);
+    match version {
+        FhirVersion::Stu3 => json!({"name": operation.code, "definition": {"reference": url}}),
+        _ => json!({"name": operation.code, "definition": url}),
+    }
 }
 
 pub fn statement(state: &AppState, base: &str) -> Value {
@@ -313,8 +346,10 @@ pub fn statement(state: &AppState, base: &str) -> Value {
         .collect();
     let system: Vec<Value> = operations
         .iter()
-        .filter(|operation| operation.levels.contains(&Level::System))
-        .map(|operation| json!({"name": operation.code, "definition": operation.definition(base)}))
+        .filter(|operation| {
+            operation.levels.contains(&Level::System) || !operations_are_typed(state.version)
+        })
+        .map(|operation| declared(operation, state.version, base))
         .collect();
     let mut rest = Map::new();
     rest.insert("mode".to_owned(), json!("server"));
@@ -325,18 +360,25 @@ pub fn statement(state: &AppState, base: &str) -> Value {
     rest.insert("searchParam".to_owned(), common_entries());
     rest.insert("operation".to_owned(), Value::Array(system));
     rest.insert("resource".to_owned(), Value::Array(resources));
-    json!({
+    let mut held = json!({
         "resourceType": "CapabilityStatement",
         "status": "active",
         "date": fhir_store::system_clock()().as_str(),
         "kind": "instance",
-        "software": {"version": BUILD},
+        "software": {"name": SOFTWARE, "version": BUILD},
         "implementation": {"description": "conformance of the running instance", "url": base},
         "fhirVersion": state.version.release(),
         "format": ["json", FHIR_JSON],
         "patchFormat": ["application/json-patch+json", FHIR_JSON],
         "rest": [Value::Object(rest)],
-    })
+    });
+    if !operations_are_typed(state.version) {
+        held
+            .as_object_mut()
+            .expect("the statement is an object")
+            .insert("acceptUnknown".to_owned(), json!("no"));
+    }
+    held
 }
 
 pub(crate) fn base_of(headers: &HeaderMap) -> String {

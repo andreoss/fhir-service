@@ -35,6 +35,12 @@ pub struct ExpansionRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Stamp {
+    pub identifier: String,
+    pub timestamp: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Expansion {
     pub id: Option<String>,
     pub url: Option<String>,
@@ -409,7 +415,11 @@ fn counted(held: &[Coding]) -> usize {
         .sum()
 }
 
-pub fn expansion_json(expansion: &Expansion, request: &ExpansionRequest) -> Value {
+pub fn expansion_json(
+    expansion: &Expansion,
+    request: &ExpansionRequest,
+    stamp: &Stamp,
+) -> Value {
     let mut body = Map::new();
     body.insert(
         "resourceType".to_owned(),
@@ -427,9 +437,14 @@ pub fn expansion_json(expansion: &Expansion, request: &ExpansionRequest) -> Valu
         }
     }
     let mut held = Map::new();
+    held.insert("identifier".to_owned(), Value::String(stamp.identifier.clone()));
+    held.insert("timestamp".to_owned(), Value::String(stamp.timestamp.clone()));
     held.insert("total".to_owned(), Value::from(expansion.total));
     held.insert("offset".to_owned(), Value::from(expansion.offset));
-    held.insert("parameter".to_owned(), Value::Array(asked(request)));
+    let listed = asked(request);
+    if !listed.is_empty() {
+        held.insert("parameter".to_owned(), Value::Array(listed));
+    }
     held.insert(
         "contains".to_owned(),
         Value::Array(expansion.concepts.iter().map(contained).collect()),
