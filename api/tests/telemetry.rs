@@ -19,7 +19,7 @@ fn service(sink: &Held) -> Service {
     }));
     let dependencies = vec![Dependency {
         name: "memory-store",
-        check: Arc::new(|| Ok(())),
+        check: Arc::new(|| Box::pin(async { Ok(()) })),
     }];
     let ticker = StepTicker::starting_at(0).ticker();
     Service::new(Arc::new(store), FhirVersion::R4, dependencies)

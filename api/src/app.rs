@@ -41,10 +41,24 @@ pub struct AppState {
     pub guard: Option<Arc<crate::access::Guard>>,
 }
 
+pub type Asked = std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>;
+
 #[derive(Clone)]
 pub struct Dependency {
     pub name: &'static str,
-    pub check: Arc<dyn Fn() -> Result<(), String> + Send + Sync>,
+    pub check: Arc<dyn Fn() -> Asked + Send + Sync>,
+}
+
+impl Dependency {
+    pub fn of_store(name: &'static str, store: Arc<dyn ResourceStore>) -> Dependency {
+        Dependency {
+            name,
+            check: Arc::new(move || {
+                let store = Arc::clone(&store);
+                Box::pin(async move { store.health().await.map_err(|error| error.to_string()) })
+            }),
+        }
+    }
 }
 
 #[derive(Clone)]

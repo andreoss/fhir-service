@@ -129,7 +129,7 @@ impl fhir_store::ResourceStore for Refusing {
         self.inner.reindex(specs).await
     }
 
-    fn health(&self) -> Result<(), fhir_core::Error> {
-        self.inner.health()
+    async fn health(&self) -> Result<(), fhir_core::Error> {
+        self.inner.health().await
     }
 }

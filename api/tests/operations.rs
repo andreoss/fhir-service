@@ -18,7 +18,7 @@ fn service() -> Service {
     }));
     let dependencies = vec![Dependency {
         name: "memory-store",
-        check: Arc::new(|| Ok(())),
+        check: Arc::new(|| Box::pin(async { Ok(()) })),
     }];
     Service::new(Arc::new(store), FhirVersion::R4, dependencies)
 }

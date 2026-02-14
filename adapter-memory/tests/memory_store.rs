@@ -64,7 +64,7 @@ fn version(value: &str) -> VersionId {
 #[tokio::test]
 async fn health_reports_alive() {
     let store = store();
-    assert_eq!(store.health(), Ok(()));
+    assert_eq!(store.health().await, Ok(()));
 }
 
 #[tokio::test]

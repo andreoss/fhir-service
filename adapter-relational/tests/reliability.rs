@@ -109,3 +109,23 @@ async fn a_schema_that_lacks_only_tuning_is_still_served() {
     assert_eq!(migrator.version().await.unwrap(), Some(latest()));
     support::drop_namespace(&pool, &namespace).await;
 }
+
+#[tokio::test]
+async fn health_asks_the_engine_not_the_handle() {
+    let store = fhir_adapter_relational::RelationalStore::connect_later(
+        "postgres://absent:absent@127.0.0.1:1/absent",
+        support::namespace("unreachable"),
+    );
+    assert!(!store.pool().is_closed());
+    assert!(
+        store.health().await.is_err(),
+        "an engine that answers nothing is not healthy"
+    );
+}
+
+#[tokio::test]
+async fn health_answers_when_the_engine_answers() {
+    let Some((store, pool, namespace)) = support::fresh("healthy").await else { return };
+    assert!(store.health().await.is_ok());
+    support::drop_namespace(&pool, &namespace).await;
+}

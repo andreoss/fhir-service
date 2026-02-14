@@ -22,14 +22,7 @@ async fn main() {
 async fn run() -> Result<(), Error> {
     let config = fhir_host::Config::from_env()?;
     let (store, jobs, outputs) = fhir_host::stores::open(&config).await?;
-    let store_dependency = {
-        let store = Arc::clone(&store);
-        Arc::new(move || store.health().map_err(|error| error.to_string()))
-    };
-    let dependencies = vec![Dependency {
-        name: "store",
-        check: store_dependency,
-    }];
+    let dependencies = vec![Dependency::of_store("store", Arc::clone(&store))];
     let mut service = Service::started(Arc::clone(&store), config.version, dependencies)
         .await?
         .with_entries(config.entries());

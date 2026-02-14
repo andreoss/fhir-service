@@ -521,8 +521,8 @@ impl ResourceStore for Probe {
         }))
     }
 
-    fn health(&self) -> Result<(), Error> {
-        self.inner.health()
+    async fn health(&self) -> Result<(), Error> {
+        self.inner.health().await
     }
 }
 

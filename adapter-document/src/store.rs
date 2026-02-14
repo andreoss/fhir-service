@@ -25,6 +25,7 @@ pub const STATES: &str = "parameter_index";
 const SEQUENCE: &str = "sequence";
 
 const SELECTION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const PROBE: std::time::Duration = std::time::Duration::from_secs(2);
 
 pub fn faulted(context: &str, error: mongodb::error::Error) -> Error {
     classified(context, error)
@@ -124,6 +125,24 @@ impl DocumentStore {
 
     pub fn database(&self) -> mongodb::Database {
         self.client.database(self.namespace.as_str())
+    }
+
+    async fn ping(&self) -> Result<(), Error> {
+        let asked = tokio::time::timeout(PROBE, async {
+            self.database()
+                .run_command(mongodb::bson::doc! { "ping": 1 })
+                .await
+        })
+        .await;
+        match asked {
+            Ok(Ok(_)) => Ok(()),
+            Ok(Err(error)) => Err(Error::Internal(format!(
+                "the store engine did not answer: {error}"
+            ))),
+            Err(_) => Err(Error::Internal(
+                "the store engine did not answer in time".to_owned(),
+            )),
+        }
     }
 
     pub fn resources(&self) -> Collection<Document> {
@@ -779,8 +798,8 @@ impl ResourceStore for DocumentStore {
         }))
     }
 
-    fn health(&self) -> Result<(), Error> {
-        Ok(())
+    async fn health(&self) -> Result<(), Error> {
+        self.ping().await
     }
 }
 

@@ -20,6 +20,7 @@ use crate::throttle::{Admission, Throttle};
 use std::sync::{Arc, RwLock};
 
 const POOL_SIZE: u32 = 16;
+const PROBE: std::time::Duration = std::time::Duration::from_secs(2);
 
 const INDEX_TABLES: [&str; 8] = [
     "index_token",
@@ -1011,10 +1012,22 @@ impl ResourceStore for RelationalStore {
         }))
     }
 
-    fn health(&self) -> Result<(), Error> {
-        match self.pool.is_closed() {
-            false => Ok(()),
-            true => Err(Error::Internal("the store is not connected".to_owned())),
+    async fn health(&self) -> Result<(), Error> {
+        if self.pool.is_closed() {
+            return Err(Error::Internal("the store is not connected".to_owned()));
+        }
+        let asked = tokio::time::timeout(PROBE, async {
+            sqlx::query("select 1").execute(&self.pool).await
+        })
+        .await;
+        match asked {
+            Ok(Ok(_)) => Ok(()),
+            Ok(Err(error)) => Err(Error::Internal(format!(
+                "the store engine did not answer: {error}"
+            ))),
+            Err(_) => Err(Error::Internal(
+                "the store engine did not answer in time".to_owned(),
+            )),
         }
     }
 }

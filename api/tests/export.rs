@@ -33,7 +33,7 @@ fn harness() -> Harness {
     let sink = Arc::new(MemoryBulkStore::new());
     let dependencies = vec![Dependency {
         name: "memory-store",
-        check: Arc::new(|| Ok(())),
+        check: Arc::new(|| Box::pin(async { Ok(()) })),
     }];
     let app = Service::new(Arc::clone(&store) as Arc<dyn ResourceStore>, FhirVersion::R4, dependencies)
         .with_jobs(Arc::clone(&jobs) as Arc<dyn JobStore>)

@@ -48,7 +48,7 @@ fn recording() -> (Service, Arc<MemoryStore>, Arc<StoredTrail>) {
         FhirVersion::R4,
         vec![Dependency {
             name: "memory-store",
-            check: Arc::new(|| Ok(())),
+            check: Arc::new(|| Box::pin(async { Ok(()) })),
         }],
     )
     .with_authorization(Authorization::new(
@@ -401,7 +401,7 @@ async fn an_instance_that_starts_again_continues_the_chain_it_finds() {
         FhirVersion::R4,
         vec![Dependency {
             name: "memory-store",
-            check: Arc::new(|| Ok(())),
+            check: Arc::new(|| Box::pin(async { Ok(()) })),
         }],
     )
     .with_authorization(Authorization::new(
@@ -445,7 +445,7 @@ async fn an_instance_keeping_no_trail_routes_no_verification() {
         FhirVersion::R4,
         vec![Dependency {
             name: "memory-store",
-            check: Arc::new(|| Ok(())),
+            check: Arc::new(|| Box::pin(async { Ok(()) })),
         }],
     );
     let request = Request::builder()

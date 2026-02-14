@@ -799,7 +799,7 @@ impl ResourceStore for MemoryStore {
         }))
     }
 
-    fn health(&self) -> Result<(), Error> {
+    async fn health(&self) -> Result<(), Error> {
         match self.inner.read() {
             Ok(_) => Ok(()),
             Err(_) => Err(Error::Internal("store lock poisoned".to_owned())),

@@ -86,7 +86,7 @@ pub trait ResourceStore: Send + Sync {
         Err(Error::Internal("this store has no atomic scope".to_owned()))
     }
 
-    fn health(&self) -> Result<(), Error>;
+    async fn health(&self) -> Result<(), Error>;
 }
 #[cfg(test)]
 mod tests {
@@ -146,7 +146,7 @@ mod tests {
             Err(Error::NotFound)
         }
 
-        fn health(&self) -> Result<(), Error> {
+        async fn health(&self) -> Result<(), Error> {
             Ok(())
         }
     }
@@ -186,6 +186,6 @@ mod tests {
     async fn a_store_without_an_atomic_scope_says_so_rather_than_pretending() {
         let store = Bare;
         assert!(matches!(store.begin().await.err(), Some(Error::Internal(_))));
-        assert!(store.health().is_ok());
+        assert!(store.health().await.is_ok());
     }
 }

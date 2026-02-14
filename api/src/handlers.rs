@@ -304,17 +304,20 @@ pub async fn purge_history(
 
 pub async fn health(State(state): State<AppState>) -> Response {
     let mut any_failure = false;
-    let dependencies: Vec<Value> = state
-        .dependencies
-        .iter()
-        .map(|dependency| match (dependency.check)() {
-            Ok(()) => serde_json::json!({ "name": dependency.name, "status": "ok" }),
+    let mut dependencies: Vec<Value> = Vec::new();
+    for dependency in state.dependencies.iter() {
+        match (dependency.check)().await {
+            Ok(()) => {
+                dependencies.push(serde_json::json!({ "name": dependency.name, "status": "ok" }))
+            }
             Err(message) => {
                 any_failure = true;
-                serde_json::json!({ "name": dependency.name, "status": "error", "detail": message })
+                dependencies.push(
+                    serde_json::json!({ "name": dependency.name, "status": "error", "detail": message }),
+                );
             }
-        })
-        .collect();
+        }
+    }
     let status = if any_failure { "degraded" } else { "ok" };
     let status_code = if any_failure { StatusCode::SERVICE_UNAVAILABLE } else { StatusCode::OK };
     let body = serde_json::to_vec(&serde_json::json!({ "status": status, "dependencies": dependencies }))

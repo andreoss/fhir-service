@@ -32,7 +32,7 @@ fn guarded() -> Service {
     }));
     let dependencies = vec![Dependency {
         name: "memory-store",
-        check: Arc::new(|| Ok(())),
+        check: Arc::new(|| Box::pin(async { Ok(()) })),
     }];
     Service::new(Arc::new(store), FhirVersion::R4, dependencies)
         .with_authorization(Authorization::new(
@@ -349,7 +349,7 @@ async fn a_job_answers_only_the_caller_that_submitted_it() {
         FhirVersion::R4,
         vec![Dependency {
             name: "memory-store",
-            check: Arc::new(|| Ok(())),
+            check: Arc::new(|| Box::pin(async { Ok(()) })),
         }],
     )
     .with_jobs(Arc::clone(&jobs) as Arc<dyn JobStore>)
@@ -458,7 +458,7 @@ async fn an_unsecured_instance_introspects_nothing() {
         FhirVersion::R4,
         vec![Dependency {
             name: "memory-store",
-            check: Arc::new(|| Ok(())),
+            check: Arc::new(|| Box::pin(async { Ok(()) })),
         }],
     );
     let reply = call(&app, "POST", "/_introspect", None, b"token=abc").await;
@@ -474,7 +474,7 @@ fn recording() -> (Service, Arc<MemoryStore>) {
         FhirVersion::R4,
         vec![Dependency {
             name: "memory-store",
-            check: Arc::new(|| Ok(())),
+            check: Arc::new(|| Box::pin(async { Ok(()) })),
         }],
     )
     .with_authorization(Authorization::new(

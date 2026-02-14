@@ -23,7 +23,7 @@ fn service() -> Service {
     }));
     let dependencies = vec![Dependency {
         name: "memory-store",
-        check: Arc::new(|| Ok(())),
+        check: Arc::new(|| Box::pin(async { Ok(()) })),
     }];
     Service::new(Arc::new(store), FhirVersion::R4, dependencies)
 }
@@ -87,7 +87,7 @@ async fn health_reports_unhealthy_dependency_as_503() {
     }));
     let dependencies = vec![Dependency {
         name: "broken",
-        check: Arc::new(|| Err("down".to_owned())),
+        check: Arc::new(|| Box::pin(async { Err("down".to_owned()) })),
     }];
     let app = Service::new(Arc::new(store), FhirVersion::R4, dependencies);
     let reply = request(&app, "GET", "/health", &[], &[]).await;
@@ -354,7 +354,7 @@ impl ResourceStore for FailingStore {
     async fn history(&self, _: &HistoryScope, _: &HistoryQuery) -> Result<HistoryPage, Error> {
         Err(Error::Internal("boom".to_owned()))
     }
-    fn health(&self) -> Result<(), Error> {
+    async fn health(&self) -> Result<(), Error> {
         Ok(())
     }
 }
@@ -860,7 +860,7 @@ fn ticking_service() -> Service {
     }));
     let dependencies = vec![Dependency {
         name: "memory-store",
-        check: Arc::new(|| Ok(())),
+        check: Arc::new(|| Box::pin(async { Ok(()) })),
     }];
     Service::new(Arc::new(store), FhirVersion::R4, dependencies)
 }

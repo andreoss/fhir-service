@@ -140,7 +140,7 @@ pub async fn record(store: &dyn ResourceStore) {
 }
 
 pub async fn readiness(store: &dyn ResourceStore) {
-    store.health().expect("a fresh store is healthy");
+    store.health().await.expect("a fresh store is healthy");
 }
 
 pub async fn atomicity(store: &dyn ResourceStore) {
