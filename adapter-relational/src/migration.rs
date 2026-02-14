@@ -199,6 +199,22 @@ const JOB_CORRELATION_TUNING: &str = "
 create index if not exists job_correlation on job (correlation, created_ms);
 ";
 
+const PARAMETER_INDEX: &str = "
+create table if not exists parameter_index (
+    url text primary key,
+    backfilled boolean not null,
+    indexed bigint not null,
+    value_count bigint not null,
+    overflow bigint not null,
+    failures text not null
+);
+";
+
+const PARAMETER_INDEX_TUNING: &str = "
+create index if not exists parameter_index_cover on parameter_index (url)
+    include (backfilled, indexed, value_count, overflow, failures);
+";
+
 pub const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 1,
@@ -277,6 +293,18 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "job correlation index",
         required: false,
         statements: JOB_CORRELATION_TUNING,
+    },
+    Migration {
+        version: 14,
+        name: "shared parameter index state",
+        required: true,
+        statements: PARAMETER_INDEX,
+    },
+    Migration {
+        version: 15,
+        name: "parameter state tuning",
+        required: false,
+        statements: PARAMETER_INDEX_TUNING,
     },
 ];
 

@@ -708,11 +708,24 @@ impl ResourceStore for MemoryStore {
         Ok(reports)
     }
 
-    fn index_report(&self, url: &str) -> Option<IndexReport> {
-        self.indexes
+    async fn index_report(&self, url: &str) -> Result<Option<IndexReport>, Error> {
+        Ok(self
+            .indexes
             .read()
             .ok()
-            .and_then(|indexes| indexes.get(url).map(|index| index.report.clone()))
+            .and_then(|indexes| indexes.get(url).map(|index| index.report.clone())))
+    }
+
+    async fn adopt_parameter(&self, spec: &ParameterSpec) -> Result<(), Error> {
+        let mut indexes = self
+            .indexes
+            .write()
+            .map_err(|_| Error::Internal("index lock poisoned".to_owned()))?;
+        indexes.entry(spec.url.clone()).or_insert_with(|| ParamIndex {
+            entries: HashMap::new(),
+            report: IndexReport::empty(&spec.url),
+        });
+        Ok(())
     }
 
     async fn history(

@@ -227,11 +227,66 @@ impl RelationalStore {
         }
     }
 
-    pub(crate) fn reported(&self, url: &str) -> Option<IndexReport> {
-        self.custom
-            .read()
-            .ok()
-            .and_then(|custom| custom.get(url).map(|(_, report)| report.clone()))
+    pub(crate) async fn record(&self, report: &IndexReport) -> Result<(), Error> {
+        let statement = format!(
+            "insert into {} (url, backfilled, indexed, value_count, overflow, failures)
+             values ($1, $2::boolean, $3, $4, $5, $6)
+             on conflict (url) do update set backfilled = excluded.backfilled,
+             indexed = excluded.indexed, value_count = excluded.value_count,
+             overflow = excluded.overflow, failures = excluded.failures",
+            self.table("parameter_index")
+        );
+        let binds = [
+            Bind::Text(report.url.clone()),
+            Bind::Text(report.backfilled.to_string()),
+            Bind::Big(report.indexed as i64),
+            Bind::Big(report.values as i64),
+            Bind::Big(report.overflow as i64),
+            Bind::Text(failures_text(&report.failures)),
+        ];
+        self.ran(&statement, &binds, "recording an index state")
+            .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn recorded(&self, url: &str) -> Result<Option<IndexReport>, Error> {
+        let statement = format!(
+            "select backfilled, indexed, value_count, overflow, failures from {}
+             where url = $1",
+            self.table("parameter_index")
+        );
+        let binds = [Bind::Text(url.to_owned())];
+        let Some(row) = self
+            .perhaps(&statement, &binds, "reading an index state")
+            .await?
+        else {
+            return Ok(None);
+        };
+        let read = |name: &str| -> Result<i64, Error> {
+            row.try_get(name)
+                .map_err(|error| faulted("reading an index state", error))
+        };
+        let failures: String = row
+            .try_get("failures")
+            .map_err(|error| faulted("reading an index state", error))?;
+        Ok(Some(IndexReport {
+            url: url.to_owned(),
+            backfilled: row
+                .try_get("backfilled")
+                .map_err(|error| faulted("reading an index state", error))?,
+            indexed: read("indexed")? as usize,
+            values: read("value_count")? as usize,
+            overflow: read("overflow")? as usize,
+            failures: failures_of(&failures),
+        }))
+    }
+
+    pub(crate) async fn forget_record(&self, url: &str) -> Result<(), Error> {
+        let statement = format!("delete from {} where url = $1", self.table("parameter_index"));
+        let binds = [Bind::Text(url.to_owned())];
+        self.ran(&statement, &binds, "dropping an index state")
+            .await?;
+        Ok(())
     }
 
     pub(crate) async fn work(&self) -> Result<Work, Error> {
@@ -903,13 +958,24 @@ impl ResourceStore for RelationalStore {
 
     async fn index_parameter(&self, spec: &ParameterSpec) -> Result<IndexReport, Error> {
         let report = IndexReport::empty(&spec.url);
+        self.record(&report).await?;
         self.remember(spec.clone(), report.clone());
         Ok(report)
     }
 
     async fn drop_parameter(&self, url: &str) -> Result<(), Error> {
         crate::query::drop_index(self, url).await?;
+        self.forget_record(url).await?;
         self.forget(url);
+        Ok(())
+    }
+
+    async fn adopt_parameter(&self, spec: &ParameterSpec) -> Result<(), Error> {
+        let report = self
+            .recorded(&spec.url)
+            .await?
+            .unwrap_or_else(|| IndexReport::empty(&spec.url));
+        self.remember(spec.clone(), report);
         Ok(())
     }
 
@@ -925,8 +991,8 @@ impl ResourceStore for RelationalStore {
         crate::query::reindex_resource(self, specs, id).await
     }
 
-    fn index_report(&self, url: &str) -> Option<IndexReport> {
-        self.reported(url)
+    async fn index_report(&self, url: &str) -> Result<Option<IndexReport>, Error> {
+        self.recorded(url).await
     }
 
     async fn begin(&self) -> Result<Arc<dyn StoreScope>, Error> {
@@ -1015,4 +1081,28 @@ impl StoreScope for RelationalScope {
     async fn rollback(&self) -> Result<(), Error> {
         self.settle(false).await
     }
+}
+
+fn failures_text(failures: &[fhir_store::IndexFailure]) -> String {
+    let held: Vec<Value> = failures
+        .iter()
+        .map(|failure| {
+            serde_json::json!({ "resource": failure.resource, "reason": failure.reason })
+        })
+        .collect();
+    Value::Array(held).to_string()
+}
+
+fn failures_of(raw: &str) -> Vec<fhir_store::IndexFailure> {
+    let Ok(Value::Array(held)) = serde_json::from_str::<Value>(raw) else {
+        return Vec::new();
+    };
+    held.iter()
+        .filter_map(|item| {
+            Some(fhir_store::IndexFailure {
+                resource: item.get("resource")?.as_str()?.to_owned(),
+                reason: item.get("reason")?.as_str()?.to_owned(),
+            })
+        })
+        .collect()
 }

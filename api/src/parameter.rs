@@ -63,7 +63,7 @@ pub async fn stored(state: &AppState) -> Result<Vec<(ResourceEnvelope, Parameter
         .collect())
 }
 
-pub fn status_report(state: &AppState, wanted: Option<&str>) -> Result<Vec<u8>, Error> {
+pub async fn status_report(state: &AppState, wanted: Option<&str>) -> Result<Vec<u8>, Error> {
     let entries: Vec<RegisteredParam> = state
         .registry
         .entries()
@@ -73,10 +73,14 @@ pub fn status_report(state: &AppState, wanted: Option<&str>) -> Result<Vec<u8>, 
     if entries.is_empty() && wanted.is_some() {
         return Err(Error::NotFound);
     }
+    let mut reports = Vec::new();
+    for entry in &entries {
+        reports.push(state.store.index_report(&entry.url).await?);
+    }
     let rendered: Vec<Value> = entries
         .iter()
-        .map(|entry| {
-            let report = state.store.index_report(&entry.url);
+        .zip(reports.iter())
+        .map(|(entry, report)| {
             json!({
                 "name": "searchParameter",
                 "part": [
@@ -105,13 +109,12 @@ pub fn status_report(state: &AppState, wanted: Option<&str>) -> Result<Vec<u8>, 
 
 pub async fn refresh(state: &AppState) -> Result<u64, Error> {
     let held = stored(state).await?;
-    let entries = held
-        .iter()
-        .map(|(_, spec)| {
-            let report = state.store.index_report(&spec.url);
-            entry_of(spec, report.as_ref())
-        })
-        .collect();
+    let mut entries = Vec::new();
+    for (_, spec) in &held {
+        state.store.adopt_parameter(spec).await?;
+        let report = state.store.index_report(&spec.url).await?;
+        entries.push(entry_of(spec, report.as_ref()));
+    }
     state.registry.replace(entries);
     Ok(state.registry.version())
 }
@@ -196,7 +199,7 @@ pub async fn set_status(state: &AppState, url: &str, wanted: ParamStatus) -> Res
         retired,
         ..spec.clone()
     };
-    let report = state.store.index_report(url);
+    let report = state.store.index_report(url).await?;
     state.registry.register(entry_of(&changed, report.as_ref()))
 }
 

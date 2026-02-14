@@ -20,6 +20,8 @@ pub const RESOURCES: &str = "resource";
 
 pub const COUNTERS: &str = "counter";
 
+pub const STATES: &str = "parameter_index";
+
 const SEQUENCE: &str = "sequence";
 
 const SELECTION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
@@ -134,7 +136,7 @@ impl DocumentStore {
 
     pub async fn initialise(&self) -> Result<usize, Error> {
         let database = self.client.database(self.namespace.as_str());
-        for name in [RESOURCES, COUNTERS, crate::change::CHANGES] {
+        for name in [RESOURCES, COUNTERS, STATES, crate::change::CHANGES] {
             match database.create_collection(name).await {
                 Ok(()) => {}
                 Err(error) if crate::fault::classify(&error) == crate::fault::Fault::Permanent => {}
@@ -233,11 +235,79 @@ impl DocumentStore {
         }
     }
 
-    pub(crate) fn reported(&self, url: &str) -> Option<IndexReport> {
-        self.custom
-            .read()
-            .ok()
-            .and_then(|custom| custom.get(url).map(|(_, report)| report.clone()))
+    fn states(&self) -> Collection<Document> {
+        self.database().collection(STATES)
+    }
+
+    pub(crate) async fn record_index(&self, report: &IndexReport) -> Result<(), Error> {
+        let failures: Vec<Document> = report
+            .failures
+            .iter()
+            .map(|failure| {
+                mongodb::bson::doc! {
+                    "resource": failure.resource.clone(),
+                    "reason": failure.reason.clone(),
+                }
+            })
+            .collect();
+        let held = mongodb::bson::doc! {
+            "$set": {
+                "backfilled": report.backfilled,
+                "indexed": report.indexed as i64,
+                "values": report.values as i64,
+                "overflow": report.overflow as i64,
+                "failures": failures,
+            }
+        };
+        self.states()
+            .update_one(mongodb::bson::doc! { "_id": report.url.clone() }, held)
+            .upsert(true)
+            .await
+            .map_err(|error| faulted("recording an index state", error))?;
+        Ok(())
+    }
+
+    pub(crate) async fn recorded(&self, url: &str) -> Result<Option<IndexReport>, Error> {
+        let found = self
+            .states()
+            .find_one(mongodb::bson::doc! { "_id": url })
+            .await
+            .map_err(|error| faulted("reading an index state", error))?;
+        let Some(held) = found else {
+            return Ok(None);
+        };
+        let count = |name: &str| held.get_i64(name).unwrap_or_default().max(0) as usize;
+        let failures = held
+            .get_array("failures")
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| {
+                        let held = item.as_document()?;
+                        Some(fhir_store::IndexFailure {
+                            resource: held.get_str("resource").ok()?.to_owned(),
+                            reason: held.get_str("reason").ok()?.to_owned(),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        Ok(Some(IndexReport {
+            url: url.to_owned(),
+            backfilled: held.get_bool("backfilled").unwrap_or_default(),
+            indexed: count("indexed"),
+            values: count("values"),
+            overflow: count("overflow"),
+            failures,
+        }))
+    }
+
+    pub(crate) async fn forget_record(&self, url: &str) -> Result<(), Error> {
+        self.states()
+            .delete_one(mongodb::bson::doc! { "_id": url })
+            .await
+            .map_err(|error| faulted("dropping an index state", error))?;
+        Ok(())
     }
 
     fn held(&self) -> bool {
@@ -652,13 +722,24 @@ impl ResourceStore for DocumentStore {
 
     async fn index_parameter(&self, spec: &ParameterSpec) -> Result<IndexReport, Error> {
         let report = IndexReport::empty(&spec.url);
+        self.record_index(&report).await?;
         self.remember(spec.clone(), report.clone());
         Ok(report)
     }
 
     async fn drop_parameter(&self, url: &str) -> Result<(), Error> {
         crate::query::drop_index(self, url).await?;
+        self.forget_record(url).await?;
         self.forget(url);
+        Ok(())
+    }
+
+    async fn adopt_parameter(&self, spec: &ParameterSpec) -> Result<(), Error> {
+        let report = self
+            .recorded(&spec.url)
+            .await?
+            .unwrap_or_else(|| IndexReport::empty(&spec.url));
+        self.remember(spec.clone(), report);
         Ok(())
     }
 
@@ -674,8 +755,8 @@ impl ResourceStore for DocumentStore {
         crate::query::reindex_resource(self, specs, id).await
     }
 
-    fn index_report(&self, url: &str) -> Option<IndexReport> {
-        self.reported(url)
+    async fn index_report(&self, url: &str) -> Result<Option<IndexReport>, Error> {
+        self.recorded(url).await
     }
 
     async fn begin(&self) -> Result<Arc<dyn StoreScope>, Error> {

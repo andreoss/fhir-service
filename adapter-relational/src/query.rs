@@ -560,6 +560,7 @@ pub async fn reindex(
             }
         }
         report.backfilled = true;
+        store.record(&report).await?;
         store.remember(spec.clone(), report.clone());
         reports.push(report);
     }
@@ -612,7 +613,8 @@ pub async fn reindex_resource(
     for spec in specs {
         let mut report = IndexReport::empty(&spec.url);
         report.backfilled = store
-            .reported(&spec.url)
+            .recorded(&spec.url)
+            .await?
             .map(|held| held.backfilled)
             .unwrap_or_default();
         if !spec.base.contains(&envelope.resource_type()) {

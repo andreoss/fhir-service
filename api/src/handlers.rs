@@ -668,7 +668,7 @@ pub async fn parameter_status(
 ) -> Result<Response, AppError> {
     allowed(&state, &headers, DataAction::Read, None, None).await?;
     let wanted = param(query.as_deref(), "url");
-    Ok(rendered(parameter::status_report(&state, wanted.as_deref())?))
+    Ok(rendered(parameter::status_report(&state, wanted.as_deref()).await?))
 }
 
 pub async fn parameter_status_query(
@@ -685,7 +685,7 @@ pub async fn parameter_status_query(
             parameter_value(&value, "url")
         }
     };
-    Ok(rendered(parameter::status_report(&state, wanted.as_deref())?))
+    Ok(rendered(parameter::status_report(&state, wanted.as_deref()).await?))
 }
 
 pub async fn parameter_status_update(
@@ -700,7 +700,7 @@ pub async fn parameter_status_update(
         .ok_or_else(|| Error::InvalidParameter("status needs a status".to_owned()))?
         .parse::<fhir_core::search::ParamStatus>()?;
     parameter::set_status(&state, &url, wanted).await?;
-    Ok(rendered(parameter::status_report(&state, Some(&url))?))
+    Ok(rendered(parameter::status_report(&state, Some(&url)).await?))
 }
 
 pub async fn parameter_reindex(
@@ -719,7 +719,7 @@ pub async fn parameter_refresh(
 ) -> Result<Response, AppError> {
     allowed(&state, &headers, DataAction::ParameterManagement, None, None).await?;
     parameter::refresh(&state).await?;
-    Ok(rendered(parameter::status_report(&state, None)?))
+    Ok(rendered(parameter::status_report(&state, None).await?))
 }
 
 fn parameter_value(body: &Value, name: &str) -> Option<String> {

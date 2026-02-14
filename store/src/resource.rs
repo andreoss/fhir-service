@@ -72,9 +72,14 @@ pub trait ResourceStore: Send + Sync {
         ))
     }
 
-    fn index_report(&self, url: &str) -> Option<IndexReport> {
+    async fn index_report(&self, url: &str) -> Result<Option<IndexReport>, Error> {
         let _ = url;
-        None
+        Ok(None)
+    }
+
+    async fn adopt_parameter(&self, spec: &ParameterSpec) -> Result<(), Error> {
+        let _ = spec;
+        Ok(())
     }
 
     async fn begin(&self) -> Result<Arc<dyn StoreScope>, Error> {
@@ -173,7 +178,8 @@ mod tests {
         assert!(unsupported(
             store.reindex_resource(&[spec()], &id).await.unwrap_err()
         ));
-        assert_eq!(store.index_report("urn:p:a"), None);
+        assert_eq!(store.index_report("urn:p:a").await.unwrap(), None);
+        assert!(store.adopt_parameter(&spec()).await.is_ok());
     }
 
     #[tokio::test]

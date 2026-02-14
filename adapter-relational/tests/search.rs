@@ -90,7 +90,7 @@ async fn a_custom_parameter_answers_only_once_its_index_is_backfilled() {
     let spec = spec();
     let report = store.index_parameter(&spec).await.unwrap();
     assert!(!report.backfilled);
-    assert_eq!(store.index_report("urn:p:band").unwrap().indexed, 0);
+    assert_eq!(store.index_report("urn:p:band").await.unwrap().unwrap().indexed, 0);
 
     let custom = |code: &str| SearchQuery {
         filters: vec![Filter {
@@ -112,7 +112,7 @@ async fn a_custom_parameter_answers_only_once_its_index_is_backfilled() {
     assert_eq!(ids(&store.search(&custom("high")).await.unwrap()), vec!["b1"]);
 
     store.drop_parameter("urn:p:band").await.unwrap();
-    assert!(store.index_report("urn:p:band").is_none());
+    assert!(store.index_report("urn:p:band").await.unwrap().is_none());
     assert!(store.search(&custom("high")).await.unwrap().entries.is_empty());
     support::drop_namespace(&pool, &namespace).await;
 }
