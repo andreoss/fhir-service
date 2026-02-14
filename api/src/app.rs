@@ -34,6 +34,7 @@ pub struct AppState {
     pub templates: Arc<dyn Templates>,
     pub terminology: Arc<dyn fhir_store::Terminology>,
     pub audit: Arc<dyn fhir_store::Audit>,
+    pub trail: Option<Arc<crate::trail::StoredTrail>>,
     pub telemetry: Arc<fhir_telemetry::Telemetry>,
     pub scrape: Arc<fhir_telemetry::Scrape>,
     pub authorization: Option<Arc<crate::smart::Authorization>>,
@@ -74,6 +75,7 @@ impl Service {
                 entries: Arc::new(tokio::sync::Semaphore::new(crate::bundle::ENTRIES_AT_ONCE)),
                 templates: Arc::new(ApprovedTemplates::default()),
                 audit: Arc::new(fhir_store::Unrecorded),
+                trail: None,
                 scrape: Arc::new(fhir_telemetry::Scrape::closed()),
                 telemetry: Arc::new(fhir_telemetry::Telemetry::new(
                     Arc::new(fhir_telemetry::Stream),
@@ -152,10 +154,21 @@ impl Service {
         }
     }
 
-    pub fn recording(self, audit: Arc<dyn fhir_store::Audit>) -> Service {
+    pub fn recording(self, trail: Arc<crate::trail::StoredTrail>) -> Service {
+        Service {
+            state: AppState {
+                audit: Arc::clone(&trail) as Arc<dyn fhir_store::Audit>,
+                trail: Some(trail),
+                ..self.state
+            },
+        }
+    }
+
+    pub fn recording_to(self, audit: Arc<dyn fhir_store::Audit>) -> Service {
         Service {
             state: AppState {
                 audit,
+                trail: None,
                 ..self.state
             },
         }
@@ -302,6 +315,17 @@ fn entries() -> Vec<Entry> {
             &[Verb::Get, Verb::Post, Verb::Put],
             get(parameter_status).post(parameter_status_query).put(parameter_status_update),
         ),
+        entry(
+            "/AuditEvent/$verify",
+            BOTH,
+            get(crate::trail::verified).post(crate::trail::verified),
+        ),
+        entry(
+            "/AuditEvent/$export-trail",
+            BOTH,
+            get(crate::trail::exported).post(crate::trail::exported),
+        ),
+        entry("/AuditEvent/$retain", WRITE, post(crate::trail::retained)),
         entry("/SearchParameter/$reindex", WRITE, post(parameter_reindex)),
         entry("/SearchParameter/$refresh", WRITE, post(parameter_refresh)),
         entry("/CompartmentDefinition", READ, get(compartment_definitions)),

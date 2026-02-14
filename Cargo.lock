@@ -804,7 +804,9 @@ dependencies = [
  "async-trait",
  "fhir-core",
  "flate2",
+ "hmac",
  "serde_json",
+ "sha2",
  "time",
  "tokio",
 ]

@@ -37,4 +37,4 @@ pub use scrape::METRICS;
 pub use search::{parse_query, search_bundle, SearchRequest};
 pub use smart::Authorization;
 pub use terminology::StoredTerminology;
-pub use trail::StoredTrail;
+pub use trail::{configured_seal, StoredTrail, ENV_TRAIL_KEY};

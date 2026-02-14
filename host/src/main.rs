@@ -39,10 +39,13 @@ async fn run() -> Result<(), Error> {
             Some(set) => Arc::new(HeldKeys::new(set)),
             None => Arc::new(DiscoveredKeys::new(DISCOVERY_TIMEOUT)),
         };
-        service = service.enforcing(keys)?.recording(Arc::new(StoredTrail::new(
+        let trail = StoredTrail::resumed(
             Arc::clone(&store),
             config.version,
-        )));
+            fhir_api::configured_seal(),
+        )
+        .await?;
+        service = service.enforcing(keys)?.recording(Arc::new(trail));
     }
     if config.terminology_dir.is_some() {
         let catalogue = Arc::new(fhir_host::terminology::loaded(&config)?);

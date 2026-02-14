@@ -16,6 +16,7 @@ pub mod resource;
 pub mod scope;
 pub mod search;
 pub mod terminology;
+pub mod trail;
 
 pub use audit::{Audit, AuditEvent, Unrecorded};
 pub use bulk::{output_format, BulkStore, Output, NDJSON};
@@ -35,3 +36,4 @@ pub use resource::{ResourceStore, SearchParam, SearchParams};
 pub use scope::StoreScope;
 pub use search::{SearchPage, SearchQuery, SortDirection, SortKey, TotalMode};
 pub use terminology::{Subsumption, Terminology};
+pub use trail::{digest_of, Chain, Entry, Head, Retention, Seal, Sealed, Tamper};
