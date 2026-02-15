@@ -130,3 +130,5 @@ async fn the_sink_satisfies_the_output_contract() {
     fhir_store_contract::bulk::outputs(&store.outputs()).await;
     support::drop_namespace(&pool, &namespace).await;
 }
+
+suite!(a_stopping_worker_hands_its_work_back_at_once, handover, "jhand");

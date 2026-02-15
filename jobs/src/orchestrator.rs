@@ -169,6 +169,10 @@ fn report(units: u64, summary: &UnitOutcome) -> String {
     serde_json::Value::Object(report).to_string()
 }
 
+fn named() -> String {
+    format!("worker-{}", fhir_core::CorrelationId::fresh().as_str())
+}
+
 pub struct Worker {
     jobs: Arc<dyn JobStore>,
     orchestrator: Arc<Orchestrator>,
@@ -206,8 +210,20 @@ impl Worker {
         }
     }
 
+    pub fn per_instance(
+        jobs: Arc<dyn JobStore>,
+        orchestrator: Arc<Orchestrator>,
+        duration: i64,
+    ) -> Worker {
+        Worker::new(jobs, orchestrator, named(), duration)
+    }
+
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    pub async fn stopping(&self) -> Result<usize, Error> {
+        self.jobs.hand_over(&self.name).await.map(|moved| moved.len())
     }
 
     pub async fn poll(&self) -> Result<usize, Error> {

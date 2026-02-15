@@ -488,4 +488,14 @@ impl Bound {
             .await
             .map_err(|error| Error::Internal(format!("server error: {error}")))
     }
+
+    pub async fn serve_until<S>(self, stop: S) -> Result<(), Error>
+    where
+        S: std::future::Future<Output = ()> + Send + 'static,
+    {
+        axum::serve(self.listener, self.router)
+            .with_graceful_shutdown(stop)
+            .await
+            .map_err(|error| Error::Internal(format!("server error: {error}")))
+    }
 }

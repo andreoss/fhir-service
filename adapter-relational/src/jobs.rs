@@ -305,6 +305,35 @@ impl JobStore for RelationalJobStore {
         }
     }
 
+    async fn hand_over(&self, worker: &str) -> Result<Vec<JobId>, Error> {
+        let now = (self.ticker)();
+        let statement = format!(
+            "update {} set state = case when cancelled then $1 else $2 end, \
+             available_ms = $3, updated_ms = $3, worker = null, lease_ms = null \
+             where worker = $4 and state in ($5, $6) \
+             returning job_id",
+            self.table()
+        );
+        let rows = sqlx::query(&statement)
+            .bind(JobState::Cancelled.as_str())
+            .bind(JobState::Queued.as_str())
+            .bind(now)
+            .bind(worker)
+            .bind(JobState::Running.as_str())
+            .bind(JobState::Cancelling.as_str())
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|error| faulted("handing a job back", error))?;
+        rows.iter()
+            .map(|row| {
+                let id: String = row
+                    .try_get("job_id")
+                    .map_err(|error| faulted("reading a job column", error))?;
+                JobId::parse(&id)
+            })
+            .collect()
+    }
+
     async fn reclaim(&self) -> Result<Vec<JobId>, Error> {
         let now = (self.ticker)();
         let statement = format!(

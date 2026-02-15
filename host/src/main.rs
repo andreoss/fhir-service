@@ -51,21 +51,50 @@ async fn run() -> Result<(), Error> {
         service = service.with_outputs(Arc::clone(outputs));
     }
     service = service.scraped(config.scrape.clone());
+    let mut worker = None;
     if let Some(jobs) = &jobs {
         service = service.with_jobs(Arc::clone(jobs));
-        spawn_worker(
+        worker = Some(spawn_worker(
             Arc::clone(jobs),
             store,
             outputs,
             config.version,
             service.telemetry(),
-        );
+        ));
         spawn_watchdog(Arc::clone(jobs));
     }
     eprintln!("serving {config}");
     let bound = service.bind(config.bind).await?;
     println!("listening on {}", bound.local_addr()?);
-    bound.serve().await
+    let served = bound.serve_until(asked_to_stop()).await;
+    if let Some(worker) = worker {
+        match worker.stopping().await {
+            Ok(handed) => eprintln!("handed back {handed}"),
+            Err(error) => eprintln!("handing back: {error}"),
+        }
+    }
+    served
+}
+
+async fn asked_to_stop() {
+    let interrupted = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+    #[cfg(unix)]
+    let terminated = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut asked) => {
+                asked.recv().await;
+            }
+            Err(_) => std::future::pending::<()>().await,
+        }
+    };
+    #[cfg(not(unix))]
+    let terminated = std::future::pending::<()>();
+    tokio::select! {
+        _ = interrupted => {}
+        _ = terminated => {}
+    }
 }
 
 fn spawn_worker(
@@ -74,7 +103,7 @@ fn spawn_worker(
     outputs: Option<Arc<dyn fhir_store::BulkStore>>,
     version: fhir_core::FhirVersion,
     telemetry: Arc<fhir_telemetry::Telemetry>,
-) {
+) -> Arc<fhir_jobs::Worker> {
     let mut registry = fhir_jobs::Orchestrator::new()
         .with(Arc::new(fhir_jobs::ImportJob::new(Arc::clone(&store), version)));
     if let Some(sink) = outputs {
@@ -94,13 +123,19 @@ fn spawn_worker(
             .with(Arc::new(fhir_jobs::ExportJob::new(store, sink)));
     }
     let orchestrator = Arc::new(registry.reporting(telemetry));
-    let worker = fhir_jobs::Worker::new(jobs, orchestrator, "host", LEASE_MILLIS);
+    let worker = Arc::new(fhir_jobs::Worker::per_instance(
+        jobs,
+        orchestrator,
+        LEASE_MILLIS,
+    ));
+    let polling = Arc::clone(&worker);
     tokio::spawn(async move {
         loop {
-            let _ = worker.poll().await;
+            let _ = polling.poll().await;
             tokio::time::sleep(std::time::Duration::from_millis(POLL_MILLIS)).await;
         }
     });
+    worker
 }
 
 fn spawn_watchdog(jobs: Arc<dyn fhir_store::JobStore>) {

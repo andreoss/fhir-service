@@ -198,6 +198,28 @@ impl JobStore for MemoryJobStore {
         Ok(record.clone())
     }
 
+    async fn hand_over(&self, worker: &str) -> Result<Vec<JobId>, Error> {
+        let now = (self.ticker)();
+        let mut records = self.held()?;
+        let mut moved = Vec::new();
+        for record in records.iter_mut() {
+            let running = matches!(record.state, JobState::Running | JobState::Cancelling);
+            if !running || record.worker.as_deref() != Some(worker) {
+                continue;
+            }
+            record.worker = None;
+            record.lease = None;
+            record.updated = now;
+            record.available = now;
+            record.state = match record.cancelled {
+                true => JobState::Cancelled,
+                false => JobState::Queued,
+            };
+            moved.push(record.id.clone());
+        }
+        Ok(moved)
+    }
+
     async fn reclaim(&self) -> Result<Vec<JobId>, Error> {
         let now = (self.ticker)();
         let mut records = self.held()?;

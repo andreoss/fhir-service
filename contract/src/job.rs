@@ -443,3 +443,34 @@ pub async fn retention(store: &dyn JobStore, ticker: &StepTicker) {
     assert!(store.fetch(&job("y2")).await.is_ok(), "a live job was purged");
     assert_eq!(store.purge(10_000).await.unwrap(), 0);
 }
+
+pub async fn handover(store: &dyn JobStore) {
+    store.submit(queued("h1", JobKind::Export)).await.unwrap();
+    store.submit(queued("h2", JobKind::Export)).await.unwrap();
+    let held = store
+        .claim(&Lease::new("leaving", 600_000).with_limit(2))
+        .await
+        .unwrap();
+    assert_eq!(held.len(), 2);
+
+    let waiting = store.claim(&Lease::new("staying", 1_000)).await.unwrap();
+    assert!(waiting.is_empty(), "a held lease is not handed on by itself");
+
+    let handed = store.hand_over("leaving").await.unwrap();
+    assert_eq!(handed.len(), 2, "every held job is handed back");
+
+    let resumed = store
+        .claim(&Lease::new("staying", 1_000).with_limit(2))
+        .await
+        .unwrap();
+    assert_eq!(resumed.len(), 2, "handed work is claimable at once");
+    for record in &resumed {
+        assert_eq!(record.worker.as_deref(), Some("staying"));
+    }
+
+    let stale = store.heartbeat(&job("h1"), "leaving", 1_000, None).await;
+    assert!(matches!(stale, Err(Error::VersionConflict)), "{stale:?}");
+
+    let none = store.hand_over("leaving").await.unwrap();
+    assert!(none.is_empty(), "a worker holding nothing hands nothing back");
+}

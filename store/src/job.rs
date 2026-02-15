@@ -372,6 +372,8 @@ pub trait JobStore: Send + Sync {
 
     async fn reclaim(&self) -> Result<Vec<JobId>, Error>;
 
+    async fn hand_over(&self, worker: &str) -> Result<Vec<JobId>, Error>;
+
     async fn cancel(&self, id: &JobId) -> Result<JobRecord, Error>;
 
     async fn purge(&self, retention: i64) -> Result<usize, Error>;

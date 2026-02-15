@@ -117,3 +117,9 @@ async fn a_resumed_job_keeps_the_identifier_it_started_with() {
     let ticker = StepTicker::starting_at(1_000);
     fhir_store_contract::job::correlation(&store(&ticker), &ticker).await;
 }
+
+#[tokio::test]
+async fn a_stopping_worker_hands_its_work_back_at_once() {
+    let ticker = StepTicker::starting_at(1_000);
+    fhir_store_contract::job::handover(&store(&ticker)).await;
+}
