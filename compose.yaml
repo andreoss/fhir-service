@@ -1,6 +1,10 @@
 services:
   relational:
     image: postgres:17
+    command:
+      - postgres
+      - -c
+      - max_connections=500
     environment:
       POSTGRES_USER: fhir
       POSTGRES_PASSWORD: fhir
@@ -18,6 +22,10 @@ services:
 
   document:
     image: mongo:7
+    ulimits:
+      nofile:
+        soft: 64000
+        hard: 64000
     command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
     ports:
       - "27017:27017"
