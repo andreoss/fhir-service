@@ -39,8 +39,25 @@ the terminology catalogue are produced from the published artifacts by the
 Bearer tokens are verified against the keys their issuer publishes. Resource,
 compartment and parameter scopes decide what a request may reach, and a job
 answers only the caller that submitted it. Every read and every write leaves
-a chained, verifiable audit record. Latency, count and failure are measured
-per operation over a closed label set.
+a chained, verifiable audit record.
+
+== Configuration
+
+Every setting comes from the environment. The principal ones:
+
+[cols="1,2",options="header"]
+|===
+| Variable | Sets
+
+| `FHIR_BIND` | Listen address, default `127.0.0.1:8080`.
+| `FHIR_BACKEND` | `memory`, `relational` or `document`, default `memory`.
+| `FHIR_VERSION` | `STU3`, `R4`, `R4B` or `R5`, default `R4`.
+| `FHIR_DATABASE_URL`, `FHIR_DOCUMENT_URL` | Where the durable engines live.
+| `FHIR_AUTH_ISSUER`, `FHIR_AUTH_KEYS` | The issuer to trust and its key set.
+| `FHIR_METRICS_CREDENTIAL` | Opens the scrape endpoint; closed without it.
+|===
+
+The rest are read in `host`, each with a default that needs no operator.
 
 == Layout
 
@@ -50,7 +67,3 @@ types, `adapter-memory`, `adapter-relational` and `adapter-document` the
 engines, `jobs` the durable queue and the bulk handlers, `telemetry` the
 measurements, `api` the HTTP surface and the authorization, `host` the
 binary.
-
-`FHIR_BACKEND` chooses the engine, `FHIR_VERSION` the release,
-`FHIR_DATABASE_URL` and `FHIR_DOCUMENT_URL` point the durable engines at
-their servers, `FHIR_AUTH_ISSUER` names the issuer to trust.
