@@ -67,3 +67,7 @@ types, `adapter-memory`, `adapter-relational` and `adapter-document` the
 engines, `jobs` the durable queue and the bulk handlers, `telemetry` the
 measurements, `api` the HTTP surface and the authorization, `host` the
 binary.
+
+== License
+
+GPL-3.
