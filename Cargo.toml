@@ -12,3 +12,6 @@ members = [
     "api",
     "host",
 ]
+
+[profile.dev]
+debug = false
