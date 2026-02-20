@@ -33,6 +33,8 @@ pub const ENV_AUTH_CAPABILITIES: &str = "FHIR_AUTH_CAPABILITIES";
 pub const ENV_AUTH_KEYS: &str = "FHIR_AUTH_KEYS";
 pub const ENV_METRICS_CREDENTIAL: &str = "FHIR_METRICS_CREDENTIAL";
 
+pub const ENV_ISSUER_PINS: &str = "FHIR_ISSUER_PINS";
+
 pub const ENV_STORE_CONNECTIONS: &str = "FHIR_STORE_CONNECTIONS";
 
 pub const DEFAULT_STORE_CONNECTIONS: u32 = 16;
@@ -90,6 +92,7 @@ pub struct Config {
     pub wait: std::time::Duration,
     pub authorization: Option<Authorization>,
     pub keys: Option<KeySet>,
+    pub pins: Vec<String>,
     pub scrape: Scrape,
 }
 
@@ -246,6 +249,7 @@ impl Config {
             wait,
             authorization: authorization(env)?,
             keys: keys(env)?,
+            pins: listed(env, ENV_ISSUER_PINS),
             scrape: scrape(env)?,
         })
     }
@@ -346,6 +350,15 @@ mod tests {
         env.insert(ENV_STORE_WAIT.to_owned(), "250".to_owned());
         let brief = Config::parse(&env).expect("a named wait must parse");
         assert_eq!(brief.wait, std::time::Duration::from_millis(250));
+    }
+
+    #[test]
+    fn the_thumbprints_discovery_may_return_are_configured() {
+        let mut env = env_empty();
+        assert!(Config::parse(&env).expect("defaults must parse").pins.is_empty());
+        env.insert(ENV_ISSUER_PINS.to_owned(), "one, two".to_owned());
+        let pinned = Config::parse(&env).expect("named pins must parse");
+        assert_eq!(pinned.pins, vec!["one".to_owned(), "two".to_owned()]);
     }
 
     #[test]

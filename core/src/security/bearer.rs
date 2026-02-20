@@ -83,6 +83,37 @@ pub struct Key {
     published: Jwk,
 }
 
+impl Key {
+    pub fn thumbprint(&self) -> Option<String> {
+        let published = serde_json::to_value(&self.published).ok()?;
+        let kind = published.get("kty").and_then(Value::as_str)?;
+        let members: &[&str] = match kind {
+            "RSA" => &["e", "kty", "n"],
+            "EC" => &["crv", "kty", "x", "y"],
+            "OKP" => &["crv", "kty", "x"],
+            _ => return None,
+        };
+        let mut canonical = String::from("{");
+        for (at, member) in members.iter().enumerate() {
+            let value = published.get(*member).and_then(Value::as_str)?;
+            if at > 0 {
+                canonical.push(',');
+            }
+            canonical.push_str(&format!("{}:{}", enquoted(member), enquoted(value)));
+        }
+        canonical.push('}');
+        let digest = <sha2::Sha256 as sha2::Digest>::digest(canonical.as_bytes());
+        Some(base64::Engine::encode(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+            digest,
+        ))
+    }
+}
+
+fn enquoted(value: &str) -> String {
+    Value::String(value.to_owned()).to_string()
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct KeySet {
     pub keys: Vec<Key>,
@@ -158,6 +189,10 @@ impl KeySet {
             true => Err(Error::Config("key set carries no usable key".to_owned())),
             false => Ok(KeySet { keys }),
         }
+    }
+
+    pub fn thumbprints(&self) -> Vec<String> {
+        self.keys.iter().filter_map(Key::thumbprint).collect()
     }
 
     fn matching(&self, id: Option<&str>, algorithm: Algorithm) -> Vec<&Key> {

@@ -27,10 +27,14 @@ async fn run() -> Result<(), Error> {
         .await?
         .with_entries(config.entries());
     if let Some(authorization) = config.authorization.clone() {
+        let issuer = authorization.issuer.clone();
         service = service.with_authorization(authorization);
         let keys: Arc<dyn Keys> = match config.keys.clone() {
             Some(set) => Arc::new(HeldKeys::new(set)),
-            None => Arc::new(DiscoveredKeys::new(DISCOVERY_TIMEOUT)),
+            None => Arc::new(
+                DiscoveredKeys::new(DISCOVERY_TIMEOUT)
+                    .pinning(&issuer, config.pins.clone()),
+            ),
         };
         let trail = StoredTrail::resumed(
             Arc::clone(&store),

@@ -17,7 +17,7 @@ async fn a_violated_constraint_is_permanent_and_is_not_repeated() {
     let failure = sqlx::query(&statement).execute(&pool).await.unwrap_err();
     assert_eq!(classify(&failure), Fault::Permanent);
     assert!(!classify(&failure).is_retriable());
-    let _ = store.health();
+    let _ = store.health().await;
     support::drop_namespace(&pool, &namespace).await;
 }
 

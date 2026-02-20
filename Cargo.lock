@@ -747,8 +747,10 @@ dependencies = [
  "sha2",
  "time",
  "tokio",
+ "tokio-rustls",
  "tower",
  "uuid",
+ "webpki-roots",
 ]
 
 [[package]]
@@ -761,6 +763,7 @@ dependencies = [
  "rand_core 0.6.4",
  "regex",
  "serde_json",
+ "sha2",
  "uuid",
 ]
 
