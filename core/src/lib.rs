@@ -1,6 +1,6 @@
 pub mod catalogue;
-pub mod correlation;
 pub mod convert;
+pub mod correlation;
 pub mod envelope;
 pub mod error;
 pub mod etag;
@@ -16,11 +16,16 @@ pub mod security;
 pub mod terminology;
 pub mod validate;
 pub mod version;
+pub mod xml;
 
 pub use catalogue::{Catalogue, Unsupplied};
-pub use convert::{convert, ApprovedTemplates, Conversion, InputType, TemplateCollection, Templates};
+pub use convert::{
+    convert, ApprovedTemplates, Conversion, InputType, TemplateCollection, Templates,
+};
 pub use correlation::CorrelationId;
-pub use envelope::{with_assigned_meta, ResourceEnvelope, PLACEHOLDER_INSTANT, PLACEHOLDER_VERSION};
+pub use envelope::{
+    with_assigned_meta, ResourceEnvelope, PLACEHOLDER_INSTANT, PLACEHOLDER_VERSION,
+};
 pub use error::Error;
 pub use etag::WeakEtag;
 pub use fhir_version::FhirVersion;

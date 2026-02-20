@@ -1,4 +1,3 @@
-
 use crate::fhir_version::FhirVersion;
 use crate::Error;
 use regex::Regex;
@@ -71,6 +70,27 @@ struct Primitive {
     pattern: Option<Regex>,
 }
 
+#[derive(Debug, Clone)]
+pub struct Field {
+    type_name: String,
+    repeating: bool,
+    shape: Option<String>,
+}
+
+impl Field {
+    pub fn type_name(&self) -> &str {
+        &self.type_name
+    }
+
+    pub fn repeating(&self) -> bool {
+        self.repeating
+    }
+
+    pub fn shape(&self) -> Option<&str> {
+        self.shape.as_deref()
+    }
+}
+
 #[derive(Debug)]
 pub struct Model {
     version: FhirVersion,
@@ -109,7 +129,9 @@ impl Model {
             .to_owned();
         let resources = names(held.get("resources"));
         if resources.is_empty() {
-            return Err(Error::Config("the definitions name no resource type".to_owned()));
+            return Err(Error::Config(
+                "the definitions name no resource type".to_owned(),
+            ));
         }
         let mut primitives = BTreeMap::new();
         if let Some(object) = held.get("primitives").and_then(Value::as_object) {
@@ -182,6 +204,43 @@ impl Model {
         self.resources.contains(name)
     }
 
+    pub fn has_node(&self, name: &str) -> bool {
+        self.nodes.contains_key(name)
+    }
+
+    pub fn shape(&self, code: &str) -> Option<&str> {
+        self.primitives
+            .get(code)
+            .map(|primitive| primitive.shape.as_str())
+    }
+
+    pub fn order(&self, node: &str, named: &str) -> Option<usize> {
+        let elements = self.nodes.get(node)?;
+        elements
+            .iter()
+            .position(|element| match element.is_choice() {
+                false => element.name == named,
+                true => chosen(element, named).is_some(),
+            })
+    }
+
+    pub fn field(&self, node: &str, named: &str) -> Option<Field> {
+        let elements = self.nodes.get(node)?;
+        let (element, code) = elements
+            .iter()
+            .find_map(|element| match element.is_choice() {
+                false if element.name == named => Some((element, None)),
+                true => chosen(element, named).map(|code| (element, Some(code))),
+                false => None,
+            })?;
+        let type_name = code.unwrap_or_else(|| element.types.first().cloned().unwrap_or_default());
+        Some(Field {
+            shape: self.primitives.get(&type_name).map(|p| p.shape.clone()),
+            type_name,
+            repeating: element.max != 1,
+        })
+    }
+
     pub fn resources(&self) -> impl Iterator<Item = &str> {
         self.resources.iter().map(String::as_str)
     }
@@ -241,18 +300,22 @@ impl Model {
         object: &Map<String, Value>,
         findings: &mut Vec<Finding>,
     ) {
-        let Some(elements) = self.nodes.get(node) else { return };
+        let Some(elements) = self.nodes.get(node) else {
+            return;
+        };
         let mut seen: BTreeSet<&str> = BTreeSet::new();
         for (key, value) in object {
             if key == "resourceType" && self.resources.contains(node) {
                 continue;
             }
             let named = key.strip_prefix('_').unwrap_or(key);
-            let found = elements.iter().find_map(|element| match element.is_choice() {
-                false if element.name == named => Some((element, None)),
-                true => chosen(element, named).map(|code| (element, Some(code))),
-                false => None,
-            });
+            let found = elements
+                .iter()
+                .find_map(|element| match element.is_choice() {
+                    false if element.name == named => Some((element, None)),
+                    true => chosen(element, named).map(|code| (element, Some(code))),
+                    false => None,
+                });
             let Some((element, code)) = found else {
                 findings.push(Finding {
                     rule: Rule::Structure,
@@ -449,7 +512,9 @@ impl Model {
     }
 
     fn code(&self, url: &str, text: &str, at: &str, findings: &mut Vec<Finding>) {
-        let Some(codes) = self.bindings.get(url) else { return };
+        let Some(codes) = self.bindings.get(url) else {
+            return;
+        };
         if !codes.contains(text) {
             findings.push(Finding {
                 rule: Rule::Binding,
@@ -494,7 +559,13 @@ fn element(held: &Value) -> Option<Element> {
         types: held
             .get("t")
             .and_then(Value::as_array)
-            .map(|items| items.iter().filter_map(Value::as_str).map(str::to_owned).collect())
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            })
             .unwrap_or_default(),
         min: held.get("min").and_then(Value::as_i64).unwrap_or(0),
         max: held.get("max").and_then(Value::as_i64).unwrap_or(-1),
@@ -676,7 +747,9 @@ mod tests {
         let mut body = valid();
         body["contained"] = serde_json::json!([{"resourceType": "Patient", "nonesuch": 1}]);
         let findings = found(body);
-        assert!(findings.iter().any(|finding| finding.path.contains("nonesuch")));
+        assert!(findings
+            .iter()
+            .any(|finding| finding.path.contains("nonesuch")));
     }
 
     #[test]

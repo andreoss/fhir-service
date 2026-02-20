@@ -10,6 +10,7 @@ pub enum Error {
     InvalidFhirVersion(String),
     InvalidInstant(String),
     InvalidJson(String),
+    InvalidXml(String),
     InvalidEnvelope(String),
     Config(String),
     NotFound,
@@ -48,33 +49,41 @@ impl Error {
 
     pub fn to_operation_outcome(&self) -> OperationOutcome {
         match self {
-            Error::InvalidResourceType(value) => {
-                OperationOutcome::error(IssueCode::Invalid, format!("invalid resource type: {value:?}"))
-            }
-            Error::InvalidResourceId(value) => {
-                OperationOutcome::error(IssueCode::Invalid, format!("invalid resource id: {value:?}"))
-            }
+            Error::InvalidResourceType(value) => OperationOutcome::error(
+                IssueCode::Invalid,
+                format!("invalid resource type: {value:?}"),
+            ),
+            Error::InvalidResourceId(value) => OperationOutcome::error(
+                IssueCode::Invalid,
+                format!("invalid resource id: {value:?}"),
+            ),
             Error::InvalidVersion(value) => {
                 OperationOutcome::error(IssueCode::Invalid, format!("invalid version: {value:?}"))
             }
             Error::InvalidEtag(value) => {
                 OperationOutcome::error(IssueCode::Invalid, format!("invalid etag: {value:?}"))
             }
-            Error::InvalidFhirVersion(value) => {
-                OperationOutcome::error(IssueCode::Invalid, format!("invalid fhir version: {value:?}"))
-            }
+            Error::InvalidFhirVersion(value) => OperationOutcome::error(
+                IssueCode::Invalid,
+                format!("invalid fhir version: {value:?}"),
+            ),
             Error::InvalidInstant(value) => {
                 OperationOutcome::error(IssueCode::Invalid, format!("invalid instant: {value:?}"))
             }
             Error::InvalidJson(message) => {
                 OperationOutcome::error(IssueCode::Invalid, format!("malformed json: {message}"))
             }
+            Error::InvalidXml(message) => {
+                OperationOutcome::error(IssueCode::Invalid, format!("malformed xml: {message}"))
+            }
             Error::InvalidEnvelope(message) => {
                 OperationOutcome::error(IssueCode::Invalid, format!("invalid envelope: {message}"))
             }
             Error::Config(_) => OperationOutcome::error(IssueCode::Processing, CONTAINED),
             Error::NotFound => OperationOutcome::error(IssueCode::NotFound, "resource not found"),
-            Error::VersionConflict => OperationOutcome::error(IssueCode::Conflict, "version conflict"),
+            Error::VersionConflict => {
+                OperationOutcome::error(IssueCode::Conflict, "version conflict")
+            }
             Error::StaleVersion => OperationOutcome::error(
                 IssueCode::StaleVersion,
                 "the version named by if-match is not the current version",
@@ -83,9 +92,10 @@ impl Error {
                 IssueCode::NotAcceptable,
                 format!("unsupported format: {value:?}"),
             ),
-            Error::Duplicate(value) => {
-                OperationOutcome::error(IssueCode::Duplicate, format!("duplicate resource: {value:?}"))
-            }
+            Error::Duplicate(value) => OperationOutcome::error(
+                IssueCode::Duplicate,
+                format!("duplicate resource: {value:?}"),
+            ),
             Error::Internal(_) => OperationOutcome::error(IssueCode::Processing, CONTAINED),
             Error::Deleted => OperationOutcome::error(IssueCode::Deleted, "resource deleted"),
             Error::MethodNotAllowed => {
@@ -108,10 +118,9 @@ impl Error {
             Error::Forbidden(message) => {
                 OperationOutcome::error(IssueCode::Forbidden, format!("out of scope: {message}"))
             }
-            Error::Unauthenticated(message) => OperationOutcome::error(
-                IssueCode::Login,
-                format!("not authenticated: {message}"),
-            ),
+            Error::Unauthenticated(message) => {
+                OperationOutcome::error(IssueCode::Login, format!("not authenticated: {message}"))
+            }
             Error::NoMatch(message) => {
                 OperationOutcome::error(IssueCode::BusinessRule, message.clone())
             }
@@ -133,6 +142,7 @@ impl fmt::Display for Error {
             Error::InvalidFhirVersion(value) => write!(f, "invalid fhir version: {value:?}"),
             Error::InvalidInstant(value) => write!(f, "invalid instant: {value:?}"),
             Error::InvalidJson(message) => write!(f, "malformed json: {message}"),
+            Error::InvalidXml(message) => write!(f, "malformed xml: {message}"),
             Error::InvalidEnvelope(message) => write!(f, "invalid envelope: {message}"),
             Error::Config(message) => write!(f, "configuration error: {message}"),
             Error::NotFound => write!(f, "resource not found"),
@@ -178,13 +188,19 @@ mod tests {
     #[test]
     fn not_found_maps_to_404() {
         assert_eq!(Error::NotFound.http_status(), 404);
-        assert_eq!(Error::NotFound.to_operation_outcome().code, IssueCode::NotFound);
+        assert_eq!(
+            Error::NotFound.to_operation_outcome().code,
+            IssueCode::NotFound
+        );
     }
 
     #[test]
     fn version_conflict_maps_to_409() {
         assert_eq!(Error::VersionConflict.http_status(), 409);
-        assert_eq!(Error::VersionConflict.to_operation_outcome().code, IssueCode::Conflict);
+        assert_eq!(
+            Error::VersionConflict.to_operation_outcome().code,
+            IssueCode::Conflict
+        );
     }
 
     #[test]
@@ -222,26 +238,38 @@ mod tests {
     #[test]
     fn deleted_maps_to_gone() {
         assert_eq!(Error::Deleted.http_status(), 410);
-        assert_eq!(Error::Deleted.to_operation_outcome().code, IssueCode::Deleted);
+        assert_eq!(
+            Error::Deleted.to_operation_outcome().code,
+            IssueCode::Deleted
+        );
     }
 
     #[test]
     fn config_error_maps_to_internal() {
         assert_eq!(Error::Config("boom".to_owned()).http_status(), 500);
-        assert_eq!(Error::Config("boom".to_owned()).to_operation_outcome().code, IssueCode::Processing);
+        assert_eq!(
+            Error::Config("boom".to_owned()).to_operation_outcome().code,
+            IssueCode::Processing
+        );
     }
 
     #[test]
     fn method_not_allowed_maps_to_405() {
         assert_eq!(Error::MethodNotAllowed.http_status(), 405);
-        assert_eq!(Error::MethodNotAllowed.to_operation_outcome().code, IssueCode::NotAllowed);
+        assert_eq!(
+            Error::MethodNotAllowed.to_operation_outcome().code,
+            IssueCode::NotAllowed
+        );
     }
 
     #[test]
     fn multiple_matches_maps_to_412() {
         let error = Error::MultipleMatches;
         assert_eq!(error.http_status(), 412);
-        assert_eq!(error.to_operation_outcome().code, IssueCode::MultipleMatches);
+        assert_eq!(
+            error.to_operation_outcome().code,
+            IssueCode::MultipleMatches
+        );
     }
 
     #[test]
@@ -266,7 +294,10 @@ mod tests {
         assert!(invalid.to_string().contains("_count"));
         let unsupported = Error::UnsupportedParameter("_sort \"name\"".to_owned());
         assert_eq!(unsupported.http_status(), 400);
-        assert_eq!(unsupported.to_operation_outcome().code, IssueCode::NotSupported);
+        assert_eq!(
+            unsupported.to_operation_outcome().code,
+            IssueCode::NotSupported
+        );
         assert!(unsupported.to_string().contains("_sort"));
     }
 
@@ -311,31 +342,75 @@ mod tests {
     #[test]
     fn every_failure_maps_to_the_status_its_kind_is_answered_with() {
         let expected: Vec<(Error, u16, IssueCode)> = vec![
-            (Error::InvalidResourceType("X".to_owned()), 400, IssueCode::Invalid),
-            (Error::InvalidResourceId("X".to_owned()), 400, IssueCode::Invalid),
-            (Error::InvalidVersion("X".to_owned()), 400, IssueCode::Invalid),
+            (
+                Error::InvalidResourceType("X".to_owned()),
+                400,
+                IssueCode::Invalid,
+            ),
+            (
+                Error::InvalidResourceId("X".to_owned()),
+                400,
+                IssueCode::Invalid,
+            ),
+            (
+                Error::InvalidVersion("X".to_owned()),
+                400,
+                IssueCode::Invalid,
+            ),
             (Error::InvalidEtag("X".to_owned()), 400, IssueCode::Invalid),
-            (Error::InvalidFhirVersion("X".to_owned()), 400, IssueCode::Invalid),
-            (Error::InvalidInstant("X".to_owned()), 400, IssueCode::Invalid),
+            (
+                Error::InvalidFhirVersion("X".to_owned()),
+                400,
+                IssueCode::Invalid,
+            ),
+            (
+                Error::InvalidInstant("X".to_owned()),
+                400,
+                IssueCode::Invalid,
+            ),
             (Error::InvalidJson("X".to_owned()), 400, IssueCode::Invalid),
-            (Error::InvalidEnvelope("X".to_owned()), 400, IssueCode::Invalid),
+            (
+                Error::InvalidEnvelope("X".to_owned()),
+                400,
+                IssueCode::Invalid,
+            ),
             (Error::InvalidPatch("X".to_owned()), 400, IssueCode::Invalid),
-            (Error::InvalidParameter("X".to_owned()), 400, IssueCode::Invalid),
-            (Error::UnsupportedParameter("X".to_owned()), 400, IssueCode::NotSupported),
-            (Error::Unauthenticated("X".to_owned()), 401, IssueCode::Login),
+            (
+                Error::InvalidParameter("X".to_owned()),
+                400,
+                IssueCode::Invalid,
+            ),
+            (
+                Error::UnsupportedParameter("X".to_owned()),
+                400,
+                IssueCode::NotSupported,
+            ),
+            (
+                Error::Unauthenticated("X".to_owned()),
+                401,
+                IssueCode::Login,
+            ),
             (Error::Forbidden("X".to_owned()), 403, IssueCode::Forbidden),
             (Error::NotFound, 404, IssueCode::NotFound),
             (Error::MethodNotAllowed, 405, IssueCode::NotAllowed),
             (Error::VersionConflict, 409, IssueCode::Conflict),
             (Error::StaleVersion, 412, IssueCode::StaleVersion),
-            (Error::UnsupportedFormat("xml".to_owned()), 406, IssueCode::NotAcceptable),
+            (
+                Error::UnsupportedFormat("xml".to_owned()),
+                406,
+                IssueCode::NotAcceptable,
+            ),
             (Error::Duplicate("X".to_owned()), 409, IssueCode::Duplicate),
             (Error::Deleted, 410, IssueCode::Deleted),
             (Error::MultipleMatches, 412, IssueCode::MultipleMatches),
             (Error::NoMatch("X".to_owned()), 422, IssueCode::BusinessRule),
             (Error::Config("X".to_owned()), 500, IssueCode::Processing),
             (Error::Internal("X".to_owned()), 500, IssueCode::Processing),
-            (Error::Unavailable("X".to_owned()), 503, IssueCode::Transient),
+            (
+                Error::Unavailable("X".to_owned()),
+                503,
+                IssueCode::Transient,
+            ),
         ];
         assert_eq!(expected.len(), every_failure().len());
         for (error, status, code) in expected {
