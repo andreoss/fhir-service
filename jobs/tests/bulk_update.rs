@@ -204,6 +204,22 @@ async fn a_maximum_count_caps_what_one_update_patches() {
     .await;
 
     assert_eq!(outcome_of(&record)["handled"], 1);
+    let first = body_of(store.as_ref(), "p1").await;
+    let second = body_of(store.as_ref(), "p2").await;
+    assert_eq!(first["active"], false, "the patched one is the first held");
+    assert_eq!(second["active"], true, "the one beyond the cap is untouched");
+    assert_eq!(
+        store
+            .read(&id("p2"))
+            .await
+            .unwrap()
+            .version_id()
+            .as_str(),
+        "1",
+        "a resource beyond the cap gains no version"
+    );
+    assert_eq!(first["name"][0]["family"], "Stone", "nothing else moved");
+    assert_eq!(second["name"][0]["family"], "Rivers");
 }
 
 #[tokio::test]

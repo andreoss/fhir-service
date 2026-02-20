@@ -104,14 +104,55 @@ fn delimited(payload: &str) -> Vec<Unit> {
     )
 }
 
+pub const IMPORT_FAILURES: &str = "import";
+
 pub struct ImportJob {
     store: Arc<dyn ResourceStore>,
     version: FhirVersion,
+    sink: Option<Arc<dyn BulkStore>>,
+    itemised: std::sync::Mutex<BTreeMap<String, Vec<String>>>,
 }
 
 impl ImportJob {
     pub fn new(store: Arc<dyn ResourceStore>, version: FhirVersion) -> ImportJob {
-        ImportJob { store, version }
+        ImportJob {
+            store,
+            version,
+            sink: None,
+            itemised: std::sync::Mutex::new(BTreeMap::new()),
+        }
+    }
+
+    pub fn reporting(self, sink: Arc<dyn BulkStore>) -> ImportJob {
+        ImportJob {
+            sink: Some(sink),
+            ..self
+        }
+    }
+
+    async fn itemise(&self, job: &JobContext, failures: &[String]) -> Result<(), Error> {
+        let Some(sink) = &self.sink else {
+            return Ok(());
+        };
+        if failures.is_empty() {
+            return Ok(());
+        }
+        let held = {
+            let mut carried = self
+                .itemised
+                .lock()
+                .map_err(|_| Error::Internal("the import report is poisoned".to_owned()))?;
+            let held = carried.entry(job.id.as_str().to_owned()).or_default();
+            held.extend_from_slice(failures);
+            held.clone()
+        };
+        report::record_failures(
+            sink.as_ref(),
+            &job.id,
+            &report::failure_file("", IMPORT_FAILURES),
+            &held,
+        )
+        .await
     }
 
     async fn versioned(&self, envelope: ResourceEnvelope) -> Result<bool, Error> {
@@ -131,15 +172,17 @@ impl JobHandler for ImportJob {
         Ok(described(&job.payload).unwrap_or_else(|| delimited(&job.payload)))
     }
 
-    async fn process(&self, _job: &JobContext, unit: &Unit) -> Result<UnitOutcome, Error> {
+    async fn process(&self, job: &JobContext, unit: &Unit) -> Result<UnitOutcome, Error> {
         let envelope = match ResourceEnvelope::parse_supplied(self.version, unit.detail.as_bytes()) {
             Ok(envelope) => envelope,
             Err(error) => {
+                let failures = vec![format!("{}: {error}", unit.label)];
+                self.itemise(job, &failures).await?;
                 return Ok(UnitOutcome {
                     handled: 0,
-                    failures: vec![format!("{}: {error}", unit.label)],
+                    failures,
                     ..UnitOutcome::default()
-                })
+                });
             }
         };
         let written = match self.store.create(envelope.clone()).await {
@@ -153,10 +196,14 @@ impl JobHandler for ImportJob {
                 unchanged: 1,
                 ..UnitOutcome::default()
             }),
-            Err(error) => Ok(UnitOutcome {
-                failures: vec![format!("{}: {error}", unit.label)],
-                ..UnitOutcome::default()
-            }),
+            Err(error) => {
+                let failures = vec![format!("{}: {error}", unit.label)];
+                self.itemise(job, &failures).await?;
+                Ok(UnitOutcome {
+                    failures,
+                    ..UnitOutcome::default()
+                })
+            }
         }
     }
 }

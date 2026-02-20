@@ -32,7 +32,7 @@ pub trait BulkStore: Send + Sync {
 
     async fn purge(&self, job: &JobId) -> Result<usize, Error>;
 
-    fn health(&self) -> Result<(), Error> {
+    async fn health(&self) -> Result<(), Error> {
         Ok(())
     }
 }

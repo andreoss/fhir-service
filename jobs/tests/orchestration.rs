@@ -178,11 +178,34 @@ async fn a_malformed_payload_fails_the_job_and_not_the_worker() {
 }
 
 #[tokio::test]
-async fn an_orchestrator_reports_the_kinds_it_runs() {
+async fn a_kind_no_handler_was_registered_for_is_refused_and_the_job_never_runs() {
     let store = seeded().await;
-    let orchestrator = Orchestrator::default().with(Arc::new(ExportJob::new(store, sink())));
-    assert_eq!(orchestrator.kinds(), vec![JobKind::Export]);
-    assert!(orchestrator.handler(JobKind::Import).is_err());
+    let (jobs, _ticker) = queue();
+    let orchestrator = Orchestrator::default().with(Arc::new(ExportJob::new(
+        Arc::clone(&store) as Arc<dyn ResourceStore>,
+        sink(),
+    )));
+
+    let refused = ran(
+        Arc::clone(&jobs),
+        orchestrator,
+        JobRequest::new(job("u1"), JobKind::Import, r#"{"resources":[]}"#),
+    )
+    .await;
+
+    assert_eq!(
+        refused.state,
+        JobState::Failed,
+        "a kind this instance runs no handler for cannot be retried into success"
+    );
+    assert_eq!(refused.attempt, 1, "a refusal spends no further attempt");
+    let told = refused.outcome.unwrap_or_default();
+    assert!(told.contains("import"), "{told}");
+    assert_eq!(
+        store.search(&SearchQuery::default()).await.unwrap().entries.len(),
+        2,
+        "a refused job touches no record"
+    );
 }
 
 #[tokio::test]

@@ -61,7 +61,7 @@ impl BulkStore for MemoryBulkStore {
             .unwrap_or(0))
     }
 
-    fn health(&self) -> Result<(), Error> {
+    async fn health(&self) -> Result<(), Error> {
         self.held().map(|_| ())
     }
 }

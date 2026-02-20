@@ -59,6 +59,26 @@ impl Dependency {
             }),
         }
     }
+
+    pub fn of_queue(name: &'static str, jobs: Arc<dyn fhir_store::JobStore>) -> Dependency {
+        Dependency {
+            name,
+            check: Arc::new(move || {
+                let jobs = Arc::clone(&jobs);
+                Box::pin(async move { jobs.health().await.map_err(|error| error.to_string()) })
+            }),
+        }
+    }
+
+    pub fn of_outputs(name: &'static str, outputs: Arc<dyn fhir_store::BulkStore>) -> Dependency {
+        Dependency {
+            name,
+            check: Arc::new(move || {
+                let outputs = Arc::clone(&outputs);
+                Box::pin(async move { outputs.health().await.map_err(|error| error.to_string()) })
+            }),
+        }
+    }
 }
 
 #[derive(Clone)]

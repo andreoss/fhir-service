@@ -25,15 +25,30 @@ fn patient(id: &str, active: bool) -> Vec<u8> {
 }
 
 #[test]
-fn health_endpoint_reports_ok() {
+fn health_names_every_dependency_the_instance_opened() {
     let (child, port) = spawn_server();
     let reply = request(port, "GET", "/health", &[], &[]);
     stop(child);
     assert_eq!(reply.status, 200);
+    assert_eq!(header(&reply, "cache-control"), "no-store");
     let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
     assert_eq!(value["status"], "ok");
-    assert_eq!(value["dependencies"][0]["name"], "store");
-    assert_eq!(value["dependencies"][0]["status"], "ok");
+    let reported = value["dependencies"]
+        .as_array()
+        .expect("dependencies are listed");
+    let mut named: Vec<&str> = reported
+        .iter()
+        .map(|held| held["name"].as_str().expect("a dependency is named"))
+        .collect();
+    named.sort();
+    assert_eq!(
+        named,
+        vec!["outputs", "queue", "store"],
+        "the queue and the output sink are opened and must be reported"
+    );
+    for held in reported {
+        assert_eq!(held["status"], "ok", "{held}");
+    }
 }
 
 #[test]
@@ -830,30 +845,43 @@ fn a_submitted_job_is_polled_to_completion_over_http() {
 }
 
 #[test]
-fn a_submitted_job_is_cancelled_over_http() {
+fn a_submitted_job_is_cancelled_over_http_and_its_status_is_then_gone() {
     let (child, port) = spawn_server();
 
-    let submitted = request(port, "POST", "/$import", &[], br#"{"resources":[]}"#);
-    assert_eq!(submitted.status, 202, "submit failed: {}", submitted.body);
-    let location = header(&submitted, "content-location").to_owned();
-    let path = location
-        .split_once("/_jobs/")
-        .map(|(_, id)| format!("/_jobs/{id}"))
-        .expect("a status location carries an id");
+    let mut backlog = Vec::new();
+    for _ in 0..40 {
+        let submitted = request(port, "POST", "/$import", &[], br#"{"resources":[]}"#);
+        assert_eq!(submitted.status, 202, "submit failed: {}", submitted.body);
+        backlog.push(job_path(&submitted));
+    }
+    let path = backlog.last().expect("a job was submitted").clone();
 
     let cancelled = request(port, "DELETE", &path, &[], &[]);
-    let polled = request(port, "GET", &path, &[], &[]);
+    assert_eq!(
+        cancelled.status, 202,
+        "a stop is accepted: {}",
+        cancelled.body
+    );
+
+    let mut polled = request(port, "GET", &path, &[], &[]);
+    for _ in 0..100 {
+        if polled.status != 202 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+        polled = request(port, "GET", &path, &[], &[]);
+    }
+    let repeated = request(port, "DELETE", &path, &[], &[]);
     stop(child);
 
-    assert!(
-        cancelled.status == 202 || cancelled.status == 409,
-        "cancel answered {}",
-        cancelled.status
+    assert_eq!(
+        polled.status, 404,
+        "a stopped job carries no status: {}",
+        polled.body
     );
-    assert!(
-        polled.status == 404 || polled.status == 200,
-        "poll answered {}",
-        polled.status
+    assert_eq!(
+        repeated.status, 409,
+        "a job already ended cannot be stopped again"
     );
 }
 

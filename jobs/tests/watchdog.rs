@@ -75,15 +75,26 @@ async fn each_sweep_waits_for_its_own_schedule() {
 }
 
 #[tokio::test]
-async fn a_sweep_that_finds_nothing_changes_nothing() {
+async fn a_sweep_leaves_a_job_whose_lease_still_runs_where_it_stands() {
     let ticker = StepTicker::starting_at(1_000);
     let jobs = Arc::new(MemoryJobStore::new(ticker.ticker()));
     let watchdog = watched(&jobs, &ticker, Schedule::default());
+    jobs.submit(JobRequest::new(job("n1"), JobKind::Export, r#"{"a":1}"#))
+        .await
+        .unwrap();
+    jobs.claim(&Lease::new("one", 60_000)).await.unwrap();
+    let before = jobs.fetch(&job("n1")).await.unwrap();
 
     let swept = watchdog.sweep().await.unwrap();
 
-    assert!(swept.is_empty());
-    assert_eq!(swept, fhir_jobs::Sweep::default());
+    assert!(swept.is_empty(), "{swept:?}");
+    let after = jobs.fetch(&job("n1")).await.unwrap();
+    assert_eq!(after.state, before.state);
+    assert_eq!(after.worker, before.worker);
+    assert_eq!(after.lease, before.lease);
+    assert_eq!(after.attempt, before.attempt);
+    assert_eq!(after.payload, before.payload, "a live job keeps its request");
+    assert_eq!(after.updated, before.updated);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

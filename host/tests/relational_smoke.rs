@@ -3,7 +3,8 @@ use std::net::TcpStream;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
-const SKIPPED: &str = "skipped: the relational engine is not available";
+const REQUIRED: &str =
+    "the relational engine is required and none answered; start the services named in compose.yaml";
 
 struct Reply {
     status: u16,
@@ -24,7 +25,7 @@ fn schema() -> String {
     format!("t_smoke_{stamp}")
 }
 
-fn spawn_server(namespace: &str) -> Option<(Child, u16)> {
+fn spawn_server(namespace: &str) -> (Child, u16) {
     let mut child = Command::new(env!("CARGO_BIN_EXE_fhir-host"))
         .env("FHIR_BACKEND", "relational")
         .env("FHIR_BIND", "127.0.0.1:0")
@@ -32,7 +33,7 @@ fn spawn_server(namespace: &str) -> Option<(Child, u16)> {
         .env("FHIR_DATABASE_URL", url())
         .env("FHIR_SCHEMA", namespace)
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
         .expect("failed to spawn binary");
     let stdout = child.stdout.take().expect("missing stdout");
@@ -43,12 +44,15 @@ fn spawn_server(namespace: &str) -> Option<(Child, u16)> {
         .rsplit_once(':')
         .and_then(|(_, port)| port.parse().ok());
     match (read, port) {
-        (_, Some(port)) => Some((child, port)),
+        (_, Some(port)) => (child, port),
         _ => {
+            let mut told = String::new();
+            if let Some(stderr) = child.stderr.take() {
+                let _ = BufReader::new(stderr).read_line(&mut told);
+            }
             let _ = child.kill();
             let _ = child.wait();
-            eprintln!("{SKIPPED}");
-            None
+            panic!("{REQUIRED}: {}", told.trim());
         }
     }
 }
@@ -127,11 +131,24 @@ fn json(body: &str) -> serde_json::Value {
 #[test]
 fn the_service_serves_every_interaction_over_the_relational_backend() {
     let namespace = schema();
-    let Some((child, port)) = spawn_server(&namespace) else { return };
+    let (child, port) = spawn_server(&namespace);
 
     let health = request(port, "GET", "/health", &[], &[]);
     assert_eq!(health.status, 200, "{}", health.body);
-    assert_eq!(json(&health.body)["status"], "ok");
+    let reported = json(&health.body);
+    assert_eq!(reported["status"], "ok");
+    let mut named: Vec<String> = reported["dependencies"]
+        .as_array()
+        .expect("dependencies are listed")
+        .iter()
+        .map(|held| held["name"].as_str().expect("a dependency is named").to_owned())
+        .collect();
+    named.sort();
+    assert_eq!(
+        named,
+        vec!["outputs", "queue", "store"],
+        "each engine this instance opened is reported"
+    );
 
     let created = request(
         port,
@@ -221,7 +238,7 @@ fn patient_text(id: &str, family: &str) -> String {
 #[test]
 fn bundles_are_atomic_over_the_relational_backend() {
     let namespace = schema();
-    let Some((child, port)) = spawn_server(&namespace) else { return };
+    let (child, port) = spawn_server(&namespace);
     let headers = [("Content-Type", "application/fhir+json")];
 
     let applied = request(
@@ -297,9 +314,7 @@ fn header<'a>(reply: &'a Reply, name: &str) -> &'a str {
 #[test]
 fn a_job_runs_to_completion_over_the_relational_backend() {
     let namespace = schema();
-    let Some((child, port)) = spawn_server(&namespace) else {
-        return;
-    };
+    let (child, port) = spawn_server(&namespace);
 
     let created = request(port, "POST", "/Patient", &[], &patient("jr-1", "Stone", true));
     assert_eq!(created.status, 201, "create failed: {}", created.body);

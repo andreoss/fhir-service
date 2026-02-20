@@ -448,7 +448,12 @@ impl JobStore for RelationalJobStore {
             .collect())
     }
 
-    fn health(&self) -> Result<(), Error> {
-        Ok(())
+    async fn health(&self) -> Result<(), Error> {
+        let statement = format!("select count(*) from {}", self.table());
+        sqlx::query(&statement)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|error| faulted("reading the queue", error))
+            .map(|_| ())
     }
 }

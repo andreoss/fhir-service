@@ -3,7 +3,8 @@ use std::net::TcpStream;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
-const SKIPPED: &str = "skipped: the document engine is not available";
+const REQUIRED: &str =
+    "the document engine is required and none answered; start the services named in compose.yaml";
 
 fn url() -> String {
     std::env::var("FHIR_DOCUMENT_URL")
@@ -18,7 +19,7 @@ fn namespace() -> String {
     format!("t_smoke_{stamp}")
 }
 
-fn spawn_server(space: &str) -> Option<(Child, u16)> {
+fn spawn_server(space: &str) -> (Child, u16) {
     let mut child = Command::new(env!("CARGO_BIN_EXE_fhir-host"))
         .env("FHIR_BACKEND", "document")
         .env("FHIR_BIND", "127.0.0.1:0")
@@ -26,7 +27,7 @@ fn spawn_server(space: &str) -> Option<(Child, u16)> {
         .env("FHIR_DOCUMENT_URL", url())
         .env("FHIR_DOCUMENT_NAMESPACE", space)
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
         .expect("failed to spawn binary");
     let stdout = child.stdout.take().expect("missing stdout");
@@ -37,12 +38,15 @@ fn spawn_server(space: &str) -> Option<(Child, u16)> {
         .rsplit_once(':')
         .and_then(|(_, port)| port.parse().ok());
     match (read, port) {
-        (_, Some(port)) => Some((child, port)),
+        (_, Some(port)) => (child, port),
         _ => {
+            let mut told = String::new();
+            if let Some(stderr) = child.stderr.take() {
+                let _ = BufReader::new(stderr).read_line(&mut told);
+            }
             let _ = child.kill();
             let _ = child.wait();
-            eprintln!("{SKIPPED}");
-            None
+            panic!("{REQUIRED}: {}", told.trim());
         }
     }
 }
@@ -118,13 +122,23 @@ fn json(body: &str) -> serde_json::Value {
 #[test]
 fn the_service_serves_every_interaction_over_the_document_backend() {
     let space = namespace();
-    let Some((child, port)) = spawn_server(&space) else {
-        return;
-    };
+    let (child, port) = spawn_server(&space);
 
     let health = request(port, "GET", "/health", &[], &[]);
     assert_eq!(health.status, 200, "{}", health.body);
-    assert_eq!(json(&health.body)["status"], "ok");
+    let reported = json(&health.body);
+    assert_eq!(reported["status"], "ok");
+    let named: Vec<&str> = reported["dependencies"]
+        .as_array()
+        .expect("dependencies are listed")
+        .iter()
+        .map(|held| held["name"].as_str().expect("a dependency is named"))
+        .collect();
+    assert_eq!(
+        named,
+        vec!["store"],
+        "this backend opens no queue and no output sink"
+    );
 
     let created = request(
         port,

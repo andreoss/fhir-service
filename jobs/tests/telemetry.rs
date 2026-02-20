@@ -32,12 +32,90 @@ fn telemetry() -> (Held, Arc<Telemetry>) {
 }
 
 #[tokio::test]
-async fn a_job_kind_names_the_operation_it_is_measured_under() {
-    assert_eq!(measured(JobKind::Export), Operation::Export);
-    assert_eq!(measured(JobKind::Import), Operation::Import);
-    assert_eq!(measured(JobKind::Reindex), Operation::Reindex);
-    assert_eq!(measured(JobKind::BulkDelete), Operation::BulkDelete);
-    assert_eq!(measured(JobKind::BulkUpdate), Operation::BulkUpdate);
+async fn every_kind_is_measured_under_an_operation_of_its_own() {
+    let named: Vec<&str> = JobKind::ALL
+        .iter()
+        .map(|kind| measured(*kind).as_str())
+        .collect();
+    let mut distinct = named.clone();
+    distinct.sort();
+    distinct.dedup();
+    assert_eq!(
+        distinct.len(),
+        named.len(),
+        "two kinds are measured under one operation: {named:?}"
+    );
+    for kind in JobKind::ALL {
+        let (sink, telemetry) = telemetry();
+        let orchestrator = Orchestrator::new().reporting(Arc::clone(&telemetry));
+        ran(
+            orchestrator,
+            JobRequest::new(job(kind.as_str()), kind, "{}").with_attempts(1),
+        )
+        .await;
+        let operation = measured(kind);
+        assert_eq!(
+            telemetry.count(Dimensions::of(operation, Outcome::ClientFault)),
+            1,
+            "a {kind} job was not measured under {}",
+            operation.as_str()
+        );
+        let written = sink.lines().join("\n");
+        assert!(
+            written.contains(&format!("operation={}", operation.as_str())),
+            "{written}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_identifier_a_job_was_submitted_under_reaches_the_measurement() {
+    let (sink, telemetry) = telemetry();
+    let store = seeded().await;
+    let correlation = fhir_core::CorrelationId::fresh();
+    let orchestrator = Orchestrator::new()
+        .with(Arc::new(ExportJob::new(
+            store,
+            Arc::new(MemoryBulkStore::new()),
+        )))
+        .reporting(Arc::clone(&telemetry));
+    ran(
+        orchestrator,
+        JobRequest::new(job("t1"), JobKind::Export, r#"{"types":["Patient"]}"#)
+            .correlated(correlation.clone()),
+    )
+    .await;
+
+    let written = sink.lines();
+    let measured = written
+        .iter()
+        .find(|line| line.contains("operation=export"))
+        .expect("the job was measured");
+    assert!(
+        measured.contains(&format!("correlation={}", correlation.as_str())),
+        "the identifier the job was submitted under is lost: {measured}"
+    );
+}
+
+#[tokio::test]
+async fn a_job_submitted_under_no_identifier_carries_none_into_the_measurement() {
+    let (sink, telemetry) = telemetry();
+    let store = seeded().await;
+    let orchestrator = Orchestrator::new()
+        .with(Arc::new(ExportJob::new(
+            store,
+            Arc::new(MemoryBulkStore::new()),
+        )))
+        .reporting(Arc::clone(&telemetry));
+    ran(
+        orchestrator,
+        JobRequest::new(job("t2"), JobKind::Export, r#"{"types":["Patient"]}"#),
+    )
+    .await;
+
+    let written = sink.lines().join("\n");
+    assert!(written.contains("operation=export"));
+    assert!(!written.contains("correlation="), "{written}");
 }
 
 #[tokio::test]

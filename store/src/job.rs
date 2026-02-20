@@ -382,7 +382,7 @@ pub trait JobStore: Send + Sync {
 
     async fn list(&self, filter: &JobFilter) -> Result<Vec<JobRecord>, Error>;
 
-    fn health(&self) -> Result<(), Error> {
+    async fn health(&self) -> Result<(), Error> {
         Ok(())
     }
 }

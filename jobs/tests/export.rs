@@ -351,9 +351,10 @@ async fn an_anonymised_export_redacts_what_its_configuration_names() {
     let patients = rows(&sink.read(&job("a1"), "Patient.ndjson").await.unwrap());
     assert_eq!(patients.len(), 1);
     assert_eq!(patients[0]["id"], "p1");
-    assert!(patients[0]["name"].is_null(), "{}", patients[0]);
-    assert!(patients[0]["birthDate"].is_null());
-    assert_eq!(patients[0]["active"], true);
+    let row = patients[0].as_object().expect("a row is an object");
+    assert!(!row.contains_key("name"), "{row:?}");
+    assert!(!row.contains_key("birthDate"), "{row:?}");
+    assert_eq!(row["active"], true);
 }
 
 #[tokio::test]
@@ -426,4 +427,299 @@ async fn a_member_the_record_lacks_is_itemised_in_a_failure_file() {
     let carried = rows(&sink.read(&job("e1"), "Patient.ndjson").await.unwrap());
     assert_eq!(carried.len(), 1);
     assert_eq!(carried[0]["id"], "p1");
+}
+
+fn lines_of(body: &[u8]) -> Vec<String> {
+    String::from_utf8(body.to_vec())
+        .expect("ndjson is text")
+        .split('\n')
+        .map(str::to_owned)
+        .collect()
+}
+
+fn shaped(body: &[u8]) -> Vec<Value> {
+    let mut written = lines_of(body);
+    assert_eq!(
+        written.pop().as_deref(),
+        Some(""),
+        "a newline delimited file ends with a newline"
+    );
+    assert!(!written.is_empty(), "a written file carries a row");
+    written
+        .iter()
+        .map(|line| {
+            assert!(!line.trim().is_empty(), "a blank line is not a resource");
+            assert!(
+                !line.starts_with('[') && !line.starts_with(','),
+                "rows are delimited by newlines, not by an array"
+            );
+            let row: Value = serde_json::from_str(line).expect("every line is one resource");
+            assert!(
+                row.get("resourceType").and_then(Value::as_str).is_some(),
+                "every row names its type"
+            );
+            row
+        })
+        .collect()
+}
+
+async fn seeded_pair() -> Arc<MemoryStore> {
+    let store = Arc::new(MemoryStore::default());
+    store.create(patient("p1", "Stone", true)).await.unwrap();
+    store.create(patient("p2", "Rivers", true)).await.unwrap();
+    store
+        .create(observation("o1", "code-1", 3.0, "Patient/p1"))
+        .await
+        .unwrap();
+    store
+        .create(observation("o2", "code-2", 4.0, "Patient/p2"))
+        .await
+        .unwrap();
+    store
+}
+
+#[tokio::test]
+async fn every_resource_is_carried_once_and_only_in_the_file_of_its_type() {
+    let store = seeded_pair().await;
+    let sink = Arc::new(MemoryBulkStore::new());
+
+    let record = ran(
+        Arc::clone(&store),
+        Arc::clone(&sink),
+        job("c1"),
+        r#"{"scope":"system"}"#,
+    )
+    .await;
+
+    assert_eq!(record.state, JobState::Completed);
+    let outcome: Value = serde_json::from_str(&record.outcome.unwrap()).unwrap();
+    assert_eq!(outcome["units"], 2, "one unit per exported type");
+    assert_eq!(outcome["handled"], 4);
+    let files = sink.list(&job("c1")).await.unwrap();
+    let names: Vec<&str> = files.iter().map(|file| file.name.as_str()).collect();
+    assert_eq!(names, vec!["Observation.ndjson", "Patient.ndjson"]);
+
+    let mut carried: Vec<String> = Vec::new();
+    for file in &files {
+        for row in shaped(&sink.read(&job("c1"), &file.name).await.unwrap()) {
+            let named = format!(
+                "{}/{}",
+                row["resourceType"].as_str().unwrap(),
+                row["id"].as_str().unwrap()
+            );
+            assert_eq!(
+                row["resourceType"].as_str().unwrap(),
+                file.name.trim_end_matches(".ndjson"),
+                "a row landed in the file of another type"
+            );
+            assert!(!carried.contains(&named), "{named} was carried twice");
+            carried.push(named);
+        }
+    }
+    carried.sort();
+    assert_eq!(
+        carried,
+        vec![
+            "Observation/o1",
+            "Observation/o2",
+            "Patient/p1",
+            "Patient/p2"
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_unit_run_again_replaces_its_file_rather_than_adding_to_it() {
+    let store = seeded_pair().await;
+    let sink = Arc::new(MemoryBulkStore::new());
+    let payload = r#"{"scope":"system","_type":["Patient"]}"#;
+
+    ran(Arc::clone(&store), Arc::clone(&sink), job("c2"), payload).await;
+    let first = sink.read(&job("c2"), "Patient.ndjson").await.unwrap();
+
+    let again = ran(Arc::clone(&store), Arc::clone(&sink), job("c2"), payload).await;
+
+    assert_eq!(again.state, JobState::Completed);
+    let repeated = sink.read(&job("c2"), "Patient.ndjson").await.unwrap();
+    assert_eq!(
+        repeated, first,
+        "a unit run again must replace its file, not add to it"
+    );
+    assert_eq!(shaped(&repeated).len(), 2);
+    let files = sink.list(&job("c2")).await.unwrap();
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].count, 2);
+}
+
+#[tokio::test]
+async fn a_patient_export_carries_every_observation_of_the_compartment() {
+    let store = seeded_pair().await;
+    let sink = Arc::new(MemoryBulkStore::new());
+
+    let record = ran(
+        Arc::clone(&store),
+        Arc::clone(&sink),
+        job("c3"),
+        r#"{"scope":"patient"}"#,
+    )
+    .await;
+
+    assert_eq!(record.state, JobState::Completed);
+    let observations = shaped(&sink.read(&job("c3"), "Observation.ndjson").await.unwrap());
+    let ids: Vec<&str> = observations
+        .iter()
+        .map(|row| row["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, vec!["o1", "o2"]);
+    let patients = shaped(&sink.read(&job("c3"), "Patient.ndjson").await.unwrap());
+    let ids: Vec<&str> = patients
+        .iter()
+        .map(|row| row["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, vec!["p1", "p2"]);
+}
+
+#[tokio::test]
+async fn every_accepted_output_format_renders_the_same_newline_delimited_file() {
+    let store = seeded_pair().await;
+    let sink = Arc::new(MemoryBulkStore::new());
+    let mut rendered = Vec::new();
+    for (slot, format) in ["ndjson", "application/ndjson", "application/fhir+ndjson"]
+        .iter()
+        .enumerate()
+    {
+        let id = job(&format!("o{slot}"));
+        let record = ran(
+            Arc::clone(&store),
+            Arc::clone(&sink),
+            id.clone(),
+            &format!(r#"{{"scope":"system","_type":["Patient"],"_outputFormat":"{format}"}}"#),
+        )
+        .await;
+        assert_eq!(record.state, JobState::Completed, "{format} was refused");
+        let body = sink.read(&id, "Patient.ndjson").await.unwrap();
+        assert_eq!(shaped(&body).len(), 2);
+        rendered.push(body);
+    }
+    assert_eq!(rendered[0], rendered[1]);
+    assert_eq!(rendered[1], rendered[2]);
+}
+
+#[tokio::test]
+async fn a_container_carries_the_failure_file_beside_the_rows() {
+    let store = Arc::new(MemoryStore::default());
+    store.create(patient("p1", "Stone", true)).await.unwrap();
+    store
+        .create(fhir_store_contract::fixture::envelope(
+            "Group",
+            "g1",
+            r#""member":[{"entity":{"reference":"Patient/p1"}},{"entity":{"reference":"Patient/p9"}}]"#,
+        ))
+        .await
+        .unwrap();
+    let sink = Arc::new(MemoryBulkStore::new());
+
+    let record = ran(
+        Arc::clone(&store),
+        Arc::clone(&sink),
+        job("c4"),
+        r#"{"scope":"group","id":"g1","_container":"nightly"}"#,
+    )
+    .await;
+
+    assert_eq!(record.state, JobState::Completed);
+    let names: Vec<String> = sink
+        .list(&job("c4"))
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|file| file.name)
+        .collect();
+    assert_eq!(
+        names,
+        vec!["nightly/Patient-failures.ndjson", "nightly/Patient.ndjson"]
+    );
+    let reported = shaped(
+        &sink
+            .read(&job("c4"), "nightly/Patient-failures.ndjson")
+            .await
+            .unwrap(),
+    );
+    assert_eq!(reported.len(), 1);
+    assert_eq!(reported[0]["resourceType"], "OperationOutcome");
+    assert_eq!(reported[0]["issue"][0]["severity"], "error");
+    assert!(reported[0]["issue"][0]["diagnostics"]
+        .as_str()
+        .unwrap()
+        .contains("p9"));
+    assert_eq!(
+        shaped(&sink.read(&job("c4"), "nightly/Patient.ndjson").await.unwrap()).len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn a_redacted_element_is_gone_from_the_row_and_a_nested_one_leaves_its_parent() {
+    let store = Arc::new(MemoryStore::default());
+    store.create(patient("p1", "Stone", true)).await.unwrap();
+    store
+        .create(config("anon-1", &["Patient.birthDate"]))
+        .await
+        .unwrap();
+    store
+        .create(config("anon-2", &["Patient.name.family"]))
+        .await
+        .unwrap();
+    let sink = Arc::new(MemoryBulkStore::new());
+
+    let plain = ran(
+        Arc::clone(&store),
+        Arc::clone(&sink),
+        job("n0"),
+        r#"{"scope":"system","_type":["Patient"]}"#,
+    )
+    .await;
+    assert_eq!(plain.state, JobState::Completed);
+    let held = shaped(&sink.read(&job("n0"), "Patient.ndjson").await.unwrap());
+    let held = held[0].as_object().expect("a row is an object");
+    assert!(
+        held.contains_key("birthDate"),
+        "the element to redact must be there to begin with"
+    );
+    assert_eq!(held["name"][0]["family"], "Stone");
+
+    let whole = ran(
+        Arc::clone(&store),
+        Arc::clone(&sink),
+        job("n1"),
+        r#"{"scope":"system","_type":["Patient"],"_anonymizationConfig":"anon-1"}"#,
+    )
+    .await;
+    assert_eq!(whole.state, JobState::Completed);
+    let rows = shaped(&sink.read(&job("n1"), "Patient.ndjson").await.unwrap());
+    let row = rows[0].as_object().expect("a row is an object");
+    assert!(
+        !row.contains_key("birthDate"),
+        "a redacted element must carry no key at all"
+    );
+    assert!(row.contains_key("name"), "nothing else is removed");
+    assert_eq!(row["active"], true);
+
+    let nested = ran(
+        Arc::clone(&store),
+        Arc::clone(&sink),
+        job("n2"),
+        r#"{"scope":"system","_type":["Patient"],"_anonymizationConfig":"anon-2"}"#,
+    )
+    .await;
+    assert_eq!(nested.state, JobState::Completed);
+    let rows = shaped(&sink.read(&job("n2"), "Patient.ndjson").await.unwrap());
+    let row = rows[0].as_object().expect("a row is an object");
+    assert!(row.contains_key("name"), "the parent element stays");
+    let named = row["name"][0].as_object().expect("a name is an object");
+    assert!(
+        !named.contains_key("family"),
+        "a nested redaction must carry no key at all"
+    );
+    assert!(row.contains_key("birthDate"), "nothing else is removed");
 }

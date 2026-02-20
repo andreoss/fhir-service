@@ -54,5 +54,5 @@ pub async fn outputs(store: &dyn BulkStore) {
     assert!(store.list(&one).await.unwrap().is_empty());
     assert_eq!(store.list(&other).await.unwrap().len(), 1);
     assert_eq!(store.purge(&one).await.unwrap(), 0);
-    store.health().expect("a fresh sink is healthy");
+    store.health().await.expect("a fresh sink is healthy");
 }

@@ -22,7 +22,13 @@ async fn main() {
 async fn run() -> Result<(), Error> {
     let config = fhir_host::Config::from_env()?;
     let (store, jobs, outputs) = fhir_host::stores::open(&config).await?;
-    let dependencies = vec![Dependency::of_store("store", Arc::clone(&store))];
+    let mut dependencies = vec![Dependency::of_store("store", Arc::clone(&store))];
+    if let Some(jobs) = &jobs {
+        dependencies.push(Dependency::of_queue("queue", Arc::clone(jobs)));
+    }
+    if let Some(outputs) = &outputs {
+        dependencies.push(Dependency::of_outputs("outputs", Arc::clone(outputs)));
+    }
     let mut service = Service::started(Arc::clone(&store), config.version, dependencies)
         .await?
         .with_entries(config.entries());
@@ -108,8 +114,12 @@ fn spawn_worker(
     version: fhir_core::FhirVersion,
     telemetry: Arc<fhir_telemetry::Telemetry>,
 ) -> Arc<fhir_jobs::Worker> {
-    let mut registry = fhir_jobs::Orchestrator::new()
-        .with(Arc::new(fhir_jobs::ImportJob::new(Arc::clone(&store), version)));
+    let importing = fhir_jobs::ImportJob::new(Arc::clone(&store), version);
+    let importing = match &outputs {
+        Some(sink) => importing.reporting(Arc::clone(sink)),
+        None => importing,
+    };
+    let mut registry = fhir_jobs::Orchestrator::new().with(Arc::new(importing));
     if let Some(sink) = outputs {
         registry = registry
             .with(Arc::new(fhir_jobs::ReindexJob::new(

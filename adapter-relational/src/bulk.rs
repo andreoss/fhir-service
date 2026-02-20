@@ -100,10 +100,12 @@ impl BulkStore for RelationalBulkStore {
         Ok(done.rows_affected() as usize)
     }
 
-    fn health(&self) -> Result<(), Error> {
-        match self.pool.is_closed() {
-            true => Err(Error::Internal("the output sink is closed".to_owned())),
-            false => Ok(()),
-        }
+    async fn health(&self) -> Result<(), Error> {
+        let statement = format!("select count(*) from {}", self.table());
+        sqlx::query(&statement)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|error| faulted("reading the output sink", error))
+            .map(|_| ())
     }
 }
