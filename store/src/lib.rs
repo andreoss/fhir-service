@@ -18,7 +18,7 @@ pub mod search;
 pub mod terminology;
 pub mod trail;
 
-pub use audit::{Audit, AuditEvent, Unrecorded};
+pub use audit::{Audit, AuditEvent, Interaction, Unrecorded};
 pub use bulk::{output_format, BulkStore, Output, NDJSON};
 pub use change::{ChangeFeed, ChangeKind, ChangePage, ChangeRecord, Continuation};
 pub use clock::{system_clock, system_ticker, Clock, StepTicker, Ticker};

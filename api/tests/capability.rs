@@ -156,25 +156,91 @@ async fn the_statement_advertises_the_interactions_the_routes_serve() {
 }
 
 #[tokio::test]
-async fn every_advertised_interaction_reaches_a_route() {
+async fn every_advertised_interaction_answers_the_status_the_specification_names() {
     let app = service(FhirVersion::R4);
     let statement = statement(&app).await;
     let patient = resource(&statement, "Patient");
-    let probes = [
-        ("read", "GET", "/Patient/pt-1"),
-        ("vread", "GET", "/Patient/pt-1/_history/1"),
-        ("update", "PUT", "/Patient/pt-1"),
-        ("patch", "PATCH", "/Patient/pt-1"),
-        ("delete", "DELETE", "/Patient/pt-1"),
-        ("create", "POST", "/Patient"),
-        ("search-type", "GET", "/Patient"),
-        ("history-type", "GET", "/Patient/_history"),
-        ("history-instance", "GET", "/Patient/pt-1/_history"),
+    let body = br#"{"resourceType":"Patient","id":"pt-1","active":true}"#;
+    let patch = br#"[{"op":"replace","path":"/active","value":false}]"#;
+    let probes: [(&str, &str, &str, &[u8], StatusCode); 9] = [
+        ("create", "POST", "/Patient", body, StatusCode::CREATED),
+        ("read", "GET", "/Patient/pt-1", b"", StatusCode::OK),
+        (
+            "vread",
+            "GET",
+            "/Patient/pt-1/_history/1",
+            b"",
+            StatusCode::OK,
+        ),
+        ("update", "PUT", "/Patient/pt-1", body, StatusCode::OK),
+        ("patch", "PATCH", "/Patient/pt-1", patch, StatusCode::OK),
+        ("search-type", "GET", "/Patient", b"", StatusCode::OK),
+        ("history-type", "GET", "/Patient/_history", b"", StatusCode::OK),
+        (
+            "history-instance",
+            "GET",
+            "/Patient/pt-1/_history",
+            b"",
+            StatusCode::OK,
+        ),
+        (
+            "delete",
+            "DELETE",
+            "/Patient/pt-1",
+            b"",
+            StatusCode::NO_CONTENT,
+        ),
     ];
-    for (code, method, uri) in probes {
-        assert!(codes(patient.get("interaction")).contains(code), "{code}");
-        let (status, _) = reply(&app, method, uri, b"{}").await;
-        assert_ne!(status, StatusCode::METHOD_NOT_ALLOWED, "{method} {uri}");
+    for (code, method, uri, sent, expected) in probes {
+        assert!(
+            codes(patient.get("interaction")).contains(code),
+            "{code} is not advertised"
+        );
+        let (status, answered) = reply(&app, method, uri, sent).await;
+        assert_eq!(status, expected, "{code}: {method} {uri} answered {answered}");
+    }
+}
+
+#[tokio::test]
+async fn what_the_statement_says_about_update_create_is_what_an_unknown_id_gets() {
+    for version in [
+        FhirVersion::Stu3,
+        FhirVersion::R4,
+        FhirVersion::R4b,
+        FhirVersion::R5,
+    ] {
+        let app = service(version);
+        let statement = statement(&app).await;
+        let advertised = resource(&statement, "Patient")["updateCreate"]
+            .as_bool()
+            .expect("the statement says whether an update may create");
+        let (status, body) = reply(
+            &app,
+            "PUT",
+            "/Patient/pt-unknown",
+            br#"{"resourceType":"Patient","id":"pt-unknown","active":true}"#,
+        )
+        .await;
+        match advertised {
+            true => assert_eq!(status, StatusCode::CREATED, "{version}: {body}"),
+            false => assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED, "{version}: {body}"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn the_statement_names_the_instance_it_was_read_from() {
+    for version in [
+        FhirVersion::Stu3,
+        FhirVersion::R4,
+        FhirVersion::R4b,
+        FhirVersion::R5,
+    ] {
+        let statement = statement(&service(version)).await;
+        assert_eq!(statement["resourceType"], "CapabilityStatement");
+        assert_eq!(statement["kind"], "instance", "{version}");
+        assert_eq!(statement["status"], "active", "{version}");
+        assert_eq!(statement["fhirVersion"], version.release(), "{version}");
     }
 }
 
@@ -400,6 +466,45 @@ async fn discovery_reports_the_authorization_the_instance_runs_under() {
     );
     assert_eq!(document["scopes_supported"][0], "system/*.read");
     assert_eq!(document["capabilities"][0], "client-confidential-symmetric");
+}
+
+fn listed(document: &Value, name: &str) -> Vec<String> {
+    document[name]
+        .as_array()
+        .unwrap_or_else(|| panic!("{name} must be published as a list"))
+        .iter()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect()
+}
+
+#[tokio::test]
+async fn discovery_publishes_the_fields_a_launch_needs_to_choose_a_flow() {
+    let app = authorized();
+    let (status, body) = reply(&app, "GET", "/.well-known/smart-configuration", b"").await;
+    assert_eq!(status, StatusCode::OK);
+    let document: Value = serde_json::from_str(&body).expect("the document must be json");
+    assert!(
+        listed(&document, "grant_types_supported").contains(&"authorization_code".to_owned()),
+        "{body}"
+    );
+    assert!(
+        listed(&document, "response_types_supported").contains(&"code".to_owned()),
+        "{body}"
+    );
+    assert!(
+        listed(&document, "code_challenge_methods_supported").contains(&"S256".to_owned()),
+        "a launch that cannot bind its code to a verifier is open to interception: {body}"
+    );
+    assert!(
+        !listed(&document, "code_challenge_methods_supported").contains(&"plain".to_owned()),
+        "{body}"
+    );
+    assert!(
+        !listed(&document, "scopes_supported").is_empty(),
+        "{body}"
+    );
+    assert!(!listed(&document, "capabilities").is_empty(), "{body}");
 }
 
 #[tokio::test]

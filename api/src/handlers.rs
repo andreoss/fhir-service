@@ -9,7 +9,7 @@ use fhir_core::{
 use fhir_core::search::{Compartment, Grant, ParameterSpec};
 use fhir_core::security::scope::DataAction;
 use fhir_core::security::Access;
-use fhir_store::{AuditEvent, HistoryScope, SearchQuery};
+use fhir_store::{AuditEvent, HistoryScope, Interaction, SearchQuery};
 use serde_json::Value;
 use uuid::Uuid;
 
@@ -104,7 +104,18 @@ pub async fn create(
     body: Bytes,
 ) -> Result<Response, AppError> {
     let resource_type = served(state.version, &type_name)?;
-    let access = allowed(&state, &headers, DataAction::Write, Some(resource_type), None).await?;
+    let access = crate::access::access_of(&state, &headers).await?;
+    let value: Value = serde_json::from_slice(&body).map_err(|error| Error::InvalidJson(error.to_string()))?;
+    let id = body_id(&value)?;
+    judged(
+        &state,
+        &access,
+        DataAction::Write,
+        Interaction::Create,
+        Some(resource_type),
+        Some(&id),
+    )
+    .await?;
     if let Some(condition) = headers.get(IF_NONE_EXIST) {
         let raw = condition
             .to_str()
@@ -114,8 +125,6 @@ pub async fn create(
             return Ok(respond_updated(&existing, host_from(&headers)));
         }
     }
-    let value: Value = serde_json::from_slice(&body).map_err(|error| Error::InvalidJson(error.to_string()))?;
-    let id = body_id(&value)?;
     let envelope = write_envelope(state.version, resource_type, value.clone(), &id)?;
     within(&state, &access, &headers, DataAction::Write, &envelope)?;
     if resource_type.as_str() == SEARCH_PARAMETER {
@@ -146,8 +155,8 @@ pub async fn conditional_update(
     match single_match(&state, &selection).await? {
         Some(existing) => {
             let envelope = write_envelope(state.version, resource_type, value, existing.id())?;
-            let stored = state.store.update(envelope, expected.as_ref()).await?;
-            Ok(respond_updated(&stored, host_from(&headers)))
+            let written = upsert(&state, envelope, expected.as_ref()).await?;
+            Ok(written.respond(host_from(&headers)))
         }
         None => {
             let id = body_id(&value)?;
@@ -174,8 +183,8 @@ pub async fn update(
     if resource_type.as_str() == SEARCH_PARAMETER {
         return replace_parameter(&state, &id, &value, envelope, expected, &headers).await;
     }
-    let stored = state.store.update(envelope, expected.as_ref()).await?;
-    Ok(respond_updated(&stored, host_from(&headers)))
+    let written = upsert(&state, envelope, expected.as_ref()).await?;
+    Ok(written.respond(host_from(&headers)))
 }
 
 async fn replace_parameter(
@@ -190,7 +199,7 @@ async fn replace_parameter(
     let _guard = state.parameters.lock().await;
     parameter::accepts(state, &spec)?;
     let previous = state.store.read(id).await.ok();
-    let stored = state.store.update(envelope, expected.as_ref()).await?;
+    let written = upsert(state, envelope, expected.as_ref()).await?;
     let replaced = previous
         .as_ref()
         .and_then(|found| serde_json::from_slice::<Value>(found.raw()).ok())
@@ -201,7 +210,7 @@ async fn replace_parameter(
         }
     }
     parameter::install(state, &spec).await?;
-    Ok(respond_updated(&stored, host_from(headers)))
+    Ok(written.respond(host_from(headers)))
 }
 
 pub async fn delete_instance(
@@ -212,11 +221,20 @@ pub async fn delete_instance(
 ) -> Result<Response, AppError> {
     let resource_type = served(state.version, &type_name)?;
     let id = id_text.parse::<ResourceId>()?;
-    let access = allowed(&state, &headers, DataAction::Write, Some(resource_type), Some(&id)).await?;
-    let current = state.store.read(&id).await?;
-    if current.resource_type() != resource_type {
-        return Err(Error::NotFound.into());
-    }
+    let access = allowed_doing(
+        &state,
+        &headers,
+        DataAction::Write,
+        Interaction::Delete,
+        Some(resource_type),
+        Some(&id),
+    )
+    .await?;
+    let current = match state.store.read(&id).await {
+        Ok(current) if current.resource_type() == resource_type => current,
+        Ok(_) | Err(Error::NotFound) => return Ok(no_content(None)),
+        Err(error) => return Err(error.into()),
+    };
     within(&state, &access, &headers, DataAction::Write, &current)?;
     let removed = remove(&state, &id, hard_delete(query.as_deref())).await?;
     if resource_type.as_str() == SEARCH_PARAMETER {
@@ -236,12 +254,20 @@ pub async fn conditional_delete(
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
     let resource_type = served(state.version, &type_name)?;
-    let access = allowed(&state, &headers, DataAction::Write, Some(resource_type), None).await?;
+    let access = allowed_doing(
+        &state,
+        &headers,
+        DataAction::Write,
+        Interaction::Delete,
+        Some(resource_type),
+        None,
+    )
+    .await?;
     let mut selection = require_condition(parse_query(&state.registry, Some(resource_type), query.as_deref())?, "conditional delete")?;
     confine(&mut selection, confining(&state, &access, &headers, DataAction::Write)?)?;
     match single_match(&state, &selection).await? {
         Some(existing) => remove(&state, existing.id(), hard_delete(query.as_deref())).await,
-        None => Err(Error::NotFound.into()),
+        None => Ok(no_content(None)),
     }
 }
 
@@ -289,7 +315,15 @@ pub async fn purge_history(
 ) -> Result<Response, AppError> {
     let resource_type = served(state.version, &type_name)?;
     let id = id_text.parse::<ResourceId>()?;
-    let access = allowed(&state, &headers, DataAction::Write, Some(resource_type), Some(&id)).await?;
+    let access = allowed_doing(
+        &state,
+        &headers,
+        DataAction::Write,
+        Interaction::Delete,
+        Some(resource_type),
+        Some(&id),
+    )
+    .await?;
     let current = state.store.read(&id).await?;
     if current.resource_type() != resource_type {
         return Err(Error::NotFound.into());
@@ -344,6 +378,43 @@ pub async fn method_not_allowed() -> Result<Response, AppError> {
     Err(Error::MethodNotAllowed.into())
 }
 
+enum Written {
+    Created(ResourceEnvelope),
+    Updated(ResourceEnvelope),
+}
+
+impl Written {
+    fn respond(&self, host: &str) -> Response {
+        match self {
+            Written::Created(stored) => respond_created(stored, host),
+            Written::Updated(stored) => respond_updated(stored, host),
+        }
+    }
+}
+
+fn contended(version: fhir_core::FhirVersion) -> Error {
+    match version {
+        fhir_core::FhirVersion::Stu3 => Error::VersionConflict,
+        _ => Error::StaleVersion,
+    }
+}
+
+async fn upsert(
+    state: &AppState,
+    envelope: ResourceEnvelope,
+    expected: Option<&VersionId>,
+) -> Result<Written, Error> {
+    let offered = envelope.clone();
+    match state.store.update(envelope, expected).await {
+        Ok(stored) => Ok(Written::Updated(stored)),
+        Err(Error::VersionConflict) => Err(contended(state.version)),
+        Err(Error::NotFound) if expected.is_none() => {
+            state.store.create(offered).await.map(Written::Created)
+        }
+        Err(error) => Err(error),
+    }
+}
+
 async fn patch_stored(
     state: &AppState,
     resource_type: ResourceType,
@@ -355,8 +426,8 @@ async fn patch_stored(
     let value: Value = serde_json::from_slice(&patched).map_err(|error| Error::InvalidJson(error.to_string()))?;
     let envelope = write_envelope(state.version, resource_type, value, current.id())?;
     let expected = expected_version(headers)?;
-    let stored = state.store.update(envelope, expected.as_ref()).await?;
-    Ok(respond_updated(&stored, host_from(headers)))
+    let written = upsert(state, envelope, expected.as_ref()).await?;
+    Ok(written.respond(host_from(headers)))
 }
 
 async fn remove(state: &AppState, id: &ResourceId, hard: bool) -> Result<Response, AppError> {
@@ -847,9 +918,41 @@ pub(crate) async fn allowed(
     resource_type: Option<ResourceType>,
     id: Option<&ResourceId>,
 ) -> Result<Access, Error> {
+    allowed_doing(
+        state,
+        headers,
+        action,
+        Interaction::of(action),
+        resource_type,
+        id,
+    )
+    .await
+}
+
+pub(crate) async fn allowed_doing(
+    state: &AppState,
+    headers: &HeaderMap,
+    action: DataAction,
+    interaction: Interaction,
+    resource_type: Option<ResourceType>,
+    id: Option<&ResourceId>,
+) -> Result<Access, Error> {
     let access = crate::access::access_of(state, headers).await?;
+    judged(state, &access, action, interaction, resource_type, id).await?;
+    Ok(access)
+}
+
+pub(crate) async fn judged(
+    state: &AppState,
+    access: &Access,
+    action: DataAction,
+    interaction: Interaction,
+    resource_type: Option<ResourceType>,
+    id: Option<&ResourceId>,
+) -> Result<(), Error> {
     let decision = access.require(action, resource_type);
     let event = AuditEvent::allowed(&access.actor, action)
+        .doing(interaction)
         .by(access.client.clone())
         .of(resource_type, id.cloned());
     let recorded = match decision.is_ok() {
@@ -857,8 +960,7 @@ pub(crate) async fn allowed(
         false => event.refused(),
     };
     state.audit.record(recorded).await?;
-    decision?;
-    Ok(access)
+    decision
 }
 
 pub(crate) fn base_of(target: &str) -> Result<Option<ResourceType>, Error> {

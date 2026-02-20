@@ -6,7 +6,7 @@ use axum::response::{IntoResponse, Response};
 use fhir_core::security::scope::DataAction;
 use fhir_core::{Error, FhirVersion, ResourceEnvelope, ResourceId, ResourceType};
 use fhir_store::trail::{self, Chain, Entry, Head, Retention, Seal, Sealed, Tamper};
-use fhir_store::{Audit, AuditEvent, ResourceStore, SearchQuery};
+use fhir_store::{Audit, AuditEvent, Interaction, ResourceStore, SearchQuery};
 use serde_json::{json, Value};
 use std::sync::Arc;
 
@@ -240,6 +240,7 @@ fn interaction(event: &AuditEvent, version: FhirVersion) -> Value {
         "agent": [actor_of(version, &event.actor, event.client.as_deref(), true)],
     });
     entry[kinded(version)] = coded(version, ACTION_SYSTEM, event.action.as_str());
+    entry["action"] = json!(event.interaction.as_str());
     if let (Some(kind), Some(id)) = (event.resource_type, &event.resource_id) {
         entry["entity"] = subject_entity(version, &format!("{}/{}", kind.as_str(), id.as_str()));
     }
@@ -310,6 +311,11 @@ fn entry_of(body: &Value) -> Result<Entry, Error> {
     let action = text_at(body, ACTION_URL)
         .and_then(|named| DataAction::named(&named))
         .ok_or_else(unreadable)?;
+    let interaction = body
+        .get("action")
+        .and_then(Value::as_str)
+        .and_then(Interaction::named)
+        .ok_or_else(unreadable)?;
     let resource_type = match text_at(body, TYPE_URL) {
         Some(named) => Some(named.parse::<ResourceType>()?),
         None => None,
@@ -322,6 +328,7 @@ fn entry_of(body: &Value) -> Result<Entry, Error> {
         actor: text_at(body, ACTOR_URL).ok_or_else(unreadable)?,
         client: text_at(body, CLIENT_URL),
         action,
+        interaction,
         resource_type,
         resource_id,
         granted: truth_at(body, GRANTED_URL).ok_or_else(unreadable)?,

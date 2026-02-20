@@ -14,6 +14,8 @@ pub enum Error {
     Config(String),
     NotFound,
     VersionConflict,
+    StaleVersion,
+    UnsupportedFormat(String),
     Duplicate(String),
     Internal(String),
     Deleted,
@@ -29,6 +31,8 @@ pub enum Error {
 }
 
 pub const RETRY_SECONDS: u32 = 2;
+
+pub const CONTAINED: &str = "there was an error processing this request";
 
 impl Error {
     pub fn retry_after(&self) -> Option<u32> {
@@ -68,17 +72,21 @@ impl Error {
             Error::InvalidEnvelope(message) => {
                 OperationOutcome::error(IssueCode::Invalid, format!("invalid envelope: {message}"))
             }
-            Error::Config(message) => {
-                OperationOutcome::error(IssueCode::Processing, message.clone())
-            }
+            Error::Config(_) => OperationOutcome::error(IssueCode::Processing, CONTAINED),
             Error::NotFound => OperationOutcome::error(IssueCode::NotFound, "resource not found"),
             Error::VersionConflict => OperationOutcome::error(IssueCode::Conflict, "version conflict"),
+            Error::StaleVersion => OperationOutcome::error(
+                IssueCode::StaleVersion,
+                "the version named by if-match is not the current version",
+            ),
+            Error::UnsupportedFormat(value) => OperationOutcome::error(
+                IssueCode::NotAcceptable,
+                format!("unsupported format: {value:?}"),
+            ),
             Error::Duplicate(value) => {
                 OperationOutcome::error(IssueCode::Duplicate, format!("duplicate resource: {value:?}"))
             }
-            Error::Internal(message) => {
-                OperationOutcome::error(IssueCode::Processing, message.clone())
-            }
+            Error::Internal(_) => OperationOutcome::error(IssueCode::Processing, CONTAINED),
             Error::Deleted => OperationOutcome::error(IssueCode::Deleted, "resource deleted"),
             Error::MethodNotAllowed => {
                 OperationOutcome::error(IssueCode::NotAllowed, "method not allowed")
@@ -129,6 +137,8 @@ impl fmt::Display for Error {
             Error::Config(message) => write!(f, "configuration error: {message}"),
             Error::NotFound => write!(f, "resource not found"),
             Error::VersionConflict => write!(f, "version conflict"),
+            Error::StaleVersion => write!(f, "stale version"),
+            Error::UnsupportedFormat(value) => write!(f, "unsupported format: {value:?}"),
             Error::Duplicate(value) => write!(f, "duplicate resource: {value:?}"),
             Error::Internal(message) => write!(f, "internal error: {message}"),
             Error::Deleted => write!(f, "resource deleted"),
@@ -191,6 +201,22 @@ mod tests {
         assert_eq!(error.http_status(), 500);
         assert_eq!(error.to_operation_outcome().code, IssueCode::Processing);
         assert!(error.to_string().contains("lock poisoned"));
+    }
+
+    #[test]
+    fn an_internal_message_never_reaches_the_outcome() {
+        for error in [
+            Error::Internal("lock poisoned at row 7".to_owned()),
+            Error::Config("issuer metadata: bad key at https://inside".to_owned()),
+        ] {
+            let diagnostics = error
+                .to_operation_outcome()
+                .diagnostics
+                .expect("a refusal says something");
+            assert_eq!(diagnostics, CONTAINED, "{error:?}");
+            assert!(!diagnostics.contains("poisoned"), "{error:?}");
+            assert!(!diagnostics.contains("inside"), "{error:?}");
+        }
     }
 
     #[test]
@@ -265,6 +291,8 @@ mod tests {
             Error::Config("X".to_owned()),
             Error::NotFound,
             Error::VersionConflict,
+            Error::StaleVersion,
+            Error::UnsupportedFormat("xml".to_owned()),
             Error::Duplicate("X".to_owned()),
             Error::Internal("X".to_owned()),
             Error::Deleted,
@@ -299,6 +327,8 @@ mod tests {
             (Error::NotFound, 404, IssueCode::NotFound),
             (Error::MethodNotAllowed, 405, IssueCode::NotAllowed),
             (Error::VersionConflict, 409, IssueCode::Conflict),
+            (Error::StaleVersion, 412, IssueCode::StaleVersion),
+            (Error::UnsupportedFormat("xml".to_owned()), 406, IssueCode::NotAcceptable),
             (Error::Duplicate("X".to_owned()), 409, IssueCode::Duplicate),
             (Error::Deleted, 410, IssueCode::Deleted),
             (Error::MultipleMatches, 412, IssueCode::MultipleMatches),

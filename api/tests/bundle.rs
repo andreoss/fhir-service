@@ -116,8 +116,10 @@ async fn a_transaction_that_fails_late_leaves_nothing_behind() {
             write("POST", "Patient", patient("tx-6", true)),
         ],
     );
-    let (status, _) = post(&app, &sent).await;
-    assert_eq!(status, StatusCode::CONFLICT);
+    let (status, body) = post(&app, &sent).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["resourceType"], "OperationOutcome", "{body}");
+    assert_eq!(body["issue"][0]["code"], "duplicate", "{body}");
     let after = request(&app, "GET", "/Patient/tx-6", &[], &[]).await;
     let stored: Value = serde_json::from_str(&after.body).unwrap();
     assert_eq!(stored["active"], true);
@@ -607,4 +609,63 @@ async fn a_transaction_runs_its_entries_one_at_a_time() {
     let (status, _) = post(&app, &bundle("transaction", creates(4, "ou"))).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(counter.peak(), 1);
+}
+
+#[tokio::test]
+async fn a_transaction_deletes_before_it_writes_whatever_order_it_was_written_in() {
+    let app = service();
+    request(&app, "POST", "/Patient", &[], patient("tx-order-1", true).to_string().as_bytes()).await;
+    let sent = bundle(
+        "transaction",
+        vec![
+            write("PUT", "Patient/tx-order-1", patient("tx-order-1", false)),
+            plain("DELETE", "Patient/tx-order-1"),
+        ],
+    );
+    let (status, body) = post(&app, &sent).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let after = request(&app, "GET", "/Patient/tx-order-1", &[], &[]).await;
+    assert_eq!(
+        after.status,
+        StatusCode::OK,
+        "the write runs after the delete: {}",
+        after.body
+    );
+    let stored: Value = serde_json::from_str(&after.body).unwrap();
+    assert_eq!(stored["active"], false, "{}", after.body);
+}
+
+#[tokio::test]
+async fn a_transaction_updates_what_a_later_entry_created() {
+    let app = service();
+    let sent = bundle(
+        "transaction",
+        vec![
+            write("PUT", "Patient/tx-order-2", patient("tx-order-2", false)),
+            write("POST", "Patient", patient("tx-order-2", true)),
+        ],
+    );
+    let (status, body) = post(&app, &sent).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let after = request(&app, "GET", "/Patient/tx-order-2", &[], &[]).await;
+    assert_eq!(after.status, StatusCode::OK, "{}", after.body);
+    let stored: Value = serde_json::from_str(&after.body).unwrap();
+    assert_eq!(stored["active"], false, "the update runs after the create: {}", after.body);
+    assert_eq!(stored["meta"]["versionId"], "2", "{}", after.body);
+}
+
+#[tokio::test]
+async fn a_read_entry_runs_after_every_write_in_the_same_transaction() {
+    let app = service();
+    let sent = bundle(
+        "transaction",
+        vec![
+            plain("GET", "Patient/tx-order-3"),
+            write("POST", "Patient", patient("tx-order-3", true)),
+        ],
+    );
+    let (status, body) = post(&app, &sent).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(statuses(&body)[0], "200 OK", "{body}");
+    assert_eq!(statuses(&body)[1], "201 Created", "{body}");
 }

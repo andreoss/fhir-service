@@ -152,7 +152,7 @@ fn rendering(raw: Option<&str>) -> Result<(), Error> {
         None => Ok(()),
         Some(text) => match text.replace(' ', "+").as_str() {
             "json" | "fhir+json" | "text/json" | "application/json" | "application/fhir+json" => Ok(()),
-            other => Err(Error::UnsupportedParameter(format!("_format {other:?}"))),
+            other => Err(Error::UnsupportedFormat(other.to_owned())),
         },
     }
 }

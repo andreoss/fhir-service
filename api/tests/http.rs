@@ -233,14 +233,32 @@ async fn update_with_current_if_match_creates_new_version() {
 }
 
 #[tokio::test]
-async fn update_with_stale_if_match_conflicts_with_409_outcome() {
+async fn a_stale_if_match_on_update_is_precondition_failed_and_writes_no_version() {
     let app = service();
     request(&app, "POST", "/Patient", &[], &patient("pt-7", true)).await;
     request(&app, "PUT", "/Patient/pt-7", &[("if-match", "W/\"1\"")], &patient("pt-7", false)).await;
     let reply = request(&app, "PUT", "/Patient/pt-7", &[("if-match", "W/\"1\"")], &patient("pt-7", true)).await;
-    assert_eq!(reply.status, StatusCode::CONFLICT);
+    assert_eq!(reply.status, StatusCode::PRECONDITION_FAILED, "{}", reply.body);
     let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
     assert_eq!(value["issue"][0]["code"], "conflict");
+    let current = request(&app, "GET", "/Patient/pt-7", &[], &[]).await;
+    assert_eq!(header(&current, "etag"), "W/\"2\"");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&current.body).unwrap()["active"],
+        false
+    );
+}
+
+#[tokio::test]
+async fn an_early_release_answers_a_stale_if_match_with_a_conflict() {
+    let store = MemoryStore::with_clock(Arc::new(|| {
+        FhirInstant::parse("2026-09-06T04:00:00.000Z").unwrap()
+    }));
+    let app = Service::new(Arc::new(store), FhirVersion::Stu3, vec![]);
+    request(&app, "POST", "/Patient", &[], &patient("pt-7s", true)).await;
+    request(&app, "PUT", "/Patient/pt-7s", &[("if-match", "W/\"1\"")], &patient("pt-7s", false)).await;
+    let reply = request(&app, "PUT", "/Patient/pt-7s", &[("if-match", "W/\"1\"")], &patient("pt-7s", true)).await;
+    assert_eq!(reply.status, StatusCode::CONFLICT, "{}", reply.body);
 }
 
 #[tokio::test]
@@ -276,12 +294,50 @@ async fn update_with_body_id_mismatch_is_rejected() {
 }
 
 #[tokio::test]
-async fn update_unknown_id_returns_outcome_404() {
+async fn update_of_an_unknown_id_creates_the_version_the_statement_advertises() {
     let app = service();
+    let statement = request(&app, "GET", "/metadata", &[], &[]).await;
+    let advertised: serde_json::Value = serde_json::from_str(&statement.body).unwrap();
+    let entry = advertised["rest"][0]["resource"]
+        .as_array()
+        .expect("the statement lists resources")
+        .iter()
+        .find(|held| held["type"] == "Patient")
+        .expect("Patient is served");
+    assert_eq!(
+        entry["updateCreate"],
+        serde_json::Value::Bool(true),
+        "this test states the branch the statement advertises"
+    );
+
     let reply = request(&app, "PUT", "/Patient/nobody", &[], &patient("nobody", true)).await;
-    assert_eq!(reply.status, StatusCode::NOT_FOUND);
+    assert_eq!(reply.status, StatusCode::CREATED, "{}", reply.body);
+    assert_eq!(header(&reply, "etag"), "W/\"1\"");
+    assert!(header(&reply, "location").ends_with("/Patient/nobody/_history/1"));
+    let read = request(&app, "GET", "/Patient/nobody", &[], &[]).await;
+    assert_eq!(read.status, StatusCode::OK);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&read.body).unwrap()["active"],
+        true
+    );
+}
+
+#[tokio::test]
+async fn update_of_an_unknown_id_under_an_if_match_is_not_found() {
+    let app = service();
+    let reply = request(
+        &app,
+        "PUT",
+        "/Patient/nobody-either",
+        &[("if-match", "W/\"1\"")],
+        &patient("nobody-either", true),
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::NOT_FOUND, "{}", reply.body);
     let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
     assert_eq!(value["issue"][0]["code"], "not-found");
+    let read = request(&app, "GET", "/Patient/nobody-either", &[], &[]).await;
+    assert_eq!(read.status, StatusCode::NOT_FOUND, "no version may be written");
 }
 
 #[tokio::test]
@@ -360,17 +416,32 @@ impl ResourceStore for FailingStore {
 }
 
 #[tokio::test]
-async fn internal_store_failure_is_a_500_outcome_without_leaks() {
-    let app = Service::new(Arc::new(FailingStore(|| Error::Internal("boom".to_owned()))), FhirVersion::R4, vec![]);
-    let reply = request(&app, "GET", "/Patient/boom", &[], &[]).await;
-    assert_eq!(reply.status, StatusCode::INTERNAL_SERVER_ERROR);
-    assert_eq!(header(&reply, "content-type"), "application/fhir+json");
-    let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
-    let object = value.as_object().expect("outcome must be an object");
-    assert_eq!(object.len(), 2, "outcome must expose only resourceType and issue");
-    assert_eq!(value["resourceType"], "OperationOutcome");
-    assert_eq!(value["issue"][0]["code"], "processing");
-    assert_eq!(value["issue"][0]["diagnostics"], "boom");
+async fn an_internal_failure_is_a_500_outcome_that_names_nothing_inside() {
+    let app = Service::new(
+        Arc::new(FailingStore(|| {
+            Error::Internal("connection string dbuser@10.0.0.4 poisoned at row 7".to_owned())
+        })),
+        FhirVersion::R4,
+        vec![],
+    );
+    for (method, uri) in [
+        ("GET", "/Patient/boom"),
+        ("GET", "/Patient/boom/_history/1"),
+        ("GET", "/Patient"),
+        ("GET", "/Patient/boom/_history"),
+    ] {
+        let reply = request(&app, method, uri, &[], &[]).await;
+        assert_eq!(reply.status, StatusCode::INTERNAL_SERVER_ERROR, "{method} {uri}");
+        assert_eq!(header(&reply, "content-type"), "application/fhir+json");
+        let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
+        let object = value.as_object().expect("outcome must be an object");
+        assert_eq!(object.len(), 2, "outcome must expose only resourceType and issue");
+        assert_eq!(value["resourceType"], "OperationOutcome");
+        assert_eq!(value["issue"][0]["code"], "processing");
+        for named in ["dbuser", "10.0.0.4", "poisoned", "row 7"] {
+            assert!(!reply.body.contains(named), "{method} {uri} leaked {named}: {}", reply.body);
+        }
+    }
 }
 #[tokio::test]
 async fn binding_port_zero_reports_the_assigned_port() {
@@ -428,6 +499,17 @@ async fn conditional_create_with_one_match_returns_the_existing_resource() {
     let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
     assert_eq!(value["id"], "pt-c2");
     assert_eq!(value["meta"]["versionId"], "1");
+    assert_eq!(
+        header(&reply, "etag"),
+        "W/\"1\"",
+        "the headers are those a create would have carried"
+    );
+    assert!(
+        header(&reply, "location").ends_with("/Patient/pt-c2/_history/1"),
+        "location was {}",
+        header(&reply, "location")
+    );
+    assert_eq!(header(&reply, "last-modified"), LAST_MODIFIED);
     let missing = request(&app, "GET", "/Patient/pt-c3", &[], &[]).await;
     assert_eq!(missing.status, StatusCode::NOT_FOUND);
 }
@@ -504,9 +586,11 @@ async fn conditional_update_honours_a_stale_if_match() {
         &patient("pt-u3", false),
     )
     .await;
-    assert_eq!(reply.status, StatusCode::CONFLICT);
+    assert_eq!(reply.status, StatusCode::PRECONDITION_FAILED, "{}", reply.body);
     let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
     assert_eq!(value["issue"][0]["code"], "conflict");
+    let read = request(&app, "GET", "/Patient/pt-u3", &[], &[]).await;
+    assert_eq!(header(&read, "etag"), "W/\"1\"", "no version may be written");
 }
 
 #[tokio::test]
@@ -597,12 +681,13 @@ async fn deleting_twice_stays_no_content() {
 }
 
 #[tokio::test]
-async fn deleting_an_unknown_resource_is_404() {
+async fn deleting_a_resource_that_does_not_exist_is_no_content() {
     let app = service();
     let reply = request(&app, "DELETE", "/Patient/pt-none", &[], &[]).await;
-    assert_eq!(reply.status, StatusCode::NOT_FOUND);
-    let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
-    assert_eq!(value["issue"][0]["code"], "not-found");
+    assert_eq!(reply.status, StatusCode::NO_CONTENT, "{}", reply.body);
+    assert!(reply.body.is_empty(), "{}", reply.body);
+    let read = request(&app, "GET", "/Patient/pt-none", &[], &[]).await;
+    assert_eq!(read.status, StatusCode::NOT_FOUND, "nothing may be created");
 }
 
 #[tokio::test]
@@ -664,10 +749,11 @@ async fn conditional_delete_with_one_match_deletes_it() {
 }
 
 #[tokio::test]
-async fn conditional_delete_without_a_match_is_404() {
+async fn conditional_delete_without_a_match_is_no_content() {
     let app = service();
     let reply = request(&app, "DELETE", "/Patient?_id=pt-none", &[], &[]).await;
-    assert_eq!(reply.status, StatusCode::NOT_FOUND);
+    assert_eq!(reply.status, StatusCode::NO_CONTENT, "{}", reply.body);
+    assert!(reply.body.is_empty(), "{}", reply.body);
 }
 
 #[tokio::test]
@@ -779,7 +865,13 @@ async fn patch_honours_a_stale_if_match() {
         br#"[{"op":"replace","path":"/active","value":false}]"#,
     )
     .await;
-    assert_eq!(reply.status, StatusCode::CONFLICT);
+    assert_eq!(reply.status, StatusCode::PRECONDITION_FAILED, "{}", reply.body);
+    let read = request(&app, "GET", "/Patient/pt-p5", &[], &[]).await;
+    assert_eq!(header(&read, "etag"), "W/\"1\"", "no version may be written");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&read.body).unwrap()["active"],
+        true
+    );
 }
 
 #[tokio::test]
@@ -1234,7 +1326,7 @@ async fn format_selects_a_supported_rendering() {
         assert_eq!(request(&app, "GET", uri, &[], &[]).await.status, StatusCode::OK, "{uri}");
     }
     let reply = request(&app, "GET", "/Patient?_format=xml", &[], &[]).await;
-    assert_eq!(reply.status, StatusCode::BAD_REQUEST);
+    assert_eq!(reply.status, StatusCode::NOT_ACCEPTABLE, "{}", reply.body);
     let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
     assert_eq!(value["issue"][0]["code"], "not-supported");
 }
@@ -2131,7 +2223,10 @@ async fn concurrent_definition_updates_never_lose_one() {
     );
     let outcomes = [left.status, right.status];
     assert!(outcomes.contains(&StatusCode::OK), "{outcomes:?}");
-    assert!(outcomes.contains(&StatusCode::CONFLICT), "{outcomes:?}");
+    assert!(
+        outcomes.contains(&StatusCode::PRECONDITION_FAILED),
+        "{outcomes:?}"
+    );
     let (won, lost) = match left.status {
         StatusCode::OK => ("risk-alpha", "risk-beta"),
         _ => ("risk-beta", "risk-alpha"),
@@ -2153,7 +2248,7 @@ async fn a_stale_definition_update_changes_nothing() {
     request(&app, "PUT", "/SearchParameter/sp-17", &[], &next).await;
     let stale = definition("sp-17", "risk-stale", "Patient.extension.valueCode", "active");
     let reply = request(&app, "PUT", "/SearchParameter/sp-17", &[("if-match", "W/\"1\"")], &stale).await;
-    assert_eq!(reply.status, StatusCode::CONFLICT, "{}", reply.body);
+    assert_eq!(reply.status, StatusCode::PRECONDITION_FAILED, "{}", reply.body);
     assert!(!diagnostics(&app, "/Patient?risk-stale=x").await.contains("is supported"));
     assert!(diagnostics(&app, "/Patient?risk-band=x").await.contains("is supported"));
 }

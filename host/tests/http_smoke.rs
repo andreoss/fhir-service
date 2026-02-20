@@ -72,15 +72,17 @@ fn full_interaction_chain_over_http() {
 }
 
 #[test]
-fn stale_if_match_is_conflict_with_outcome() {
+fn stale_if_match_is_precondition_failed_with_outcome() {
     let (child, port) = spawn_server();
     request(port, "POST", "/Patient", &[], &patient("pt-2", true));
     request(port, "PUT", "/Patient/pt-2", &[("if-match", "W/\"1\"")], &patient("pt-2", false));
     let reply = request(port, "PUT", "/Patient/pt-2", &[("if-match", "W/\"1\"")], &patient("pt-2", true));
+    let current = request(port, "GET", "/Patient/pt-2", &[], &[]);
     stop(child);
-    assert_eq!(reply.status, 409);
+    assert_eq!(reply.status, 412);
     assert_eq!(issue_code(&reply.body), "conflict");
     assert!(reply.body.contains("OperationOutcome"));
+    assert_eq!(header(&current, "etag"), "W/\"2\"", "no version may be written");
 }
 
 #[test]
@@ -253,7 +255,7 @@ fn conditional_delete_removes_the_single_match() {
     stop(child);
     assert_eq!(deleted.status, 204, "conditional delete failed: {}", deleted.body);
     assert_eq!(read.status, 410);
-    assert_eq!(again.status, 404);
+    assert_eq!(again.status, 204, "no match is not a failure: {}", again.body);
 }
 
 #[test]

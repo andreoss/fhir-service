@@ -457,3 +457,47 @@ async fn an_instance_keeping_no_trail_routes_no_verification() {
     let response = app.router().oneshot(request).await.expect("a response");
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
+
+#[tokio::test]
+async fn a_partial_horizon_removes_the_old_and_the_survivors_still_verify() {
+    let (app, store, _) = recording();
+    worked(&app).await;
+    let horizon = stored(&store, 3).await["recorded"]
+        .as_str()
+        .expect("a record names when it was recorded")
+        .to_owned();
+    let later = call(&app, "GET", "/Patient/pt-a1", &[]).await;
+    assert_eq!(later.status, StatusCode::OK, "{}", later.body);
+    let before = count(&store).await;
+    assert!(before >= 4, "the horizon must fall inside the trail: {before}");
+
+    let removal = call(
+        &app,
+        "POST",
+        &format!("/AuditEvent/$retain?_before={horizon}"),
+        &[],
+    )
+    .await;
+    assert_eq!(removal.status, StatusCode::OK, "{}", removal.body);
+    let removed = parameter(&removal.body, "removed")["valueUnsignedInt"]
+        .as_u64()
+        .expect("a removal says how much it removed");
+    assert_eq!(removed, 2, "only what lies before the horizon goes: {}", removal.body);
+
+    assert!(count(&store).await > 0, "a partial horizon leaves survivors");
+
+    let survivors = fhir_api::trail::collected(store.as_ref() as &dyn ResourceStore)
+        .await
+        .expect("the trail reads back");
+    assert!(
+        survivors.iter().all(|record| record.sequence > 2),
+        "a removed record must not read back"
+    );
+    assert!(
+        survivors.iter().any(|record| record.sequence == 3),
+        "the record on the horizon stays"
+    );
+
+    let report = call(&app, "GET", "/AuditEvent/$verify", &[]).await;
+    assert!(verified(&report.body), "{}", report.body);
+}

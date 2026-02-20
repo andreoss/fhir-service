@@ -170,6 +170,7 @@ fn summary(entry: &Entry) -> Vec<u8> {
             field(&mut held, event.actor.as_bytes());
             optional(&mut held, event.client.as_deref());
             field(&mut held, event.action.as_str().as_bytes());
+            field(&mut held, event.interaction.as_str().as_bytes());
             optional(&mut held, event.resource_type.as_ref().map(ResourceType::as_str));
             optional(&mut held, event.resource_id.as_ref().map(|id| id.as_str()));
             field(&mut held, match event.granted {

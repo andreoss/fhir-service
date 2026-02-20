@@ -125,23 +125,82 @@ async fn a_scope_over_one_type_does_not_reach_another() {
     assert_eq!(same.status, StatusCode::OK, "{}", same.body);
 }
 
+fn queued() -> (Service, Arc<fhir_adapter_memory::MemoryJobStore>) {
+    use fhir_store::{JobStore, StepTicker};
+    let store = MemoryStore::with_clock(Arc::new(|| {
+        FhirInstant::parse("2026-09-06T04:00:00.000Z").unwrap()
+    }));
+    let ticker = StepTicker::starting_at(1_000);
+    let jobs = Arc::new(fhir_adapter_memory::MemoryJobStore::new(ticker.ticker()));
+    let app = Service::new(
+        Arc::new(store),
+        FhirVersion::R4,
+        vec![Dependency {
+            name: "memory-store",
+            check: Arc::new(|| Box::pin(async { Ok(()) })),
+        }],
+    )
+    .with_jobs(Arc::clone(&jobs) as Arc<dyn JobStore>)
+    .with_authorization(Authorization::new(
+        ISSUER,
+        "https://issuer.example.org/a",
+        "https://issuer.example.org/t",
+    ))
+    .enforcing(Arc::new(HeldKeys::new(keys())))
+    .expect("an authorization is configured");
+    (app, jobs)
+}
+
+async fn submitted(jobs: &Arc<fhir_adapter_memory::MemoryJobStore>) -> Vec<fhir_store::JobRecord> {
+    use fhir_store::JobStore;
+    jobs.list(&Default::default()).await.expect("the queue lists")
+}
+
 #[tokio::test]
-async fn every_data_action_is_named_before_it_runs() {
-    let app = guarded();
-    let all = "system/*.read system/*.write";
-    for (method, path, needed) in [
-        ("POST", "/$export", "system/*.export"),
-        ("POST", "/$import", "system/*.import"),
-        ("POST", "/$reindex", "system/*.reindex"),
-        ("POST", "/$bulk-delete", "system/*.bulk-delete"),
-        ("POST", "/$bulk-update", "system/*.bulk-update"),
-        ("POST", "/SearchParameter/$reindex", "system/*.parameter-management"),
+async fn a_data_action_runs_under_the_scope_that_names_it_and_not_otherwise() {
+    use fhir_store::JobKind;
+    let (app, jobs) = queued();
+    let unrelated = "system/*.read system/*.write";
+    for (path, needed, kind) in [
+        ("/$export", "system/*.export", Some(JobKind::Export)),
+        ("/$import", "system/*.import", Some(JobKind::Import)),
+        ("/$reindex", "system/*.reindex", Some(JobKind::Reindex)),
+        ("/$bulk-delete", "system/*.bulk-delete", Some(JobKind::BulkDelete)),
+        ("/$bulk-update", "system/*.bulk-update", Some(JobKind::BulkUpdate)),
+        (
+            "/SearchParameter/$reindex",
+            "system/*.parameter-management",
+            None,
+        ),
     ] {
-        let refused = call(&app, method, path, Some(all), b"{}").await;
-        assert_eq!(refused.status, StatusCode::FORBIDDEN, "{path} with {all}");
-        let granted = call(&app, method, path, Some(needed), b"{}").await;
-        assert_ne!(granted.status, StatusCode::FORBIDDEN, "{path} with {needed}");
-        assert_ne!(granted.status, StatusCode::UNAUTHORIZED, "{path}");
+        let before = submitted(&jobs).await.len();
+        let refused = call(&app, "POST", path, Some(unrelated), b"{}").await;
+        assert_eq!(refused.status, StatusCode::FORBIDDEN, "{path}: {}", refused.body);
+        assert_eq!(code(&refused.body), "forbidden", "{path}");
+        assert_eq!(
+            submitted(&jobs).await.len(),
+            before,
+            "{path} ran without the scope that names it"
+        );
+
+        let granted = call(&app, "POST", path, Some(needed), b"{}").await;
+        match kind {
+            Some(kind) => {
+                assert_eq!(granted.status, StatusCode::ACCEPTED, "{path}: {}", granted.body);
+                let listed = submitted(&jobs).await;
+                assert_eq!(listed.len(), before + 1, "{path} left no work behind");
+                assert!(
+                    listed.iter().any(|record| record.kind == kind
+                        && record.owner.as_deref() == Some("practitioner-1")),
+                    "{path} queued no {kind:?} for the caller"
+                );
+            }
+            None => {
+                assert_eq!(granted.status, StatusCode::OK, "{path}: {}", granted.body);
+                let report: Value = serde_json::from_str(&granted.body).expect("a report");
+                assert_eq!(report["resourceType"], "Parameters", "{path}");
+            }
+        }
     }
 }
 
@@ -316,17 +375,16 @@ async fn a_conditional_write_selects_only_inside_the_grant() {
     let app = guarded();
     seeded(&app).await;
     let confined = launched("patient/Observation.cruds", "pt-a");
-    let refused = with_token(
-        &app,
-        "DELETE",
-        "/Observation?_id=ob-b",
-        &confined,
-        &[],
-    )
-    .await;
+    let outside = with_token(&app, "DELETE", "/Observation?_id=ob-b", &confined, &[]).await;
     let survived = call(&app, "GET", "/Observation/ob-b", Some("system/*.read"), &[]).await;
-    assert_eq!(refused.status, StatusCode::NOT_FOUND, "{}", refused.body);
+    assert_eq!(outside.status, StatusCode::NO_CONTENT, "{}", outside.body);
+    assert!(outside.body.is_empty(), "a refusal may not name what it did not reach");
     assert_eq!(survived.status, StatusCode::OK, "{}", survived.body);
+
+    let inside = with_token(&app, "DELETE", "/Observation?_id=ob-a", &confined, &[]).await;
+    let removed = call(&app, "GET", "/Observation/ob-a", Some("system/*.read"), &[]).await;
+    assert_eq!(inside.status, StatusCode::NO_CONTENT, "{}", inside.body);
+    assert_eq!(removed.status, StatusCode::GONE, "{}", removed.body);
 }
 
 fn location(reply: &Reply) -> String {
@@ -397,11 +455,18 @@ async fn a_job_answers_only_the_caller_that_submitted_it() {
     let read_by_other = with_token(&app, "GET", &file, &theirs, &[]).await;
     let cancelled_by_other = with_token(&app, "DELETE", &path, &theirs, &[]).await;
 
-    assert_ne!(polled_by_owner.status, StatusCode::NOT_FOUND);
+    assert_eq!(polled_by_owner.status, StatusCode::ACCEPTED, "{}", polled_by_owner.body);
     assert_eq!(polled_by_other.status, StatusCode::NOT_FOUND);
-    assert_ne!(read_by_owner.status, StatusCode::NOT_FOUND, "{}", read_by_owner.body);
+    assert_eq!(read_by_owner.status, StatusCode::OK, "{}", read_by_owner.body);
+    assert_eq!(read_by_owner.body, "{}\n", "the owner reads the file it wrote");
     assert_eq!(read_by_other.status, StatusCode::NOT_FOUND);
+    assert!(!read_by_other.body.contains("part-1"), "{}", read_by_other.body);
     assert_eq!(cancelled_by_other.status, StatusCode::NOT_FOUND);
+    let after = jobs.list(&Default::default()).await.expect("the queue lists");
+    assert!(
+        !after.first().expect("the job is still queued").cancelled,
+        "a stranger cancelled the job"
+    );
 }
 
 #[tokio::test]
@@ -504,8 +569,18 @@ async fn trail_of(store: &Arc<MemoryStore>) -> Vec<Value> {
         .collect()
 }
 
+fn recorded<'a>(records: &'a [Value], action: &str, reference: &str) -> Vec<&'a Value> {
+    records
+        .iter()
+        .filter(|entry| {
+            entry["action"] == action
+                && entry["entity"][0]["what"]["reference"] == reference
+        })
+        .collect()
+}
+
 #[tokio::test]
-async fn every_read_and_write_leaves_one_record_of_who_did_what() {
+async fn every_interaction_leaves_one_record_naming_actor_action_and_resource() {
     let (app, store) = recording();
     let scopes = Some("system/Patient.read system/Patient.write");
     let created = call(
@@ -517,33 +592,86 @@ async fn every_read_and_write_leaves_one_record_of_who_did_what() {
     )
     .await;
     let read = call(&app, "GET", "/Patient/pt-t1", scopes, &[]).await;
+    let updated = call(
+        &app,
+        "PUT",
+        "/Patient/pt-t1",
+        scopes,
+        br#"{"resourceType":"Patient","id":"pt-t1","active":false,"name":[{"family":"Stone"}]}"#,
+    )
+    .await;
+    let deleted = call(&app, "DELETE", "/Patient/pt-t1", scopes, &[]).await;
     let refused = call(&app, "GET", "/Observation/ob-t1", scopes, &[]).await;
+    let refused_write = call(
+        &app,
+        "POST",
+        "/Observation",
+        scopes,
+        br#"{"resourceType":"Observation","id":"ob-t1","status":"final","code":{"text":"probe"}}"#,
+    )
+    .await;
     assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
     assert_eq!(read.status, StatusCode::OK, "{}", read.body);
+    assert_eq!(updated.status, StatusCode::OK, "{}", updated.body);
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT, "{}", deleted.body);
     assert_eq!(refused.status, StatusCode::FORBIDDEN);
+    assert_eq!(refused_write.status, StatusCode::FORBIDDEN);
 
     let records = trail_of(&store).await;
-    assert_eq!(records.len(), 3, "{records:?}");
-    let actions: Vec<String> = records
-        .iter()
-        .map(|entry| entry["type"]["code"].as_str().unwrap_or_default().to_owned())
-        .collect();
-    assert!(actions.contains(&"write".to_owned()), "{actions:?}");
-    assert!(actions.contains(&"read".to_owned()), "{actions:?}");
+    for (action, reference) in [
+        ("C", "Patient/pt-t1"),
+        ("R", "Patient/pt-t1"),
+        ("U", "Patient/pt-t1"),
+        ("D", "Patient/pt-t1"),
+    ] {
+        let found = recorded(&records, action, reference);
+        assert_eq!(found.len(), 1, "{action} {reference}: {records:?}");
+        assert_eq!(found[0]["outcome"], "0", "{action} {reference}");
+    }
+    for (action, reference) in [("R", "Observation/ob-t1"), ("C", "Observation/ob-t1")] {
+        let found = recorded(&records, action, reference);
+        assert_eq!(found.len(), 1, "{action} {reference}: {records:?}");
+        assert_eq!(
+            found[0]["outcome"], "8",
+            "a refusal is recorded as one: {action} {reference}"
+        );
+    }
     for entry in &records {
         assert_eq!(
             entry["agent"][0]["who"]["identifier"]["value"],
             "practitioner-1"
         );
+        let published = ["C", "R", "U", "D", "E"];
+        let named = entry["action"].as_str().expect("a record names its action");
+        assert!(published.contains(&named), "{named} is no published action");
         let text = entry.to_string();
         assert!(!text.contains("Stone"), "{text}");
         assert!(!text.contains("Bearer"), "{text}");
     }
-    let denied = records
-        .iter()
-        .find(|entry| entry["outcome"] == "8")
-        .expect("the refusal is recorded");
-    assert_eq!(denied["entity"][0]["what"]["reference"], "Observation/ob-t1");
+}
+
+#[tokio::test]
+async fn a_recorded_action_survives_the_chain_it_is_sealed_into() {
+    let (app, store) = recording();
+    let scopes = Some("system/Patient.read system/Patient.write");
+    call(
+        &app,
+        "POST",
+        "/Patient",
+        scopes,
+        br#"{"resourceType":"Patient","id":"pt-t2","active":true}"#,
+    )
+    .await;
+    let verified = call(&app, "GET", "/AuditEvent/$verify", Some("system/*.read"), &[]).await;
+    assert_eq!(verified.status, StatusCode::OK, "{}", verified.body);
+    let report: Value = serde_json::from_str(&verified.body).expect("a report");
+    assert_eq!(report["parameter"][0]["name"], "verified");
+    assert_eq!(report["parameter"][0]["valueBoolean"], true, "{}", verified.body);
+    let records = trail_of(&store).await;
+    assert!(
+        records.iter().any(|entry| entry["action"] == "C"),
+        "{records:?}"
+    );
 }
 
 #[tokio::test]
@@ -642,4 +770,165 @@ async fn an_issuer_offering_a_symmetric_key_configures_no_instance() {
         .expect("a listed key")
         .push(shared["keys"][0].clone());
     assert!(KeySet::parse(&mixed).is_err());
+}
+
+fn matched(body: &str) -> Vec<String> {
+    let value: Value = serde_json::from_str(body).expect("a bundle");
+    value["entry"]
+        .as_array()
+        .map(|entries| {
+            entries
+                .iter()
+                .filter(|entry| entry["search"]["mode"] == "match")
+                .filter_map(|entry| entry["resource"]["id"].as_str())
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn included(body: &str) -> Vec<String> {
+    let value: Value = serde_json::from_str(body).expect("a bundle");
+    value["entry"]
+        .as_array()
+        .map(|entries| {
+            entries
+                .iter()
+                .filter(|entry| entry["search"]["mode"] == "include")
+                .filter_map(|entry| entry["resource"]["id"].as_str())
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[tokio::test]
+async fn a_grant_read_from_a_token_confines_a_chain_and_an_include() {
+    let app = guarded();
+    seeded(&app).await;
+    let confined = launched("patient/Observation.rs patient/Patient.rs", "pt-a");
+
+    let mine = with_token(
+        &app,
+        "GET",
+        "/Patient?_has:Observation:patient:_id=ob-a",
+        &confined,
+        &[],
+    )
+    .await;
+    let theirs = with_token(
+        &app,
+        "GET",
+        "/Patient?_has:Observation:patient:_id=ob-b",
+        &confined,
+        &[],
+    )
+    .await;
+    assert_eq!(mine.status, StatusCode::OK, "{}", mine.body);
+    assert_eq!(matched(&mine.body), vec!["pt-a".to_owned()]);
+    assert_eq!(theirs.status, StatusCode::OK, "{}", theirs.body);
+    assert!(matched(&theirs.body).is_empty(), "{}", theirs.body);
+
+    let pulled = with_token(
+        &app,
+        "GET",
+        "/Observation?_include=Observation:subject",
+        &confined,
+        &[],
+    )
+    .await;
+    assert_eq!(included(&pulled.body), vec!["pt-a".to_owned()], "{}", pulled.body);
+
+    let narrower = launched("patient/Observation.rs", "pt-a");
+    let unreachable = with_token(
+        &app,
+        "GET",
+        "/Observation?_include=Observation:subject",
+        &narrower,
+        &[],
+    )
+    .await;
+    assert_eq!(unreachable.status, StatusCode::OK, "{}", unreachable.body);
+    assert!(
+        included(&unreachable.body).is_empty(),
+        "an include may not reach a type the token does not name: {}",
+        unreachable.body
+    );
+}
+
+#[tokio::test]
+async fn a_type_the_token_does_not_name_is_refused_and_a_resource_it_does_not_reach_is_not_found() {
+    let app = guarded();
+    seeded(&app).await;
+    let confined = launched("patient/Observation.rs", "pt-a");
+
+    let elsewhere = with_token(&app, "GET", "/Patient", &confined, &[]).await;
+    assert_eq!(elsewhere.status, StatusCode::FORBIDDEN, "{}", elsewhere.body);
+    assert_eq!(code(&elsewhere.body), "forbidden");
+    assert!(
+        !elsewhere.body.contains("pt-a") && !elsewhere.body.contains("pt-b"),
+        "a refusal names no resource: {}",
+        elsewhere.body
+    );
+
+    let theirs = with_token(&app, "GET", "/Observation/ob-b", &confined, &[]).await;
+    assert_eq!(
+        theirs.status,
+        StatusCode::NOT_FOUND,
+        "a resource inside a served type but outside the grant is answered as absent: {}",
+        theirs.body
+    );
+    assert!(!theirs.body.contains("ob-b"), "{}", theirs.body);
+
+    let absent = with_token(&app, "GET", "/Observation/ob-nowhere", &confined, &[]).await;
+    assert_eq!(
+        absent.status, theirs.status,
+        "a withheld resource is indistinguishable from one that does not exist"
+    );
+}
+
+#[tokio::test]
+async fn an_expired_or_forged_token_introspects_as_inactive() {
+    let app = guarded();
+    let caller = token("system/Patient.read");
+    let mut stale = granted();
+    stale["exp"] = json!(time::OffsetDateTime::now_utc().unix_timestamp() - 60);
+    let expired = signing().mint(&stale);
+
+    let live = with_token(
+        &app,
+        "POST",
+        "/_introspect",
+        &caller,
+        format!("token={caller}").as_bytes(),
+    )
+    .await;
+    assert_eq!(live.status, StatusCode::OK, "{}", live.body);
+    let reported: Value = serde_json::from_str(&live.body).expect("a document");
+    assert_eq!(reported["active"], true);
+    let expires = reported["exp"].as_i64().expect("a live token reports exp");
+    assert!(
+        expires > time::OffsetDateTime::now_utc().unix_timestamp(),
+        "exp must lie ahead of now: {expires}"
+    );
+
+    for (reason, offered) in [
+        ("expired", expired),
+        ("signed by another key", Issuer::generate("elsewhere").mint(&granted())),
+    ] {
+        let reply = with_token(
+            &app,
+            "POST",
+            "/_introspect",
+            &caller,
+            format!("token={offered}").as_bytes(),
+        )
+        .await;
+        assert_eq!(reply.status, StatusCode::OK, "{reason}: {}", reply.body);
+        let value: Value = serde_json::from_str(&reply.body).expect("a document");
+        assert_eq!(value["active"], false, "{reason}: {}", reply.body);
+        assert!(value.get("sub").is_none(), "{reason}: {}", reply.body);
+        assert!(value.get("exp").is_none(), "{reason}: {}", reply.body);
+        assert!(!reply.body.contains(&offered), "{reason}");
+    }
 }
