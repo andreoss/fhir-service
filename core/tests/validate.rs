@@ -93,13 +93,55 @@ fn an_element_carrying_no_value_is_an_error() {
 }
 
 #[test]
-fn a_create_carrying_an_id_is_reported() {
+fn a_create_carrying_an_id_is_reported_against_the_element_that_carries_it() {
     let body = json!({"resourceType": "Patient", "id": "pt-1"});
     let mut request = asked(&body);
     request.mode = Mode::Create;
     let report = validate(&request);
-    assert!(!report.has_errors());
-    assert!(codes(&report).iter().any(|code| code.starts_with("warning")));
+    let held = report
+        .issues()
+        .iter()
+        .find(|issue| issue.expression.as_deref() == Some("id"))
+        .expect("the id the body carries is named");
+    assert_eq!(held.code, fhir_core::IssueCode::Invalid);
+    assert!(held.diagnostics.contains("pt-1"), "{}", held.diagnostics);
+
+    let mut update = asked(&body);
+    update.mode = Mode::Update;
+    assert!(validate(&update)
+        .issues()
+        .iter()
+        .all(|issue| issue.expression.as_deref() != Some("id")));
+}
+
+#[test]
+fn a_report_is_an_operation_outcome_the_definitions_accept() {
+    let bodies = [
+        json!({"resourceType": "Patient", "id": "pt-1", "active": true}),
+        json!({"resourceType": "Patient", "favourite": "tea"}),
+        json!({"resourceType": "Patient", "gender": "lady"}),
+        json!({"resourceType": "Observation", "status": "final"}),
+        json!({"resourceType": "Patient", "text": {"status": "invented", "div": "x"}}),
+        json!({"resourceType": "Patient", "name": [], "active": null}),
+        json!("text"),
+    ];
+    for version in [
+        fhir_core::FhirVersion::R4,
+        fhir_core::FhirVersion::R4b,
+        fhir_core::FhirVersion::R5,
+    ] {
+        for body in &bodies {
+            let mut request = asked(body);
+            request.version = version;
+            let rendered: serde_json::Value =
+                serde_json::from_slice(&validate(&request).to_fhir_json()).unwrap();
+            assert_eq!(
+                fhir_core::Model::of(version).check(&rendered),
+                Vec::new(),
+                "{version} {body}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -175,17 +217,52 @@ fn a_profile_the_definitions_do_not_carry_is_reported_as_unchecked() {
     let mut request = asked(&body);
     request.profile = Some("http://example.test/StructureDefinition/local");
     let report = validate(&request);
+    let held = report
+        .issues()
+        .iter()
+        .find(|issue| issue.expression.as_deref() == Some("meta.profile"))
+        .expect("the profile is named");
+    assert_eq!(held.severity, fhir_core::IssueSeverity::Information);
+    assert_eq!(held.code, fhir_core::IssueCode::Informational);
     assert!(!report.has_errors(), "{}", report.to_fhir_json_text());
-    assert!(report.to_fhir_json_text().contains("profile"), "not named");
 }
 
 #[test]
-fn a_resource_of_another_version_is_reported_against_the_version_asked_for() {
-    let body = json!({"resourceType": "EvidenceVariable", "status": "active", "characteristic": [{"definitionReference": {"reference": "Group/g-1"}}]});
-    let mut request = asked(&body);
-    request.version = fhir_core::FhirVersion::Stu3;
-    let report = validate(&request);
-    assert!(report.has_errors());
-    request.version = fhir_core::FhirVersion::R4;
-    assert!(!validate(&request).has_errors(), "{}", validate(&request).to_fhir_json_text());
+fn a_type_a_version_does_not_publish_is_refused_by_that_version() {
+    let body = json!({"resourceType": "EvidenceVariable", "status": "active"});
+    let names_the_type = |version| {
+        let mut request = asked(&body);
+        request.version = version;
+        validate(&request).to_fhir_json_text().contains(&format!(
+            "EvidenceVariable is not a resource type of {version}"
+        ))
+    };
+    assert!(names_the_type(fhir_core::FhirVersion::Stu3));
+    for version in [
+        fhir_core::FhirVersion::R4,
+        fhir_core::FhirVersion::R4b,
+        fhir_core::FhirVersion::R5,
+    ] {
+        assert!(!names_the_type(version), "{version}");
+    }
+
+    let animal = json!({"resourceType": "Patient", "animal": {"species": {"text": "dog"}}});
+    let mut asked_animal = asked(&animal);
+    asked_animal.version = fhir_core::FhirVersion::Stu3;
+    assert!(
+        !validate(&asked_animal).has_errors(),
+        "STU3 publishes Patient.animal: {}",
+        validate(&asked_animal).to_fhir_json_text()
+    );
+    for version in [
+        fhir_core::FhirVersion::R4,
+        fhir_core::FhirVersion::R4b,
+        fhir_core::FhirVersion::R5,
+    ] {
+        asked_animal.version = version;
+        assert!(
+            validate(&asked_animal).has_errors(),
+            "{version} publishes no Patient.animal"
+        );
+    }
 }

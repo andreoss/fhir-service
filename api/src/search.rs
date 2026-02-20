@@ -282,7 +282,7 @@ fn entry(
 fn resource_of(envelope: &ResourceEnvelope, summary: Summary, elements: &[String]) -> Option<Value> {
     let rendered: Value = match summary {
         Summary::Count => return None,
-        Summary::Metadata => serde_json::from_slice(&envelope.to_json()).ok()?,
+        Summary::Metadata => serde_json::from_slice(&envelope.to_metadata_json()).ok()?,
         Summary::Text => narrowed(envelope, &["text".to_owned()])?,
         Summary::Full if elements.is_empty() => return serde_json::from_slice(envelope.raw()).ok(),
         Summary::Full => narrowed(envelope, elements)?,
@@ -290,7 +290,7 @@ fn resource_of(envelope: &ResourceEnvelope, summary: Summary, elements: &[String
     Some(subsetted(rendered))
 }
 
-fn narrowed(envelope: &ResourceEnvelope, elements: &[String]) -> Option<Value> {
+pub(crate) fn narrowed(envelope: &ResourceEnvelope, elements: &[String]) -> Option<Value> {
     let value: Value = serde_json::from_slice(envelope.raw()).ok()?;
     let source = value.as_object()?;
     let mut kept = Map::new();

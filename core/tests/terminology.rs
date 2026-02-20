@@ -142,18 +142,38 @@ fn a_display_language_and_designations_are_honoured() {
 }
 
 #[test]
-fn a_version_and_a_date_the_set_does_not_carry_are_refused() {
+fn a_set_no_version_of_which_answers_the_request_is_not_found() {
     let systems = vec![system()];
     let older = ExpansionRequest {
         date: Some("2025-01-01".to_owned()),
         ..asked()
     };
-    assert!(expand(&set(), &systems, &older).is_err());
+    let error = expand(&set(), &systems, &older).unwrap_err();
+    assert_eq!(error.http_status(), 404, "{error:?}");
     let version = ExpansionRequest {
         value_set_version: Some("9.9".to_owned()),
         ..asked()
     };
-    assert!(expand(&set(), &systems, &version).is_err());
+    let error = expand(&set(), &systems, &version).unwrap_err();
+    assert_eq!(error.http_status(), 404, "{error:?}");
+}
+
+#[test]
+fn a_request_naming_a_version_the_server_cannot_honour_is_a_bad_request() {
+    let systems = vec![system()];
+    let pinned = ExpansionRequest {
+        system_versions: vec![("urn:cs".to_owned(), "9.9".to_owned())],
+        ..asked()
+    };
+    let error = expand(&set(), &systems, &pinned).unwrap_err();
+    assert_eq!(error.http_status(), 400, "{error:?}");
+    let unknown = expand(&set(), &[], &asked()).unwrap_err();
+    assert_eq!(unknown.http_status(), 400, "{unknown:?}");
+}
+
+#[test]
+fn the_version_and_the_date_the_set_carries_are_honoured() {
+    let systems = vec![system()];
     let held = ExpansionRequest {
         value_set_version: Some("2.0".to_owned()),
         date: Some("2026-06-01".to_owned()),
@@ -161,11 +181,13 @@ fn a_version_and_a_date_the_set_does_not_carry_are_refused() {
     };
     assert!(expand(&set(), &systems, &held).is_ok());
     let pinned = ExpansionRequest {
-        system_versions: vec![("urn:cs".to_owned(), "9.9".to_owned())],
+        system_versions: vec![("urn:cs".to_owned(), "1.0".to_owned())],
         ..asked()
     };
-    assert!(expand(&set(), &systems, &pinned).is_err());
+    let expansion = expand(&set(), &systems, &pinned).expect("the pinned version is the one held");
+    assert_eq!(expansion.total, 4);
 }
+
 
 #[test]
 fn a_composed_subtree_and_an_exclusion_are_honoured() {
@@ -185,11 +207,6 @@ fn a_composed_subtree_and_an_exclusion_are_honoured() {
     );
 }
 
-#[test]
-fn a_set_composing_an_unknown_system_is_refused() {
-    let expansion = expand(&set(), &[], &asked());
-    assert!(expansion.is_err());
-}
 
 #[test]
 fn an_expansion_is_stamped_and_carries_no_empty_element() {
@@ -216,4 +233,41 @@ fn stamp() -> Stamp {
         identifier: "urn:uuid:00000000-0000-4000-8000-000000000000".to_owned(),
         timestamp: "2026-09-07T00:00:00.000Z".to_owned(),
     }
+}
+
+#[test]
+fn an_expansion_carries_an_offset_only_when_it_is_paged() {
+    let plain = expand(&set(), &[system()], &asked()).unwrap();
+    let rendered = expansion_json(&plain, &asked(), &stamp());
+    assert!(
+        rendered["expansion"].get("offset").is_none(),
+        "{}",
+        rendered["expansion"]
+    );
+
+    for request in [
+        ExpansionRequest { count: Some(2), ..asked() },
+        ExpansionRequest { offset: 1, ..asked() },
+    ] {
+        let paged = expand(&set(), &[system()], &request).unwrap();
+        let rendered = expansion_json(&paged, &request, &stamp());
+        assert_eq!(rendered["expansion"]["offset"], request.offset);
+    }
+}
+
+#[test]
+fn an_expansion_reports_the_whole_count_beside_the_page_it_carries() {
+    let request = ExpansionRequest {
+        exclude_nested: true,
+        count: Some(2),
+        offset: 1,
+        ..asked()
+    };
+    let paged = expand(&set(), &[system()], &request).unwrap();
+    assert_eq!(paged.total, 4);
+    assert_eq!(paged.concepts.len(), 2);
+    let rendered = expansion_json(&paged, &request, &stamp());
+    assert_eq!(rendered["expansion"]["total"], 4);
+    assert_eq!(rendered["expansion"]["offset"], 1);
+    assert_eq!(rendered["expansion"]["contains"].as_array().map(Vec::len), Some(2));
 }

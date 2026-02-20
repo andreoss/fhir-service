@@ -35,12 +35,19 @@ fn delimited_input_renders_the_named_template() {
 }
 
 #[test]
-fn an_unresolved_placeholder_drops_its_element() {
+fn an_unresolved_placeholder_leaves_a_resource_the_definitions_accept() {
     let data = "PID|1||pt-2";
     let value = convert(&collection(), &request(InputType::Hl7v2, data)).unwrap();
     assert_eq!(value["id"], "pt-2");
     assert!(value.get("name").is_none());
     assert!(value.get("gender").is_none());
+    for version in fhir_core::FhirVersion::ALL {
+        assert_eq!(
+            fhir_core::Model::of(version).check(&value),
+            Vec::new(),
+            "{version} {value}"
+        );
+    }
 }
 
 #[test]
@@ -94,20 +101,48 @@ fn an_input_form_the_server_does_not_read_is_refused() {
     assert_eq!("json".parse::<InputType>().unwrap(), InputType::Json);
 }
 
-#[test]
-fn the_default_registry_approves_one_collection() {
-    let templates = ApprovedTemplates::default();
-    let data = "PID|1||pt-4||Dee^Eve||19700101|male";
-    let value = convert(
-        &templates,
+fn approved(root: &str, data: &str) -> serde_json::Value {
+    convert(
+        &ApprovedTemplates::default(),
         &Conversion {
             input_type: InputType::Hl7v2,
             data,
             collection: fhir_core::convert::DEFAULT_COLLECTION,
-            root_template: "Patient",
+            root_template: root,
         },
     )
-    .unwrap();
-    assert_eq!(value["resourceType"], "Patient");
-    assert_eq!(value["id"], "pt-4");
+    .unwrap()
+}
+
+#[test]
+fn the_default_registry_renders_resources_the_definitions_accept() {
+    for (root, data) in [
+        ("Patient", "PID|1||pt-4||Dee^Eve||19700101|male"),
+        ("Patient", "PID|1||pt-5"),
+        ("Observation", "OBX|1|ST|8867-4^Heart rate^http://loinc.org||72"),
+        ("Observation", "OBX|1|ST|8867-4||72"),
+    ] {
+        let value = approved(root, data);
+        assert_eq!(value["resourceType"], root);
+        for version in fhir_core::FhirVersion::ALL {
+            assert_eq!(
+                fhir_core::Model::of(version).check(&value),
+                Vec::new(),
+                "{version} {root} {value}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_delimited_date_is_rendered_as_the_date_the_specification_spells() {
+    assert_eq!(approved("Patient", "PID|1||pt-4||||19700101")["birthDate"], "1970-01-01");
+    assert_eq!(approved("Patient", "PID|1||pt-4||||197001")["birthDate"], "1970-01");
+    assert_eq!(approved("Patient", "PID|1||pt-4||||1970")["birthDate"], "1970");
+    assert_eq!(
+        approved("Patient", "PID|1||pt-4||||19700101120000")["birthDate"],
+        "1970-01-01"
+    );
+    let refused = approved("Patient", "PID|1||pt-4||||notadate");
+    assert!(refused.get("birthDate").is_none(), "{refused}");
 }

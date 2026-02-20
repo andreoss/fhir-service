@@ -1,41 +1,65 @@
 use fhir_core::{Error, FhirInstant, FhirVersion, ResourceEnvelope, ResourceId, VersionId};
-use std::str::from_utf8;
 
 const FIXTURE: &[u8] = include_bytes!("fixtures/patient-r4.json");
 
+fn fixture() -> ResourceEnvelope {
+    ResourceEnvelope::parse(FhirVersion::R4, FIXTURE).expect("fixture must parse")
+}
+
 #[test]
 fn fixture_raw_bytes_are_preserved_verbatim() {
-    let envelope = ResourceEnvelope::parse(FhirVersion::R4, FIXTURE).expect("fixture must parse");
-    assert_eq!(envelope.raw(), FIXTURE);
+    assert_eq!(fixture().raw(), FIXTURE);
 }
 
 #[test]
-fn fixture_round_trip_preserves_metadata() {
-    let envelope = ResourceEnvelope::parse(FhirVersion::R4, FIXTURE).expect("fixture must parse");
-    assert_eq!(envelope.resource_type().as_str(), "Patient");
-    assert_eq!(envelope.id().as_str(), "pt-0001");
-    assert_eq!(envelope.version_id().as_str(), "4");
-    assert_eq!(envelope.last_updated().as_str(), "2026-09-06T04:00:00.000Z");
-    assert_eq!(envelope.version(), FhirVersion::R4);
+fn a_round_trip_returns_the_resource_that_went_in() {
+    let supplied: serde_json::Value = serde_json::from_slice(FIXTURE).expect("the fixture is json");
+    let rendered: serde_json::Value =
+        serde_json::from_slice(&fixture().to_json()).expect("the rendering is json");
+    assert_eq!(rendered, supplied);
 
-    let rendered = envelope.to_json();
-    let reparsed = ResourceEnvelope::parse(FhirVersion::R4, &rendered).expect("rendered fixture must reparse");
-    assert_eq!(reparsed.resource_type(), envelope.resource_type());
-    assert_eq!(reparsed.id(), envelope.id());
-    assert_eq!(reparsed.version_id(), envelope.version_id());
-    assert_eq!(reparsed.last_updated(), envelope.last_updated());
-
-    let text = from_utf8(&rendered).unwrap();
-    assert!(text.contains("\"resourceType\":\"Patient\""));
-    assert!(text.contains("\"id\":\"pt-0001\""));
-    assert!(text.contains("\"versionId\":\"4\""));
-    assert!(text.contains("\"lastUpdated\":\"2026-09-06T04:00:00.000Z\""));
+    let reparsed =
+        ResourceEnvelope::parse(FhirVersion::R4, &fixture().to_json()).expect("it must reparse");
+    assert!(reparsed.content_eq(&fixture()));
+    assert_eq!(reparsed.resource_type().as_str(), "Patient");
+    assert_eq!(reparsed.id().as_str(), "pt-0001");
+    assert_eq!(reparsed.version_id().as_str(), "4");
+    assert_eq!(reparsed.last_updated().as_str(), "2026-09-06T04:00:00.000Z");
 }
 
 #[test]
-fn fixture_rejects_unknown_version_codes() {
-    let result = ResourceEnvelope::parse(FhirVersion::R4, FIXTURE);
-    assert!(result.is_ok());
+fn a_round_trip_of_a_stored_version_returns_that_version() {
+    let stored = fixture()
+        .stored_with(
+            VersionId::parse("5").unwrap(),
+            FhirInstant::parse("2026-09-06T05:00:00.000Z").unwrap(),
+        )
+        .expect("a stored version is built");
+    let rendered: serde_json::Value = serde_json::from_slice(&stored.to_json()).unwrap();
+    assert_eq!(rendered["meta"]["versionId"], "5");
+    assert_eq!(rendered["meta"]["lastUpdated"], "2026-09-06T05:00:00.000Z");
+    assert_eq!(rendered["name"][0]["family"], "Smith");
+    assert_eq!(rendered["name"][0]["given"][0], "Jane");
+    assert_eq!(rendered["active"], true);
+    assert!(stored.content_eq(&fixture()));
+}
+
+#[test]
+fn a_version_code_no_release_publishes_is_rejected() {
+    for code in ["", "2", "DSTU2", "R3", "R6", "4.1", "FHIR_R4"] {
+        assert!(
+            code.parse::<FhirVersion>().is_err(),
+            "{code:?} is not a published version code"
+        );
+    }
+    for (code, version) in [
+        ("STU3", FhirVersion::Stu3),
+        ("R4", FhirVersion::R4),
+        ("R4B", FhirVersion::R4b),
+        ("R5", FhirVersion::R5),
+    ] {
+        assert_eq!(code.parse::<FhirVersion>().unwrap(), version);
+    }
 }
 
 #[test]

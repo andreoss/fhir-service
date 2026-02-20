@@ -147,7 +147,8 @@ fn resource_of(envelope: &ResourceEnvelope, summary: Summary) -> Option<Value> {
     }
     match summary {
         Summary::Count => None,
-        Summary::Metadata | Summary::Text => serde_json::from_slice(&envelope.to_json()).ok(),
+        Summary::Metadata => serde_json::from_slice(&envelope.to_metadata_json()).ok(),
+        Summary::Text => crate::search::narrowed(envelope, &["text".to_owned()]),
         Summary::Full => serde_json::from_slice(envelope.raw()).ok(),
     }
 }

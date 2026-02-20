@@ -252,9 +252,8 @@ mod tests {
         assert_eq!(WeakEtag::from(&version).to_string(), "W/\"2\"");
     }
 
-    #[test]
-    fn every_failure_says_what_went_wrong_and_maps_to_a_status() {
-        let held = vec![
+    fn every_failure() -> Vec<Error> {
+        vec![
             Error::InvalidResourceType("X".to_owned()),
             Error::InvalidResourceId("X".to_owned()),
             Error::InvalidVersion("X".to_owned()),
@@ -278,14 +277,58 @@ mod tests {
             Error::NoMatch("X".to_owned()),
             Error::Unauthenticated("X".to_owned()),
             Error::Unavailable("X".to_owned()),
+        ]
+    }
+
+    #[test]
+    fn every_failure_maps_to_the_status_its_kind_is_answered_with() {
+        let expected: Vec<(Error, u16, IssueCode)> = vec![
+            (Error::InvalidResourceType("X".to_owned()), 400, IssueCode::Invalid),
+            (Error::InvalidResourceId("X".to_owned()), 400, IssueCode::Invalid),
+            (Error::InvalidVersion("X".to_owned()), 400, IssueCode::Invalid),
+            (Error::InvalidEtag("X".to_owned()), 400, IssueCode::Invalid),
+            (Error::InvalidFhirVersion("X".to_owned()), 400, IssueCode::Invalid),
+            (Error::InvalidInstant("X".to_owned()), 400, IssueCode::Invalid),
+            (Error::InvalidJson("X".to_owned()), 400, IssueCode::Invalid),
+            (Error::InvalidEnvelope("X".to_owned()), 400, IssueCode::Invalid),
+            (Error::InvalidPatch("X".to_owned()), 400, IssueCode::Invalid),
+            (Error::InvalidParameter("X".to_owned()), 400, IssueCode::Invalid),
+            (Error::UnsupportedParameter("X".to_owned()), 400, IssueCode::NotSupported),
+            (Error::Unauthenticated("X".to_owned()), 401, IssueCode::Login),
+            (Error::Forbidden("X".to_owned()), 403, IssueCode::Forbidden),
+            (Error::NotFound, 404, IssueCode::NotFound),
+            (Error::MethodNotAllowed, 405, IssueCode::NotAllowed),
+            (Error::VersionConflict, 409, IssueCode::Conflict),
+            (Error::Duplicate("X".to_owned()), 409, IssueCode::Duplicate),
+            (Error::Deleted, 410, IssueCode::Deleted),
+            (Error::MultipleMatches, 412, IssueCode::MultipleMatches),
+            (Error::NoMatch("X".to_owned()), 422, IssueCode::BusinessRule),
+            (Error::Config("X".to_owned()), 500, IssueCode::Processing),
+            (Error::Internal("X".to_owned()), 500, IssueCode::Processing),
+            (Error::Unavailable("X".to_owned()), 503, IssueCode::Transient),
         ];
-        for error in &held {
+        assert_eq!(expected.len(), every_failure().len());
+        for (error, status, code) in expected {
+            assert_eq!(error.http_status(), status, "{error:?}");
+            assert_eq!(error.to_operation_outcome().code, code, "{error:?}");
             assert!(!error.to_string().trim().is_empty(), "{error:?}");
-            assert!((400..=599).contains(&error.http_status()), "{error:?}");
-            assert!(
-                !error.to_operation_outcome().to_fhir_json().is_empty(),
-                "{error:?}"
-            );
+        }
+    }
+
+    #[test]
+    fn every_refusal_renders_an_outcome_the_definitions_of_r4_and_later_accept() {
+        use crate::{FhirVersion, Model};
+        for version in [FhirVersion::R4, FhirVersion::R4b, FhirVersion::R5] {
+            for error in every_failure() {
+                let rendered = error.to_operation_outcome().to_fhir_json();
+                let body: serde_json::Value =
+                    serde_json::from_slice(&rendered).expect("an outcome is json");
+                assert_eq!(
+                    Model::of(version).check(&body),
+                    Vec::new(),
+                    "{version} {error:?}"
+                );
+            }
         }
     }
 }

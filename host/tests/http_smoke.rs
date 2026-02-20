@@ -164,7 +164,7 @@ fn unsupported_method_returns_outcome_405() {
     let reply = request(port, "POST", "/Patient/pt-7", &[], &[]);
     stop(child);
     assert_eq!(reply.status, 405);
-    assert_eq!(issue_code(&reply.body), "not-allowed");
+    assert_eq!(issue_code(&reply.body), "forbidden");
     assert!(reply.body.contains("OperationOutcome"));
 }
 

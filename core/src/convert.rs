@@ -92,7 +92,7 @@ impl Default for ApprovedTemplates {
                     "resourceType": "Patient",
                     "id": "{{PID.3}}",
                     "name": [{"family": "{{PID.5.1}}", "given": ["{{PID.5.2}}"]}],
-                    "birthDate": "{{PID.7}}",
+                    "birthDate": "{{date(PID.7)}}",
                     "gender": "{{PID.8}}"
                 }),
             )
@@ -269,12 +269,40 @@ fn substituted(text: &str, source: &Value) -> Value {
 }
 
 fn bound(source: &Value, path: &str) -> Option<String> {
+    if let Some(inner) = path.strip_prefix("date(").and_then(|rest| rest.strip_suffix(')')) {
+        return dated(&bound(source, inner.trim())?);
+    }
+    if let Some(found) = scalar(source, path) {
+        return Some(found);
+    }
+    path.strip_suffix(".1").and_then(|field| scalar(source, field))
+}
+
+fn scalar(source: &Value, path: &str) -> Option<String> {
     select(source, path).into_iter().find_map(|found| match found {
         Value::String(text) if !text.is_empty() => Some(text.clone()),
         Value::Number(number) => Some(number.to_string()),
         Value::Bool(flag) => Some(flag.to_string()),
         _ => None,
     })
+}
+
+fn dated(field: &str) -> Option<String> {
+    let digits: &str = field.split(['-', '+']).next().unwrap_or_default();
+    if !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    match digits.len() {
+        4 => Some(digits.to_owned()),
+        6 => Some(format!("{}-{}", &digits[..4], &digits[4..6])),
+        length if length >= 8 => Some(format!(
+            "{}-{}-{}",
+            &digits[..4],
+            &digits[4..6],
+            &digits[6..8]
+        )),
+        _ => None,
+    }
 }
 
 #[cfg(test)]

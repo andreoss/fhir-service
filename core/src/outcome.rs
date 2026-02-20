@@ -49,7 +49,7 @@ impl IssueCode {
             IssueCode::Forbidden => "forbidden",
             IssueCode::Login => "login",
             IssueCode::NotSupported => "not-supported",
-            IssueCode::NotAllowed => "not-allowed",
+            IssueCode::NotAllowed => "forbidden",
             IssueCode::Duplicate => "duplicate",
             IssueCode::MultipleMatches => "multiple-matches",
             IssueCode::Processing => "processing",
@@ -134,6 +134,23 @@ mod tests {
         assert_eq!(IssueSeverity::Information.to_string(), "information");
     }
 
+    const EVERY_CODE: [IssueCode; 14] = [
+        IssueCode::Invalid,
+        IssueCode::NotFound,
+        IssueCode::Conflict,
+        IssueCode::Deleted,
+        IssueCode::Forbidden,
+        IssueCode::Login,
+        IssueCode::NotSupported,
+        IssueCode::NotAllowed,
+        IssueCode::Duplicate,
+        IssueCode::MultipleMatches,
+        IssueCode::Processing,
+        IssueCode::Informational,
+        IssueCode::BusinessRule,
+        IssueCode::Transient,
+    ];
+
     #[test]
     fn issue_codes_match_fhir_strings() {
         assert_eq!(IssueCode::Invalid.as_str(), "invalid");
@@ -143,15 +160,71 @@ mod tests {
     }
 
     #[test]
+    fn every_issue_code_is_one_the_published_value_set_carries() {
+        let published = [
+            "business-rule",
+            "code-invalid",
+            "conflict",
+            "deleted",
+            "duplicate",
+            "exception",
+            "expired",
+            "extension",
+            "forbidden",
+            "incomplete",
+            "informational",
+            "invalid",
+            "invariant",
+            "lock-error",
+            "login",
+            "multiple-matches",
+            "no-store",
+            "not-found",
+            "not-supported",
+            "processing",
+            "required",
+            "security",
+            "structure",
+            "suppressed",
+            "throttled",
+            "timeout",
+            "too-costly",
+            "too-long",
+            "transient",
+            "unknown",
+            "value",
+        ];
+        for code in EVERY_CODE {
+            assert!(
+                published.contains(&code.as_str()),
+                "{code:?} renders {:?}, which issue-type does not carry",
+                code.as_str()
+            );
+        }
+    }
+
+    #[test]
     fn issue_codes_map_to_http_status() {
-        assert_eq!(IssueCode::Invalid.http_status(), 400);
-        assert_eq!(IssueCode::NotSupported.http_status(), 400);
-        assert_eq!(IssueCode::NotFound.http_status(), 404);
-        assert_eq!(IssueCode::Conflict.http_status(), 409);
-        assert_eq!(IssueCode::Forbidden.http_status(), 403);
-        assert_eq!(IssueCode::Deleted.http_status(), 410);
-        assert_eq!(IssueCode::Processing.http_status(), 500);
-        assert_eq!(IssueCode::MultipleMatches.http_status(), 412);
+        let expected = [
+            (IssueCode::Invalid, 400),
+            (IssueCode::NotSupported, 400),
+            (IssueCode::Login, 401),
+            (IssueCode::Forbidden, 403),
+            (IssueCode::NotFound, 404),
+            (IssueCode::NotAllowed, 405),
+            (IssueCode::Conflict, 409),
+            (IssueCode::Duplicate, 409),
+            (IssueCode::Deleted, 410),
+            (IssueCode::MultipleMatches, 412),
+            (IssueCode::BusinessRule, 422),
+            (IssueCode::Processing, 500),
+            (IssueCode::Transient, 503),
+            (IssueCode::Informational, 200),
+        ];
+        assert_eq!(expected.len(), EVERY_CODE.len());
+        for (code, status) in expected {
+            assert_eq!(code.http_status(), status, "{code:?}");
+        }
     }
 
     #[test]

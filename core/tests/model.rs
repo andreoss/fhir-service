@@ -82,6 +82,10 @@ fn the_types_a_version_defines_are_the_types_it_serves() {
     assert!(!Model::of(FhirVersion::R4).has_resource("ProcedureRequest"));
     assert!(Model::of(FhirVersion::R4).has_resource("DeviceUseStatement"));
     assert!(!Model::of(FhirVersion::R5).has_resource("DeviceUseStatement"));
+    assert!(!Model::of(FhirVersion::Stu3).has_resource("EvidenceVariable"));
+    for version in [FhirVersion::R4, FhirVersion::R4b, FhirVersion::R5] {
+        assert!(Model::of(version).has_resource("EvidenceVariable"), "{version}");
+    }
 }
 
 #[test]
@@ -121,4 +125,90 @@ fn a_type_a_version_does_not_define_is_not_served_by_it() {
     assert!(fhir_core::ResourceType::served(FhirVersion::R5)
         .iter()
         .any(|held| held.as_str() == "Citation"));
+}
+
+#[test]
+fn a_status_every_version_requires_of_an_observation_is_reported_when_it_is_absent() {
+    for version in FhirVersion::ALL {
+        let body = serde_json::json!({"resourceType": "Observation", "code": {"text": "x"}});
+        let findings = Model::of(version).check(&body);
+        assert!(
+            findings.iter().any(|finding| {
+                finding.rule == Rule::Cardinality && finding.path == "Observation.status"
+            }),
+            "{version}: {findings:?}"
+        );
+    }
+}
+
+#[test]
+fn the_codes_administrative_gender_publishes_are_the_codes_a_patient_may_carry() {
+    for version in FhirVersion::ALL {
+        for code in ["male", "female", "other", "unknown"] {
+            let body = serde_json::json!({"resourceType": "Patient", "gender": code});
+            assert_eq!(Model::of(version).check(&body), Vec::new(), "{version} {code}");
+        }
+        for code in ["Male", "m", "lady"] {
+            let body = serde_json::json!({"resourceType": "Patient", "gender": code});
+            assert!(
+                Model::of(version)
+                    .check(&body)
+                    .iter()
+                    .any(|finding| finding.rule == Rule::Binding),
+                "{version} {code:?}"
+            );
+        }
+        let empty = serde_json::json!({"resourceType": "Patient", "gender": ""});
+        assert!(!Model::of(version).check(&empty).is_empty(), "{version}");
+    }
+}
+
+#[test]
+fn a_date_is_a_year_a_month_or_a_day_and_nothing_longer() {
+    for version in FhirVersion::ALL {
+        for held in ["1980", "1980-04", "1980-04-01"] {
+            let body = serde_json::json!({"resourceType": "Patient", "birthDate": held});
+            assert_eq!(Model::of(version).check(&body), Vec::new(), "{version} {held}");
+        }
+        for held in ["19800401", "1980-04-01T00:00:00Z", "80-04-01", "1980-13-01"] {
+            let body = serde_json::json!({"resourceType": "Patient", "birthDate": held});
+            assert!(
+                !Model::of(version).check(&body).is_empty(),
+                "{version} accepted birthDate {held:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_choice_is_named_by_the_type_it_carries() {
+    for version in FhirVersion::ALL {
+        let held = serde_json::json!({"resourceType": "Patient", "deceasedBoolean": true});
+        assert_eq!(Model::of(version).check(&held), Vec::new(), "{version}");
+        let dated = serde_json::json!({"resourceType": "Patient", "deceasedDateTime": "1980-04-01"});
+        assert_eq!(Model::of(version).check(&dated), Vec::new(), "{version}");
+        let bare = serde_json::json!({"resourceType": "Patient", "deceased": true});
+        assert!(
+            Model::of(version)
+                .check(&bare)
+                .iter()
+                .any(|finding| finding.rule == Rule::Structure),
+            "{version}"
+        );
+    }
+}
+
+#[test]
+fn an_element_a_version_dropped_is_served_by_no_later_version() {
+    let body = serde_json::json!({"resourceType": "Patient", "animal": {"species": {"text": "dog"}}});
+    assert_eq!(Model::of(FhirVersion::Stu3).check(&body), Vec::new());
+    for version in [FhirVersion::R4, FhirVersion::R4b, FhirVersion::R5] {
+        assert!(
+            Model::of(version)
+                .check(&body)
+                .iter()
+                .any(|finding| finding.rule == Rule::Structure && finding.path == "Patient.animal"),
+            "{version}"
+        );
+    }
 }

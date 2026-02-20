@@ -350,7 +350,13 @@ fn path_tokens(path: &str) -> Result<Vec<String>, Error> {
 fn apply_path(root: &mut Value, operation: &PathOperation) -> Result<(), Error> {
     match operation {
         PathOperation::Replace { path, value } => replace_at(root, &path_tokens(path)?, value.clone()),
-        PathOperation::Delete { path } => remove_at(root, &path_tokens(path)?).map(|_| ()),
+        PathOperation::Delete { path } => {
+            let tokens = path_tokens(path)?;
+            match resolve(root, &tokens) {
+                Ok(_) => remove_at(root, &tokens).map(|_| ()),
+                Err(_) => Ok(()),
+            }
+        }
         PathOperation::Add { path, name, value } => {
             let mut tokens = path_tokens(path)?;
             tokens.push(name.clone());
@@ -462,14 +468,251 @@ mod tests {
     }
 
     #[test]
-    fn a_failing_operation_leaves_the_document_untouched() {
+    fn a_patch_that_fails_midway_yields_no_document_at_all() {
+        let first = br#"[{"op":"replace","path":"/active","value":false}]"#;
+        let applied = apply(first).expect("the first operation on its own succeeds");
+        assert_eq!(applied["active"], false);
+
         let patch = Patch::parse(
             br#"[{"op":"replace","path":"/active","value":false},{"op":"remove","path":"/gender"}]"#,
         )
         .unwrap();
-        assert!(patch.apply(PATIENT).is_err());
-        let original: Value = serde_json::from_slice(PATIENT).unwrap();
-        assert_eq!(original["active"], true);
+        match patch.apply(PATIENT) {
+            Err(Error::InvalidPatch(_)) => {}
+            Ok(bytes) => panic!(
+                "a patch whose second operation fails returned {}",
+                String::from_utf8_lossy(&bytes)
+            ),
+            Err(other) => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_path_patch_that_fails_midway_yields_no_document_at_all() {
+        let patch = Patch::parse(
+            br#"{"resourceType":"Parameters","parameter":[
+                {"name":"operation","part":[
+                    {"name":"type","valueCode":"replace"},
+                    {"name":"path","valueString":"Patient.active"},
+                    {"name":"value","valueBoolean":false}]},
+                {"name":"operation","part":[
+                    {"name":"type","valueCode":"move"},
+                    {"name":"path","valueString":"Patient.name"},
+                    {"name":"source","valueInteger":9},
+                    {"name":"destination","valueInteger":0}]}]}"#,
+        )
+        .unwrap();
+        match patch.apply(PATIENT) {
+            Err(Error::InvalidPatch(_)) => {}
+            Ok(bytes) => panic!(
+                "a patch whose second operation fails returned {}",
+                String::from_utf8_lossy(&bytes)
+            ),
+            Err(other) => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_pointer_token_spells_a_slash_and_a_tilde_as_the_form_requires() {
+        let document = br#"{"resourceType":"Patient","id":"pt-1","a/b":1,"c~d":2}"#;
+        let patched = Patch::parse(br#"[{"op":"replace","path":"/a~1b","value":9}]"#)
+            .unwrap()
+            .apply(document)
+            .unwrap();
+        let value: Value = serde_json::from_slice(&patched).unwrap();
+        assert_eq!(value["a/b"], 9);
+
+        let patched = Patch::parse(br#"[{"op":"replace","path":"/c~0d","value":9}]"#)
+            .unwrap()
+            .apply(document)
+            .unwrap();
+        let value: Value = serde_json::from_slice(&patched).unwrap();
+        assert_eq!(value["c~d"], 9);
+
+        assert!(matches!(
+            Patch::parse(br#"[{"op":"replace","path":"/a/b","value":9}]"#)
+                .unwrap()
+                .apply(document),
+            Err(Error::InvalidPatch(_))
+        ));
+    }
+
+    #[test]
+    fn an_operation_under_a_parent_the_document_lacks_is_refused() {
+        for patch in [
+            br#"[{"op":"add","path":"/contact/0/name","value":{"family":"X"}}]"# as &[u8],
+            br#"[{"op":"test","path":"/contact/0/name","value":1}]"# as &[u8],
+            br#"[{"op":"move","from":"/contact/0","path":"/active"}]"# as &[u8],
+            br#"[{"op":"copy","from":"/contact/0","path":"/active"}]"# as &[u8],
+        ] {
+            assert!(
+                matches!(apply(patch), Err(Error::InvalidPatch(_))),
+                "{}",
+                String::from_utf8_lossy(patch)
+            );
+        }
+    }
+
+    #[test]
+    fn a_test_operation_reaches_a_nested_path() {
+        assert!(apply(br#"[{"op":"test","path":"/name/0/family","value":"One"}]"#).is_ok());
+        assert!(matches!(
+            apply(br#"[{"op":"test","path":"/name/0/family","value":"Two"}]"#),
+            Err(Error::InvalidPatch(_))
+        ));
+    }
+
+    #[test]
+    fn the_document_root_is_not_a_target_a_patch_may_take() {
+        for patch in [
+            br#"[{"op":"remove","path":""}]"# as &[u8],
+            br#"[{"op":"replace","path":"","value":{"resourceType":"Observation"}}]"# as &[u8],
+            br#"[{"op":"add","path":"","value":{"resourceType":"Observation"}}]"# as &[u8],
+        ] {
+            assert!(
+                matches!(apply(patch), Err(Error::InvalidPatch(_))),
+                "{}",
+                String::from_utf8_lossy(patch)
+            );
+        }
+    }
+
+    fn identifiers(values: &[&str]) -> Vec<u8> {
+        let listed: Vec<String> = values
+            .iter()
+            .map(|value| format!(r#"{{"system":"http://example.org","value":"{value}"}}"#))
+            .collect();
+        format!(
+            r#"{{"resourceType":"Patient","id":"pt-1","identifier":[{}]}}"#,
+            listed.join(",")
+        )
+        .into_bytes()
+    }
+
+    fn moved(source: usize, destination: usize) -> Vec<u8> {
+        format!(
+            r#"{{"resourceType":"Parameters","parameter":[{{"name":"operation","part":[
+                {{"name":"type","valueCode":"move"}},
+                {{"name":"path","valueString":"Patient.identifier"}},
+                {{"name":"source","valueInteger":{source}}},
+                {{"name":"destination","valueInteger":{destination}}}]}}]}}"#
+        )
+        .into_bytes()
+    }
+
+    fn values(document: &[u8]) -> Vec<String> {
+        let value: Value = serde_json::from_slice(document).unwrap();
+        value["identifier"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|held| held["value"].as_str().unwrap().to_owned())
+            .collect()
+    }
+
+    #[test]
+    fn a_move_reorders_the_list_the_published_cases_say_it_does() {
+        let start = identifiers(&["1", "2", "3", "4"]);
+        for (source, destination, expected) in [
+            (3, 1, ["1", "4", "2", "3"]),
+            (3, 0, ["4", "1", "2", "3"]),
+            (3, 2, ["1", "2", "4", "3"]),
+            (0, 3, ["2", "3", "4", "1"]),
+        ] {
+            let patched = Patch::parse(&moved(source, destination))
+                .unwrap()
+                .apply(&start)
+                .unwrap();
+            assert_eq!(values(&patched), expected, "move {source} to {destination}");
+        }
+    }
+
+    #[test]
+    fn moves_applied_in_turn_reorder_the_list_the_published_cases_say_they_do() {
+        let start = identifiers(&["1", "2", "3", "4"]);
+        let first = Patch::parse(&moved(1, 0)).unwrap().apply(&start).unwrap();
+        let second = Patch::parse(&moved(2, 1)).unwrap().apply(&first).unwrap();
+        assert_eq!(values(&second), ["2", "3", "1", "4"]);
+
+        let mut held = Patch::parse(&moved(3, 0)).unwrap().apply(&start).unwrap();
+        held = Patch::parse(&moved(3, 1)).unwrap().apply(&held).unwrap();
+        held = Patch::parse(&moved(3, 2)).unwrap().apply(&held).unwrap();
+        assert_eq!(values(&held), ["4", "3", "2", "1"]);
+    }
+
+    #[test]
+    fn a_move_outside_the_list_is_refused() {
+        let start = identifiers(&["1", "2", "3"]);
+        for (source, destination) in [(3, 0), (0, 3)] {
+            assert!(
+                matches!(
+                    Patch::parse(&moved(source, destination)).unwrap().apply(&start),
+                    Err(Error::InvalidPatch(_))
+                ),
+                "move {source} to {destination}"
+            );
+        }
+        assert!(matches!(
+            Patch::parse(&moved(0, 1)).unwrap().apply(br#"{"resourceType":"Patient","id":"pt-1"}"#),
+            Err(Error::InvalidPatch(_))
+        ));
+    }
+
+    fn inserted(index: usize) -> Vec<u8> {
+        format!(
+            r#"{{"resourceType":"Parameters","parameter":[{{"name":"operation","part":[
+                {{"name":"type","valueCode":"insert"}},
+                {{"name":"path","valueString":"Patient.identifier"}},
+                {{"name":"index","valueInteger":{index}}},
+                {{"name":"value","valueIdentifier":{{"system":"http://example.org","value":"3"}}}}]}}]}}"#
+        )
+        .into_bytes()
+    }
+
+    #[test]
+    fn an_insert_places_the_value_where_the_published_cases_say_it_goes() {
+        let start = identifiers(&["1", "2"]);
+        for (index, expected) in [
+            (2, ["1", "2", "3"]),
+            (1, ["1", "3", "2"]),
+            (0, ["3", "1", "2"]),
+        ] {
+            let patched = Patch::parse(&inserted(index)).unwrap().apply(&start).unwrap();
+            assert_eq!(values(&patched), expected, "insert at {index}");
+        }
+        assert!(matches!(
+            Patch::parse(&inserted(2)).unwrap().apply(&identifiers(&["1"])),
+            Err(Error::InvalidPatch(_))
+        ));
+        assert!(matches!(
+            Patch::parse(&inserted(0)).unwrap().apply(br#"{"resourceType":"Patient","id":"pt-1"}"#),
+            Err(Error::InvalidPatch(_))
+        ));
+    }
+
+    #[test]
+    fn a_delete_of_a_path_that_does_not_resolve_leaves_the_resource_as_it_was() {
+        let deleted = br#"{"resourceType":"Parameters","parameter":[{"name":"operation","part":[
+            {"name":"type","valueCode":"delete"},
+            {"name":"path","valueString":"Patient.nothing"}]}]}"#;
+        let patched = Patch::parse(deleted).unwrap().apply(PATIENT).unwrap();
+        let before: Value = serde_json::from_slice(PATIENT).unwrap();
+        let after: Value = serde_json::from_slice(&patched).unwrap();
+        assert_eq!(after, before);
+    }
+
+    #[test]
+    fn a_negative_index_is_not_an_index() {
+        assert!(matches!(
+            Patch::parse(
+                br#"{"resourceType":"Parameters","parameter":[{"name":"operation","part":[
+                    {"name":"type","valueCode":"move"},
+                    {"name":"path","valueString":"Patient.name"},
+                    {"name":"source","valueInteger":-1},
+                    {"name":"destination","valueInteger":0}]}]}"#
+            ),
+            Err(Error::InvalidPatch(_))
+        ));
     }
 
     #[test]

@@ -305,7 +305,14 @@ fn selected(
     request: &ExpansionRequest,
 ) -> Result<Vec<Coding>, Error> {
     let Some(url) = rule.get("system").and_then(Value::as_str) else {
-        return Ok(Vec::new());
+        if rule.get("valueSet").is_some() {
+            return Err(Error::UnsupportedParameter(
+                "a compose rule selecting another value set".to_owned(),
+            ));
+        }
+        return Err(Error::InvalidParameter(
+            "a compose rule names neither a system nor a value set".to_owned(),
+        ));
     };
     let found = systems
         .iter()
@@ -440,7 +447,9 @@ pub fn expansion_json(
     held.insert("identifier".to_owned(), Value::String(stamp.identifier.clone()));
     held.insert("timestamp".to_owned(), Value::String(stamp.timestamp.clone()));
     held.insert("total".to_owned(), Value::from(expansion.total));
-    held.insert("offset".to_owned(), Value::from(expansion.offset));
+    if request.count.is_some() || request.offset > 0 {
+        held.insert("offset".to_owned(), Value::from(expansion.offset));
+    }
     let listed = asked(request);
     if !listed.is_empty() {
         held.insert("parameter".to_owned(), Value::Array(listed));
@@ -571,12 +580,24 @@ mod tests {
     }
 
     #[test]
-    fn a_rule_without_a_system_selects_nothing() {
+    fn a_rule_naming_neither_a_system_nor_a_value_set_is_refused() {
         let set = serde_json::json!({
             "resourceType": "ValueSet",
             "compose": {"include": [{"concept": [{"code": "a"}]}]}
         });
-        let expansion = expand(&set, &[system()], &ExpansionRequest::default()).unwrap();
-        assert!(expansion.concepts.is_empty());
+        let error = expand(&set, &[system()], &ExpansionRequest::default()).unwrap_err();
+        assert_eq!(error.http_status(), 400);
+        assert!(matches!(error, Error::InvalidParameter(_)));
+    }
+
+    #[test]
+    fn a_rule_selecting_another_value_set_is_refused_rather_than_dropped() {
+        let set = serde_json::json!({
+            "resourceType": "ValueSet",
+            "compose": {"include": [{"valueSet": ["urn:other"]}]}
+        });
+        let error = expand(&set, &[system()], &ExpansionRequest::default()).unwrap_err();
+        assert_eq!(error.http_status(), 400);
+        assert!(matches!(error, Error::UnsupportedParameter(_)));
     }
 }

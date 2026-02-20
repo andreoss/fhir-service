@@ -320,7 +320,7 @@ async fn unsupported_method_returns_outcome_405() {
     assert_eq!(reply.status, StatusCode::METHOD_NOT_ALLOWED);
     let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
     assert_eq!(value["resourceType"], "OperationOutcome");
-    assert_eq!(value["issue"][0]["code"], "not-allowed");
+    assert_eq!(value["issue"][0]["code"], "forbidden");
 }
 
 struct FailingStore(fn() -> Error);

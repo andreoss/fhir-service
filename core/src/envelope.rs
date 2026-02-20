@@ -15,10 +15,14 @@ pub fn with_assigned_meta(value: &mut serde_json::Value) -> Result<(), Error> {
         .get_mut("meta")
         .and_then(serde_json::Value::as_object_mut)
         .ok_or_else(|| Error::InvalidEnvelope("meta must be an object".to_owned()))?;
-    meta.entry("versionId".to_owned())
-        .or_insert_with(|| serde_json::Value::String(PLACEHOLDER_VERSION.to_owned()));
-    meta.entry("lastUpdated".to_owned())
-        .or_insert_with(|| serde_json::Value::String(PLACEHOLDER_INSTANT.to_owned()));
+    meta.insert(
+        "versionId".to_owned(),
+        serde_json::Value::String(PLACEHOLDER_VERSION.to_owned()),
+    );
+    meta.insert(
+        "lastUpdated".to_owned(),
+        serde_json::Value::String(PLACEHOLDER_INSTANT.to_owned()),
+    );
     Ok(())
 }
 
@@ -147,12 +151,11 @@ impl ResourceEnvelope {
     }
 
     pub fn to_json(&self) -> Vec<u8> {
-        match self.version {
-            FhirVersion::Stu3 => self.render_metadata(),
-            FhirVersion::R4 => self.render_metadata(),
-            FhirVersion::R4b => self.render_metadata(),
-            FhirVersion::R5 => self.render_metadata(),
-        }
+        self.stamped().unwrap_or_else(|| self.render_metadata())
+    }
+
+    pub fn to_metadata_json(&self) -> Vec<u8> {
+        self.render_metadata()
     }
 
     pub fn stored_with(&self, version_id: VersionId, last_updated: FhirInstant) -> Result<ResourceEnvelope, Error> {
@@ -190,6 +193,29 @@ impl ResourceEnvelope {
             "meta": meta,
         });
         serde_json::to_vec(&body).expect("envelope metadata is serializable")
+    }
+
+    fn stamped(&self) -> Option<Vec<u8>> {
+        let mut value: serde_json::Value = serde_json::from_slice(&self.raw).ok()?;
+        let object = value.as_object_mut()?;
+        object.insert(
+            "resourceType".to_owned(),
+            serde_json::Value::String(self.resource_type.as_str().to_owned()),
+        );
+        object.insert("id".to_owned(), serde_json::Value::String(self.id.as_str().to_owned()));
+        let meta = object
+            .entry("meta".to_owned())
+            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()))
+            .as_object_mut()?;
+        meta.insert(
+            "versionId".to_owned(),
+            serde_json::Value::String(self.version_id.as_str().to_owned()),
+        );
+        meta.insert(
+            "lastUpdated".to_owned(),
+            serde_json::Value::String(self.last_updated.as_str().to_owned()),
+        );
+        serde_json::to_vec(&value).ok()
     }
 
     fn content_value(&self) -> Option<serde_json::Value> {
@@ -232,7 +258,7 @@ mod tests {
     }
 
     #[test]
-    fn round_trip_preserves_metadata() {
+    fn round_trip_loses_no_element_of_the_body() {
         let (envelope, id, last_updated) = sample_metadata();
         let rendered = envelope.to_json();
         let reparsed = ResourceEnvelope::parse(FhirVersion::R4, &rendered).expect("rendered must reparse");
@@ -243,16 +269,48 @@ mod tests {
         assert_eq!(reparsed.last_updated(), envelope.last_updated());
         assert_eq!(envelope.id().as_str(), id);
         assert_eq!(envelope.last_updated().as_str(), last_updated);
+        let before: serde_json::Value = serde_json::from_slice(envelope.raw()).unwrap();
+        let after: serde_json::Value = serde_json::from_slice(&rendered).unwrap();
+        assert_eq!(after, before);
+        assert!(reparsed.content_eq(&envelope));
     }
 
     #[test]
-    fn rendered_json_contains_metadata_fields() {
+    fn round_trip_keeps_the_meta_the_server_does_not_own() {
+        let body = br#"{
+            "resourceType": "Patient",
+            "id": "pt-02",
+            "meta": {
+                "versionId": "3",
+                "lastUpdated": "2026-09-06T04:00:00.000Z",
+                "profile": ["http://example.test/StructureDefinition/one"],
+                "security": [{"system": "urn:sec", "code": "R"}],
+                "tag": [{"system": "urn:tag", "code": "T"}],
+                "source": "urn:source"
+            },
+            "text": {"status": "generated", "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\">Ann</div>"},
+            "active": true
+        }"#;
+        let envelope = ResourceEnvelope::parse(FhirVersion::R4, body).unwrap();
+        let rendered: serde_json::Value = serde_json::from_slice(&envelope.to_json()).unwrap();
+        assert_eq!(rendered["meta"]["profile"][0], "http://example.test/StructureDefinition/one");
+        assert_eq!(rendered["meta"]["security"][0]["code"], "R");
+        assert_eq!(rendered["meta"]["tag"][0]["code"], "T");
+        assert_eq!(rendered["meta"]["source"], "urn:source");
+        assert_eq!(rendered["text"]["status"], "generated");
+        assert_eq!(rendered["active"], true);
+    }
+
+    #[test]
+    fn a_metadata_rendering_carries_no_element_of_the_body() {
         let (envelope, id, _) = sample_metadata();
-        let rendered = String::from_utf8(envelope.to_json()).unwrap();
-        assert!(rendered.contains("\"resourceType\":\"Patient\""));
-        assert!(rendered.contains(&format!("\"id\":\"{id}\"")));
-        assert!(rendered.contains("\"versionId\":\"3\""));
-        assert!(rendered.contains("\"lastUpdated\":\"2026-09-06T04:00:00.000Z\""));
+        let rendered: serde_json::Value =
+            serde_json::from_slice(&envelope.to_metadata_json()).unwrap();
+        assert_eq!(rendered["resourceType"], "Patient");
+        assert_eq!(rendered["id"], id);
+        assert_eq!(rendered["meta"]["versionId"], "3");
+        assert_eq!(rendered["meta"]["lastUpdated"], "2026-09-06T04:00:00.000Z");
+        assert!(rendered.as_object().unwrap().get("active").is_none());
     }
 
     #[test]
@@ -371,13 +429,20 @@ mod tests {
     }
 
     #[test]
-    fn exhaustively_dispatch_over_versions() {
+    fn every_version_renders_the_same_body_it_was_given() {
+        let supplied: serde_json::Value = serde_json::from_slice(SAMPLE).unwrap();
         for version in FhirVersion::ALL {
             let envelope = ResourceEnvelope::parse(version, SAMPLE).expect("sample must parse for every version");
             assert_eq!(envelope.version(), version);
-            let rendered = envelope.to_json();
-            let reparsed = ResourceEnvelope::parse(version, &rendered).unwrap();
-            assert_eq!(reparsed.id(), envelope.id());
+            let rendered: serde_json::Value = serde_json::from_slice(&envelope.to_json()).unwrap();
+            assert_eq!(rendered, supplied, "{version}");
+            let reparsed = ResourceEnvelope::parse(version, &envelope.to_json()).unwrap();
+            assert_eq!(reparsed.version(), envelope.version(), "{version}");
+            assert_eq!(reparsed.resource_type(), envelope.resource_type(), "{version}");
+            assert_eq!(reparsed.id(), envelope.id(), "{version}");
+            assert_eq!(reparsed.version_id(), envelope.version_id(), "{version}");
+            assert_eq!(reparsed.last_updated(), envelope.last_updated(), "{version}");
+            assert!(reparsed.content_eq(&envelope), "{version}");
         }
     }
 
@@ -409,21 +474,6 @@ mod tests {
         assert_eq!(bare.version_id().as_str(), PLACEHOLDER_VERSION);
         assert_eq!(bare.last_updated().as_str(), PLACEHOLDER_INSTANT);
 
-        let held = ResourceEnvelope::parse_supplied(FhirVersion::R4, SAMPLE)
-            .expect("a stored resource keeps what it carries");
-        assert_eq!(
-            held.version_id().as_str(),
-            ResourceEnvelope::parse(FhirVersion::R4, SAMPLE)
-                .unwrap()
-                .version_id()
-                .as_str()
-        );
-        assert!(bare.content_eq(&ResourceEnvelope::parse_supplied(
-            FhirVersion::R4,
-            br#"{"resourceType":"Patient","id":"pt-01","meta":{"versionId":"9"},"active":true}"#
-        )
-        .unwrap()));
-
         assert!(ResourceEnvelope::parse_supplied(FhirVersion::R4, b"[]").is_err());
         assert!(ResourceEnvelope::parse_supplied(
             FhirVersion::R4,
@@ -431,6 +481,44 @@ mod tests {
         )
         .is_err());
         assert!(ResourceEnvelope::parse_supplied(FhirVersion::R4, b"{ not json").is_err());
+    }
+
+    #[test]
+    fn a_supplied_version_and_instant_are_the_servers_to_assign() {
+        let held = ResourceEnvelope::parse_supplied(FhirVersion::R4, SAMPLE)
+            .expect("a supplied resource parses");
+        assert_eq!(held.version_id().as_str(), PLACEHOLDER_VERSION);
+        assert_eq!(held.last_updated().as_str(), PLACEHOLDER_INSTANT);
+
+        let claimed = ResourceEnvelope::parse_supplied(
+            FhirVersion::R4,
+            br#"{"resourceType":"Patient","id":"pt-01","meta":{"versionId":"99","lastUpdated":"2999-01-01T00:00:00Z","tag":[{"code":"T"}]},"active":true}"#,
+        )
+        .unwrap();
+        assert_eq!(claimed.version_id().as_str(), PLACEHOLDER_VERSION);
+        assert_eq!(claimed.last_updated().as_str(), PLACEHOLDER_INSTANT);
+        let body: serde_json::Value = serde_json::from_slice(claimed.raw()).unwrap();
+        assert_eq!(body["meta"]["tag"][0]["code"], "T");
+    }
+
+    #[test]
+    fn a_change_confined_to_the_meta_the_server_does_not_own_is_a_change() {
+        let plain = ResourceEnvelope::parse(
+            FhirVersion::R4,
+            br#"{"resourceType":"Patient","id":"pt-1","meta":{"versionId":"1","lastUpdated":"2026-09-06T04:00:00Z"},"active":true}"#,
+        )
+        .unwrap();
+        for meta in [
+            r#""profile":["http://example.test/StructureDefinition/one"]"#,
+            r#""security":[{"system":"urn:sec","code":"R"}]"#,
+            r#""tag":[{"system":"urn:tag","code":"T"}]"#,
+        ] {
+            let body = format!(
+                r#"{{"resourceType":"Patient","id":"pt-1","meta":{{"versionId":"1","lastUpdated":"2026-09-06T04:00:00Z",{meta}}},"active":true}}"#
+            );
+            let changed = ResourceEnvelope::parse(FhirVersion::R4, body.as_bytes()).unwrap();
+            assert!(!plain.content_eq(&changed), "{meta}");
+        }
     }
 
     #[test]
