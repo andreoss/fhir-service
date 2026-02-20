@@ -4,6 +4,7 @@ use serde_json::Value;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Membership {
     pub resource_type: &'static str,
+    pub root: bool,
     pub params: &'static [&'static str],
 }
 
@@ -31,64 +32,62 @@ pub struct Compartment {
     pub id: ResourceId,
 }
 
+const fn gathers(resource_type: &'static str, params: &'static [&'static str]) -> Membership {
+    Membership {
+        resource_type,
+        root: false,
+        params,
+    }
+}
+
+const fn itself(resource_type: &'static str, params: &'static [&'static str]) -> Membership {
+    Membership {
+        resource_type,
+        root: true,
+        params,
+    }
+}
+
 const PATIENT: &[Membership] = &[
-    Membership {
-        resource_type: "Patient",
-        params: &[],
-    },
-    Membership {
-        resource_type: "Observation",
-        params: &["subject", "patient"],
-    },
-    Membership {
-        resource_type: "Encounter",
-        params: &["subject", "patient"],
-    },
-    Membership {
-        resource_type: "List",
-        params: &["subject", "patient"],
-    },
-    Membership {
-        resource_type: "RiskAssessment",
-        params: &["subject", "patient"],
-    },
+    itself("Patient", &["link"]),
+    gathers("DocumentReference", &["subject", "author"]),
+    gathers("Encounter", &["patient"]),
+    gathers("List", &["subject", "source"]),
+    gathers("Observation", &["subject", "performer"]),
+    gathers("RelatedPerson", &["patient"]),
+    gathers("RiskAssessment", &["subject"]),
 ];
 
 const ENCOUNTER: &[Membership] = &[
-    Membership {
-        resource_type: "Encounter",
-        params: &[],
-    },
-    Membership {
-        resource_type: "Observation",
-        params: &["encounter", "context"],
-    },
+    itself("Encounter", &[]),
+    gathers("DocumentReference", &["encounter", "context"]),
+    gathers("Observation", &["encounter"]),
+];
+
+const RELATED_PERSON: &[Membership] = &[
+    itself("RelatedPerson", &[]),
+    gathers("DocumentReference", &["author"]),
+    gathers("Encounter", &["participant"]),
+    gathers("Observation", &["performer"]),
+    gathers("Patient", &["link"]),
 ];
 
 const PRACTITIONER: &[Membership] = &[
-    Membership {
-        resource_type: "Practitioner",
-        params: &[],
-    },
-    Membership {
-        resource_type: "Patient",
-        params: &["general-practitioner"],
-    },
+    itself("Practitioner", &[]),
+    gathers("DocumentReference", &["subject", "author", "authenticator", "attester"]),
+    gathers("Encounter", &["practitioner", "participant"]),
+    gathers("List", &["source"]),
+    gathers("Observation", &["performer"]),
+    gathers("Patient", &["general-practitioner"]),
+    gathers("RiskAssessment", &["performer"]),
 ];
 
-const ORGANIZATION: &[Membership] = &[
-    Membership {
-        resource_type: "Organization",
-        params: &[],
-    },
-    Membership {
-        resource_type: "Patient",
-        params: &["organization", "general-practitioner"],
-    },
-    Membership {
-        resource_type: "Encounter",
-        params: &["service-provider"],
-    },
+const DEVICE: &[Membership] = &[
+    itself("Device", &[]),
+    gathers("DocumentReference", &["subject", "author"]),
+    gathers("List", &["subject", "source"]),
+    gathers("Observation", &["subject", "device"]),
+    gathers("RiskAssessment", &["performer"]),
 ];
 
 const DEFS: &[CompartmentDef] = &[
@@ -101,12 +100,16 @@ const DEFS: &[CompartmentDef] = &[
         members: ENCOUNTER,
     },
     CompartmentDef {
+        code: "RelatedPerson",
+        members: RELATED_PERSON,
+    },
+    CompartmentDef {
         code: "Practitioner",
         members: PRACTITIONER,
     },
     CompartmentDef {
-        code: "Organization",
-        members: ORGANIZATION,
+        code: "Device",
+        members: DEVICE,
     },
 ];
 
@@ -121,9 +124,11 @@ pub fn contains(compartment: &Compartment, resource_type: ResourceType, body: &V
     let Some(member) = def.member(resource_type) else {
         return false;
     };
-    if member.params.is_empty() {
-        return resource_type == compartment.kind
-            && body.get("id").and_then(Value::as_str) == Some(compartment.id.as_str());
+    if member.root
+        && resource_type == compartment.kind
+        && body.get("id").and_then(Value::as_str) == Some(compartment.id.as_str())
+    {
+        return true;
     }
     let root = format!("{}/{}", compartment.kind.as_str(), compartment.id.as_str());
     member.params.iter().any(|name| {
@@ -180,17 +185,13 @@ fn membership_in(version: FhirVersion, member: &Membership) -> Option<VersionedM
         .copied()
         .filter(|name| crate::search::lookup_in(version, Some(resource_type), name).is_some())
         .collect();
-    match (member.params.is_empty(), params.is_empty()) {
-        (true, _) => Some(VersionedMember {
-            resource_type: member.resource_type,
-            params: Vec::new(),
-        }),
-        (false, true) => None,
-        (false, false) => Some(VersionedMember {
-            resource_type: member.resource_type,
-            params,
-        }),
+    if !member.root && params.is_empty() {
+        return None;
     }
+    Some(VersionedMember {
+        resource_type: member.resource_type,
+        params,
+    })
 }
 
 pub fn definitions_in(version: FhirVersion) -> Vec<VersionedDef> {
@@ -215,87 +216,273 @@ pub fn definition_in(version: FhirVersion, code: &str) -> Option<VersionedDef> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
-    #[test]
-    fn a_version_publishes_only_the_references_it_defines() {
-        let old = definition_in(FhirVersion::Stu3, "Encounter").expect("the compartment exists");
-        let current = definition_in(FhirVersion::R4, "Encounter").expect("the compartment exists");
-        let observed = |def: &VersionedDef| {
-            def.members
-                .iter()
-                .find(|member| member.resource_type == "Observation")
-                .expect("Observation belongs")
-                .params
-                .clone()
-        };
-        assert_eq!(observed(&old), vec!["context"]);
-        assert_eq!(observed(&current), vec!["encounter"]);
-        assert_eq!(definitions_in(FhirVersion::R5).len(), DEFS.len());
+    const PUBLISHED: &[(&str, &str, &[&str])] = &[
+        ("Patient", "Patient", &["link"]),
+        ("Patient", "DocumentReference", &["subject", "author"]),
+        ("Patient", "Encounter", &["patient"]),
+        ("Patient", "List", &["subject", "source"]),
+        ("Patient", "Observation", &["subject", "performer"]),
+        ("Patient", "RelatedPerson", &["patient"]),
+        ("Patient", "RiskAssessment", &["subject"]),
+        ("Encounter", "Encounter", &[]),
+        ("Encounter", "DocumentReference", &["encounter", "context"]),
+        ("Encounter", "Observation", &["encounter"]),
+        ("RelatedPerson", "RelatedPerson", &[]),
+        ("RelatedPerson", "DocumentReference", &["author"]),
+        ("RelatedPerson", "Encounter", &["participant"]),
+        ("RelatedPerson", "Observation", &["performer"]),
+        ("RelatedPerson", "Patient", &["link"]),
+        ("Practitioner", "Practitioner", &[]),
+        (
+            "Practitioner",
+            "DocumentReference",
+            &["subject", "author", "authenticator", "attester"],
+        ),
+        ("Practitioner", "Encounter", &["practitioner", "participant"]),
+        ("Practitioner", "List", &["source"]),
+        ("Practitioner", "Observation", &["performer"]),
+        ("Practitioner", "Patient", &["general-practitioner"]),
+        ("Practitioner", "RiskAssessment", &["performer"]),
+        ("Device", "Device", &[]),
+        ("Device", "DocumentReference", &["subject", "author"]),
+        ("Device", "List", &["subject", "source"]),
+        ("Device", "Observation", &["subject", "device"]),
+        ("Device", "RiskAssessment", &["performer"]),
+    ];
+
+    fn kind(name: &str) -> ResourceType {
+        name.parse().expect("the type is published")
     }
 
-    #[test]
-    fn every_definition_resolves_by_its_code() {
-        for def in definitions() {
-            assert_eq!(definition(def.code).map(|found| found.code), Some(def.code));
+    fn compartment(code: &str, id: &str) -> Compartment {
+        Compartment {
+            kind: kind(code),
+            id: ResourceId::parse(id).expect("the id is well formed"),
         }
-        assert!(definition("Nonesuch").is_none());
     }
 
     #[test]
-    fn a_root_type_belongs_to_its_own_compartment_without_a_reference() {
-        let patient = definition("Patient").unwrap();
-        let root = patient.member("Patient".parse().unwrap()).unwrap();
-        assert!(root.params.is_empty());
-        let observation = patient.member("Observation".parse().unwrap()).unwrap();
-        assert_eq!(observation.params, &["subject", "patient"]);
-        assert!(patient.member("Organization".parse().unwrap()).is_none());
+    fn the_enforced_codes_are_the_ones_compartment_type_publishes() {
+        let published = ["Patient", "Encounter", "RelatedPerson", "Practitioner", "Device"];
+        let mut held: Vec<&str> = definitions().iter().map(|def| def.code).collect();
+        held.sort_unstable();
+        let mut wanted = published.to_vec();
+        wanted.sort_unstable();
+        assert_eq!(held, wanted);
+        for code in published {
+            assert!(definition(code).is_some(), "{code}");
+        }
+        for absent in ["Organization", "Group", "Location", "Nonesuch"] {
+            assert!(definition(absent).is_none(), "{absent}");
+        }
     }
 
     #[test]
-    fn membership_follows_the_root_identity_and_the_named_references() {
-        let compartment = Compartment {
-            kind: "Patient".parse().unwrap(),
-            id: ResourceId::parse("p1").unwrap(),
-        };
-        let root = serde_json::json!({"resourceType": "Patient", "id": "p1"});
-        let other = serde_json::json!({"resourceType": "Patient", "id": "p2"});
-        let member = serde_json::json!({
-            "resourceType": "Observation",
-            "id": "o1",
-            "subject": {"reference": "Patient/p1"}
-        });
-        let stranger = serde_json::json!({
-            "resourceType": "Observation",
-            "id": "o2",
-            "subject": {"reference": "Patient/p2"}
-        });
-
-        assert!(contains(&compartment, "Patient".parse().unwrap(), &root));
-        assert!(!contains(&compartment, "Patient".parse().unwrap(), &other));
-        assert!(contains(&compartment, "Observation".parse().unwrap(), &member));
-        assert!(!contains(&compartment, "Observation".parse().unwrap(), &stranger));
-        assert!(!contains(&compartment, "Organization".parse().unwrap(), &root));
-    }
-
-    #[test]
-    fn a_definition_lists_every_type_it_gathers() {
-        let types = definition("Encounter").unwrap().types();
-        assert_eq!(types, vec!["Encounter", "Observation"]);
-    }
-
-    #[test]
-    fn every_named_parameter_is_registered_for_its_type() {
+    fn every_membership_names_the_references_the_published_definition_names() {
+        for (code, resource_type, params) in PUBLISHED {
+            let def = definition(code).expect("the compartment is published");
+            let member = def
+                .member(kind(resource_type))
+                .unwrap_or_else(|| panic!("{code} gathers {resource_type}"));
+            assert_eq!(member.params, *params, "{code}/{resource_type}");
+            assert_eq!(member.root, code == resource_type, "{code}/{resource_type}");
+        }
         for def in definitions() {
             for member in def.members {
-                let resource_type: ResourceType = member.resource_type.parse().unwrap();
-                for name in member.params {
-                    assert!(
-                        crate::search::lookup(Some(resource_type), name).is_some(),
-                        "{} {name}",
-                        member.resource_type
-                    );
-                }
+                assert!(
+                    PUBLISHED
+                        .iter()
+                        .any(|(code, name, _)| *code == def.code && *name == member.resource_type),
+                    "{}/{} is gathered by no published definition",
+                    def.code,
+                    member.resource_type
+                );
             }
         }
+    }
+
+    #[test]
+    fn a_patient_compartment_holds_every_reference_the_definition_names() {
+        let held = compartment("Patient", "p1");
+        let cases: &[(&str, Value)] = &[
+            ("Patient", json!({"resourceType": "Patient", "id": "p1"})),
+            (
+                "Patient",
+                json!({"resourceType": "Patient", "id": "p2", "link": [{"other": {"reference": "Patient/p1"}}]}),
+            ),
+            (
+                "Observation",
+                json!({"resourceType": "Observation", "subject": {"reference": "Patient/p1"}}),
+            ),
+            (
+                "Observation",
+                json!({"resourceType": "Observation", "performer": [{"reference": "Patient/p1"}]}),
+            ),
+            (
+                "List",
+                json!({"resourceType": "List", "source": {"reference": "Patient/p1"}}),
+            ),
+            (
+                "Encounter",
+                json!({"resourceType": "Encounter", "subject": {"reference": "Patient/p1"}}),
+            ),
+            (
+                "RiskAssessment",
+                json!({"resourceType": "RiskAssessment", "subject": {"reference": "Patient/p1"}}),
+            ),
+            (
+                "RelatedPerson",
+                json!({"resourceType": "RelatedPerson", "patient": {"reference": "Patient/p1"}}),
+            ),
+            (
+                "DocumentReference",
+                json!({"resourceType": "DocumentReference", "author": [{"reference": "Patient/p1"}]}),
+            ),
+        ];
+        for (resource_type, body) in cases {
+            assert!(contains(&held, kind(resource_type), body), "{resource_type} {body}");
+        }
+        let stranger = json!({"resourceType": "Observation", "performer": [{"reference": "Patient/p2"}]});
+        assert!(!contains(&held, kind("Observation"), &stranger));
+        let unrelated = json!({"resourceType": "Observation", "device": {"reference": "Patient/p1"}});
+        assert!(!contains(&held, kind("Observation"), &unrelated));
+        assert!(!contains(&held, kind("Organization"), &json!({"id": "p1"})));
+    }
+
+    #[test]
+    fn the_device_related_person_and_practitioner_compartments_are_enforced() {
+        let device = compartment("Device", "d1");
+        assert!(contains(
+            &device,
+            kind("Observation"),
+            &json!({"resourceType": "Observation", "device": {"reference": "Device/d1"}})
+        ));
+        assert!(contains(
+            &device,
+            kind("Observation"),
+            &json!({"resourceType": "Observation", "subject": {"reference": "Device/d1"}})
+        ));
+        assert!(contains(
+            &device,
+            kind("Device"),
+            &json!({"resourceType": "Device", "id": "d1"})
+        ));
+        assert!(!contains(
+            &device,
+            kind("Observation"),
+            &json!({"resourceType": "Observation", "performer": [{"reference": "Device/d1"}]})
+        ));
+
+        let related = compartment("RelatedPerson", "rp1");
+        assert!(contains(
+            &related,
+            kind("Encounter"),
+            &json!({"resourceType": "Encounter", "participant": [{"individual": {"reference": "RelatedPerson/rp1"}}]})
+        ));
+        assert!(contains(
+            &related,
+            kind("Observation"),
+            &json!({"resourceType": "Observation", "performer": [{"reference": "RelatedPerson/rp1"}]})
+        ));
+
+        let practitioner = compartment("Practitioner", "pr1");
+        assert!(contains(
+            &practitioner,
+            kind("Patient"),
+            &json!({"resourceType": "Patient", "generalPractitioner": [{"reference": "Practitioner/pr1"}]})
+        ));
+        assert!(contains(
+            &practitioner,
+            kind("RiskAssessment"),
+            &json!({"resourceType": "RiskAssessment", "performer": {"reference": "Practitioner/pr1"}})
+        ));
+        assert!(contains(
+            &practitioner,
+            kind("List"),
+            &json!({"resourceType": "List", "source": {"reference": "Practitioner/pr1"}})
+        ));
+    }
+
+    #[test]
+    fn every_version_publishes_the_references_its_own_definition_names() {
+        let published: &[(FhirVersion, &str, &str, &[&str])] = &[
+            (FhirVersion::Stu3, "Encounter", "Observation", &["encounter"]),
+            (FhirVersion::R4, "Encounter", "Observation", &["encounter"]),
+            (FhirVersion::R4b, "Encounter", "Observation", &["encounter"]),
+            (FhirVersion::R5, "Encounter", "Observation", &["encounter"]),
+            (FhirVersion::Stu3, "Encounter", "DocumentReference", &["encounter"]),
+            (FhirVersion::R4b, "Encounter", "DocumentReference", &["encounter"]),
+            (FhirVersion::R5, "Encounter", "DocumentReference", &["context"]),
+            (
+                FhirVersion::Stu3,
+                "Practitioner",
+                "DocumentReference",
+                &["subject", "author", "authenticator"],
+            ),
+            (
+                FhirVersion::R5,
+                "Practitioner",
+                "DocumentReference",
+                &["subject", "author", "attester"],
+            ),
+            (FhirVersion::Stu3, "Patient", "Observation", &["subject", "performer"]),
+            (FhirVersion::R5, "Patient", "Observation", &["subject", "performer"]),
+            (FhirVersion::R4, "Device", "Observation", &["subject", "device"]),
+        ];
+        for (version, code, resource_type, params) in published {
+            let def = definition_in(*version, code).expect("the compartment is published");
+            let member = def
+                .members
+                .iter()
+                .find(|member| member.resource_type == *resource_type)
+                .unwrap_or_else(|| panic!("{version:?} {code}/{resource_type}"));
+            assert_eq!(member.params, *params, "{version:?} {code}/{resource_type}");
+        }
+        for version in FhirVersion::ALL {
+            assert_eq!(definitions_in(version).len(), DEFS.len(), "{version:?}");
+        }
+    }
+
+    #[test]
+    fn every_named_reference_reads_the_element_the_published_expression_names() {
+        let published: &[(FhirVersion, &str, &str, &[&str])] = &[
+            (FhirVersion::Stu3, "Observation", "encounter", &["context"]),
+            (FhirVersion::Stu3, "Observation", "context", &["context"]),
+            (FhirVersion::R4, "Observation", "encounter", &["encounter"]),
+            (FhirVersion::R5, "Observation", "encounter", &["encounter"]),
+            (FhirVersion::R4, "Observation", "performer", &["performer"]),
+            (FhirVersion::R4, "Observation", "device", &["device"]),
+            (FhirVersion::R4, "Patient", "link", &["link.other"]),
+            (FhirVersion::R4, "List", "source", &["source"]),
+            (FhirVersion::R4, "RiskAssessment", "performer", &["performer"]),
+            (FhirVersion::R4, "RelatedPerson", "patient", &["patient"]),
+            (
+                FhirVersion::R4,
+                "Encounter",
+                "participant",
+                &["participant.individual"],
+            ),
+            (FhirVersion::R5, "Encounter", "participant", &["participant.actor"]),
+            (
+                FhirVersion::R4,
+                "DocumentReference",
+                "encounter",
+                &["context.encounter"],
+            ),
+            (FhirVersion::R5, "DocumentReference", "attester", &["attester.party"]),
+        ];
+        for (version, resource_type, name, paths) in published {
+            let def = crate::search::lookup_in(*version, Some(kind(resource_type)), name)
+                .unwrap_or_else(|| panic!("{version:?} {resource_type}.{name}"));
+            assert_eq!(def.paths(), *paths, "{version:?} {resource_type}.{name}");
+        }
+        assert!(crate::search::lookup_in(FhirVersion::R4, Some(kind("Observation")), "context")
+            .is_none());
+        assert!(
+            crate::search::lookup_in(FhirVersion::R5, Some(kind("DocumentReference")), "authenticator")
+                .is_none()
+        );
     }
 }

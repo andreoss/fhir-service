@@ -436,7 +436,7 @@ async fn the_statement_lists_the_parameters_of_the_running_version() {
     let old = observation_parameters(FhirVersion::Stu3).await;
     let current = observation_parameters(FhirVersion::R4).await;
     assert!(old.contains("context"), "{old:?}");
-    assert!(!old.contains("encounter"));
+    assert!(old.contains("encounter"), "{old:?}");
     assert!(current.contains("encounter"));
     assert!(!current.contains("context"));
     for version in [FhirVersion::R4b, FhirVersion::R5] {
@@ -445,16 +445,30 @@ async fn the_statement_lists_the_parameters_of_the_running_version() {
 }
 
 #[tokio::test]
-async fn a_parameter_a_version_lacks_is_refused_by_it() {
+async fn a_parameter_a_version_does_not_publish_is_refused_by_it() {
     let old = service(FhirVersion::Stu3);
-    let (status, body) = reply(&old, "GET", "/Observation?encounter=Encounter/enc-1", b"").await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-    let (status, _) = reply(&old, "GET", "/Observation?context=Encounter/enc-1", b"").await;
-    assert_eq!(status, StatusCode::OK);
+    for uri in [
+        "/Observation?context=Encounter/enc-1",
+        "/Observation?encounter=Encounter/enc-1",
+        "/DocumentReference?authenticator=Practitioner/pr-1",
+    ] {
+        let (status, body) = reply(&old, "GET", uri, b"").await;
+        assert_eq!(status, StatusCode::OK, "{uri} gave {body}");
+    }
+    let (status, _) = reply(&old, "GET", "/DocumentReference?attester=Practitioner/pr-1", b"").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
     let current = service(FhirVersion::R4);
     let (status, _) = reply(&current, "GET", "/Observation?encounter=Encounter/enc-1", b"").await;
     assert_eq!(status, StatusCode::OK);
     let (status, _) = reply(&current, "GET", "/Observation?context=Encounter/enc-1", b"").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    let newest = service(FhirVersion::R5);
+    let (status, _) = reply(&newest, "GET", "/DocumentReference?attester=Practitioner/pr-1", b"").await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) =
+        reply(&newest, "GET", "/DocumentReference?authenticator=Practitioner/pr-1", b"").await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
@@ -475,7 +489,7 @@ async fn compartment_definitions_carry_the_references_the_version_defines() {
     };
     let old = params(FhirVersion::Stu3).await;
     let current = params(FhirVersion::R4).await;
-    assert_eq!(old["param"], serde_json::json!(["context"]));
+    assert_eq!(old["param"], serde_json::json!(["encounter"]));
     assert_eq!(current["param"], serde_json::json!(["encounter"]));
 }
 
@@ -496,12 +510,14 @@ async fn the_status_report_names_the_unsupported_parameters_of_the_version() {
     };
     let old = unsupported(FhirVersion::Stu3).await;
     let current = unsupported(FhirVersion::R4).await;
-    assert!(!old.contains("_filter"));
+    assert!(old.contains("_filter"));
     assert!(current.contains("_filter"));
     assert!(old.contains("_text") && current.contains("_text"));
-    let app = service(FhirVersion::R4);
-    let (status, _) = reply(&app, "GET", "/Patient?_filter=name%20eq%20a", b"").await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    for version in [FhirVersion::Stu3, FhirVersion::R4] {
+        let app = service(version);
+        let (status, _) = reply(&app, "GET", "/Patient?_filter=name%20eq%20a", b"").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{version:?}");
+    }
 }
 
 #[tokio::test]

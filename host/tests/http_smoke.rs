@@ -455,12 +455,14 @@ fn seed_advanced(port: u16) {
     let bo = br#"{"resourceType":"Patient","id":"pt-a2","gender":"male","name":[{"family":"Okonkwo"}]}"#;
     let warm = br#"{"resourceType":"Observation","id":"ob-a1","status":"final","code":{"text":"probe"},"code":{"text":"Body Temperature","coding":[{"system":"urn:s","code":"vital.temperature"}]},"subject":{"reference":"Patient/pt-a1"}}"#;
     let survey = br#"{"resourceType":"Observation","id":"ob-a2","status":"registered","code":{"text":"probe"},"code":{"coding":[{"system":"urn:s","code":"survey"}]},"subject":{"reference":"Patient/pt-a2"}}"#;
+    let system = br#"{"resourceType":"CodeSystem","id":"cs-a1","url":"urn:s","status":"active","content":"complete","hierarchyMeaning":"is-a","concept":[{"code":"vital","concept":[{"code":"vital.temperature"}]}]}"#;
     let set = br#"{"resourceType":"ValueSet","id":"vs-a1","url":"http://x/vitals","status":"active","compose":{"include":[{"system":"urn:s","concept":[{"code":"vital.temperature"}]}]}}"#;
     request(port, "POST", "/Organization", &[], clinic);
     request(port, "POST", "/Patient", &[], ann);
     request(port, "POST", "/Patient", &[], bo);
     request(port, "POST", "/Observation", &[], warm);
     request(port, "POST", "/Observation", &[], survey);
+    request(port, "POST", "/CodeSystem", &[], system);
     request(port, "POST", "/ValueSet", &[], set);
 }
 
@@ -475,8 +477,9 @@ fn live_search_applies_every_modifier() {
     let text = request(port, "GET", "/Observation?code:text=temperature", &[], &[]);
     let inside = request(port, "GET", "/Observation?code:in=http%3A%2F%2Fx%2Fvitals", &[], &[]);
     let outside = request(port, "GET", "/Observation?code:not-in=http%3A%2F%2Fx%2Fvitals", &[], &[]);
-    let below = request(port, "GET", "/Observation?code:below=vital", &[], &[]);
-    let above = request(port, "GET", "/Observation?code:above=vital.temperature.core", &[], &[]);
+    let below = request(port, "GET", "/Observation?code:below=urn:s%7Cvital", &[], &[]);
+    let above = request(port, "GET", "/Observation?code:above=urn:s%7Cvital.temperature", &[], &[]);
+    let undefined = request(port, "GET", "/Observation?code:below=urn:s%7Cnonesuch", &[], &[]);
     let typed = request(port, "GET", "/Observation?subject:Patient=pt-a1", &[], &[]);
     let identified = request(port, "GET", "/Patient?identifier:of-type=urn:t%7CMR%7C12345", &[], &[]);
     let forbidden = request(port, "GET", "/Patient?gender:exact=male", &[], &[]);
@@ -495,6 +498,8 @@ fn live_search_applies_every_modifier() {
     assert_eq!(ids(&identified.body), vec!["pt-a1".to_owned()]);
     assert_eq!(forbidden.status, 400);
     assert_eq!(issue_code(&forbidden.body), "not-supported");
+    assert_eq!(undefined.status, 400);
+    assert_eq!(issue_code(&undefined.body), "not-supported");
 }
 
 #[test]

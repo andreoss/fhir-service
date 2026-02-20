@@ -150,60 +150,133 @@ mod tests {
     }
 
     #[test]
-    fn a_definition_becomes_a_parameter() {
+    fn a_definition_becomes_the_parameter_its_members_denote() {
         let spec = ParameterSpec::parse(&body()).unwrap();
         assert_eq!(spec.url, "urn:p:risk-band");
         assert_eq!(spec.code(), "risk-band");
         assert_eq!(spec.def.value_type, ValueType::Token);
         assert_eq!(spec.def.paths(), vec!["extension.valueCode".to_owned()]);
         assert_eq!(spec.base, vec!["Patient".parse::<ResourceType>().unwrap()]);
+        assert_eq!(spec.def.url.as_deref(), Some("urn:p:risk-band"));
         assert!(!spec.retired);
         assert!(!spec.def.sortable);
     }
 
     #[test]
-    fn a_withdrawn_definition_is_marked_retired() {
-        let mut value = body();
-        value["status"] = json!("retired");
-        assert!(ParameterSpec::parse(&value).unwrap().retired);
+    fn every_kind_the_specification_publishes_is_read_and_composite_is_refused() {
+        for (code, wanted) in [
+            ("number", ValueType::Number),
+            ("date", ValueType::Date),
+            ("string", ValueType::String),
+            ("token", ValueType::Token),
+            ("reference", ValueType::Reference),
+            ("quantity", ValueType::Quantity),
+            ("uri", ValueType::Uri),
+        ] {
+            let mut value = body();
+            value["type"] = json!(code);
+            let spec = ParameterSpec::parse(&value).unwrap_or_else(|_| panic!("{code}"));
+            assert_eq!(spec.def.value_type, wanted, "{code}");
+        }
+        let mut composite = body();
+        composite["type"] = json!("composite");
+        assert!(matches!(
+            ParameterSpec::parse(&composite).unwrap_err(),
+            Error::UnsupportedParameter(_)
+        ));
+        let mut special = body();
+        special["type"] = json!("special");
+        assert!(matches!(
+            ParameterSpec::parse(&special).unwrap_err(),
+            Error::UnsupportedParameter(_)
+        ));
     }
 
     #[test]
-    fn several_paths_and_targets_are_read() {
+    fn a_status_the_definition_is_no_longer_active_under_marks_it_retired() {
+        for status in ["retired", "unknown"] {
+            let mut value = body();
+            value["status"] = json!(status);
+            assert!(ParameterSpec::parse(&value).unwrap().retired, "{status}");
+        }
+        for status in ["active", "draft"] {
+            let mut value = body();
+            value["status"] = json!(status);
+            assert!(!ParameterSpec::parse(&value).unwrap().retired, "{status}");
+        }
+    }
+
+    #[test]
+    fn an_expression_naming_several_paths_yields_one_path_for_each() {
         let mut value = body();
         value["type"] = json!("reference");
         value["expression"] = json!("Patient.extension.valueReference | Patient.link.other");
         value["target"] = json!(["Organization", "Practitioner"]);
         let spec = ParameterSpec::parse(&value).unwrap();
-        assert_eq!(spec.def.paths().len(), 2);
+        assert_eq!(
+            spec.def.paths(),
+            vec!["extension.valueReference".to_owned(), "link.other".to_owned()]
+        );
         assert_eq!(spec.def.targets, vec!["Organization".to_owned(), "Practitioner".to_owned()]);
     }
 
     #[test]
-    fn a_malformed_definition_is_rejected() {
+    fn a_path_of_a_type_the_definition_does_not_name_is_kept_as_it_stands() {
+        let mut value = body();
+        value["base"] = json!(["Patient", "Practitioner"]);
+        value["expression"] = json!("Patient.extension.valueCode | Practitioner.extension.valueCode");
+        let spec = ParameterSpec::parse(&value).unwrap();
+        assert_eq!(
+            spec.def.paths(),
+            vec!["extension.valueCode".to_owned(), "extension.valueCode".to_owned()]
+        );
+        assert_eq!(spec.base.len(), 2);
+    }
+
+    #[test]
+    fn a_code_the_server_reserves_for_itself_is_refused() {
+        for code in ["_id", "_lastUpdated", "_profile", "_tag", "_security", "_nonesuch"] {
+            let mut value = body();
+            value["code"] = json!(code);
+            assert!(
+                matches!(
+                    ParameterSpec::parse(&value).unwrap_err(),
+                    Error::InvalidParameter(_)
+                ),
+                "{code}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_expression_the_server_cannot_evaluate_as_a_path_is_refused() {
+        for expression in [
+            "Patient.name.where(use='official')",
+            "Patient.deceased.exists()",
+            "Patient.name.given.first()",
+        ] {
+            let mut value = body();
+            value["expression"] = json!(expression);
+            assert!(
+                matches!(
+                    ParameterSpec::parse(&value).unwrap_err(),
+                    Error::UnsupportedParameter(_)
+                ),
+                "{expression}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_definition_missing_a_member_it_needs_is_refused() {
         for missing in ["url", "code", "type", "expression", "base"] {
             let mut value = body();
             value.as_object_mut().unwrap().remove(missing);
             assert!(ParameterSpec::parse(&value).is_err(), "{missing}");
+            let mut empty = body();
+            empty[missing] = json!("");
+            assert!(ParameterSpec::parse(&empty).is_err(), "{missing} empty");
         }
-        let mut reserved = body();
-        reserved["code"] = json!("_id");
-        assert!(matches!(
-            ParameterSpec::parse(&reserved).unwrap_err(),
-            Error::InvalidParameter(_)
-        ));
-        let mut kind = body();
-        kind["type"] = json!("composite");
-        assert!(matches!(
-            ParameterSpec::parse(&kind).unwrap_err(),
-            Error::UnsupportedParameter(_)
-        ));
-        let mut expression = body();
-        expression["expression"] = json!("Patient.name.where(use='official')");
-        assert!(matches!(
-            ParameterSpec::parse(&expression).unwrap_err(),
-            Error::UnsupportedParameter(_)
-        ));
         let mut kind = body();
         kind["base"] = json!(["Nonesuch"]);
         assert!(ParameterSpec::parse(&kind).is_err());
@@ -211,5 +284,6 @@ mod tests {
         target["target"] = json!(["Nonesuch"]);
         assert!(ParameterSpec::parse(&target).is_err());
         assert!(ParameterSpec::parse(&json!({"resourceType": "Patient"})).is_err());
+        assert!(ParameterSpec::parse(&json!("not a resource")).is_err());
     }
 }

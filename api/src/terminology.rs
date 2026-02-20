@@ -142,7 +142,9 @@ pub async fn subsumed(
         };
         let found = terminology.subsumption(system, code, direction).await?;
         if found.is_empty() {
-            return Ok(None);
+            return Err(Error::UnsupportedParameter(format!(
+                "no code system defines {code:?}, so it is subsumed by nothing"
+            )));
         }
         values.extend(found.into_iter().map(coded));
     }

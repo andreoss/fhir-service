@@ -881,19 +881,20 @@ async fn subsumption_modifiers_resolve_through_the_terminology() {
 }
 
 #[tokio::test]
-async fn a_code_no_system_defines_is_compared_as_it_stands() {
+async fn a_code_no_system_defines_is_refused_rather_than_compared_as_text() {
     let app = service();
     create(&app, code_system()).await;
     create(&app, coded("ob-s3", None, "a.b.c")).await;
-    assert_eq!(
-        found(&app, "/Observation?code:below=a.b").await,
-        vec!["ob-s3".to_owned()]
-    );
-    assert!(found(&app, "/Observation?code:below=a.d").await.is_empty());
-    assert_eq!(
-        found(&app, "/Observation?code:above=a.b.c.d").await,
-        vec!["ob-s3".to_owned()]
-    );
+    for uri in [
+        "/Observation?code:below=a.b",
+        "/Observation?code:above=a.b.c.d",
+        "/Observation?code:below=urn:cs%7Cnonesuch",
+    ] {
+        let reply = request(&app, "GET", uri, &[]).await;
+        assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{uri} gave {}", reply.body);
+        let value = json(&reply);
+        assert_eq!(value["issue"][0]["code"], "not-supported", "{uri}");
+    }
 }
 
 #[tokio::test]

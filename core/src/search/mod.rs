@@ -195,12 +195,20 @@ impl Filter {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum SortValue {
     Instant(crate::InstantKey),
     Text(String),
     Missing,
 }
+
+impl PartialEq for SortValue {
+    fn eq(&self, other: &SortValue) -> bool {
+        self.cmp(other) == std::cmp::Ordering::Equal
+    }
+}
+
+impl Eq for SortValue {}
 
 impl PartialOrd for SortValue {
     fn partial_cmp(&self, other: &SortValue) -> Option<std::cmp::Ordering> {
@@ -245,22 +253,36 @@ pub fn sort_value(
 }
 
 pub fn code_set(body: &Value) -> Vec<SearchValue> {
+    let mut codes = composed(body, "compose.include");
+    let excluded = composed(body, "compose.exclude");
+    codes.retain(|code| !excluded.contains(code));
+    for contains in items(select(body, "expansion.contains")) {
+        gather(contains, &mut codes);
+    }
+    codes
+}
+
+fn composed(body: &Value, path: &str) -> Vec<SearchValue> {
     let mut codes = Vec::new();
-    for include in items(select(body, "compose.include")) {
-        let system = include.get("system").and_then(Value::as_str);
-        for concept in items(select(include, "concept")) {
+    for rule in items(select(body, path)) {
+        let system = rule.get("system").and_then(Value::as_str);
+        for concept in items(select(rule, "concept")) {
             if let Some(code) = concept.get("code").and_then(Value::as_str) {
                 codes.push(coded(system, code));
             }
         }
     }
-    for contains in items(select(body, "expansion.contains")) {
-        let system = contains.get("system").and_then(Value::as_str);
-        if let Some(code) = contains.get("code").and_then(Value::as_str) {
-            codes.push(coded(system, code));
-        }
-    }
     codes
+}
+
+fn gather(contains: &Value, codes: &mut Vec<SearchValue>) {
+    let system = contains.get("system").and_then(Value::as_str);
+    if let Some(code) = contains.get("code").and_then(Value::as_str) {
+        codes.push(coded(system, code));
+    }
+    for nested in items(select(contains, "contains")) {
+        gather(nested, codes);
+    }
 }
 
 fn items(found: Vec<&Value>) -> Vec<&Value> {
@@ -305,8 +327,7 @@ fn component(sub: &SubDef, value: &SearchValue, element: &Value) -> bool {
 
 pub fn unsupported(version: FhirVersion) -> &'static [&'static str] {
     match version {
-        FhirVersion::Stu3 => &["_text", "_content", "_query"],
-        FhirVersion::R4 | FhirVersion::R4b | FhirVersion::R5 => {
+        FhirVersion::Stu3 | FhirVersion::R4 | FhirVersion::R4b | FhirVersion::R5 => {
             &["_text", "_content", "_filter", "_query"]
         }
     }
@@ -356,9 +377,69 @@ mod tests {
         assert!(!filter(&def.name, def.target.clone(), wrong).matches(&id(), &updated(), &json!({})));
     }
 
+    fn indexed(name: &str, target: Target, modifier: Modifier, values: Vec<SearchValue>) -> Filter {
+        Filter {
+            name: name.to_owned(),
+            target,
+            modifier,
+            values,
+            index: Some("urn:p:custom".to_owned()),
+        }
+    }
+
     #[test]
-    fn sort_values_project_every_target() {
-        let body = json!({"name": [{"family": "Ann"}], "active": true});
+    fn an_indexed_value_answers_as_the_same_value_in_a_body_does() {
+        let cases: &[(ValueType, &str, Modifier, Value)] = &[
+            (ValueType::Token, "amber", Modifier::None, json!("amber")),
+            (ValueType::Token, "amber", Modifier::None, json!("green")),
+            (ValueType::Token, "amber", Modifier::Not, json!("amber")),
+            (ValueType::Token, "amber", Modifier::Not, json!("green")),
+            (ValueType::String, "Ann", Modifier::Exact, json!("Ann")),
+            (ValueType::String, "ann", Modifier::Exact, json!("Ann")),
+            (ValueType::String, "nn", Modifier::Contains, json!("Ann")),
+            (ValueType::Date, "ne1980", Modifier::None, json!("1980-04-01")),
+            (ValueType::Date, "ne1990", Modifier::None, json!("1980-04-01")),
+            (ValueType::Number, "0.4", Modifier::None, json!(0.42)),
+        ];
+        for (value_type, raw, modifier, element) in cases {
+            let values = vec![crate::search::modifier::value_of(modifier, *value_type, raw)
+                .expect("the value parses under the modifier")];
+            let target = Target::path(["held"]);
+            let body = json!({"held": element});
+            let held = indexed("held", target.clone(), modifier.clone(), values.clone());
+            let over_body = Filter {
+                name: "held".to_owned(),
+                target,
+                modifier: modifier.clone(),
+                values,
+                index: None,
+            };
+            assert_eq!(
+                held.matches_indexed(std::slice::from_ref(element)),
+                over_body.matches(&id(), &updated(), &body),
+                "{value_type:?} {raw} {modifier:?} {element}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_indexed_parameter_is_missing_when_it_extracted_nothing() {
+        let target = Target::path(["held"]);
+        let present = vec![SearchValue::Missing(false)];
+        let absent = vec![SearchValue::Missing(true)];
+        let none: &[Value] = &[];
+        assert!(indexed("held", target.clone(), Modifier::Missing, absent.clone())
+            .matches_indexed(none));
+        assert!(!indexed("held", target.clone(), Modifier::Missing, absent)
+            .matches_indexed(&[json!("amber")]));
+        assert!(indexed("held", target.clone(), Modifier::Missing, present.clone())
+            .matches_indexed(&[json!("amber")]));
+        assert!(!indexed("held", target, Modifier::Missing, present).matches_indexed(none));
+    }
+
+    #[test]
+    fn a_sort_key_projects_the_value_it_orders_by() {
+        let body = json!({"name": [{"family": "Ann"}], "birthDate": "1980-04-01"});
         assert_eq!(
             sort_value(&Target::Id, &id(), &updated(), &body),
             SortValue::Text("r-1".to_owned())
@@ -372,44 +453,95 @@ mod tests {
             SortValue::Text("Ann".to_owned())
         );
         assert_eq!(
-            sort_value(&Target::path(["name"]), &id(), &updated(), &body),
-            SortValue::Text("Ann".to_owned())
+            sort_value(&Target::path(["birthDate"]), &id(), &updated(), &body),
+            SortValue::Text("1980-04-01".to_owned())
         );
         assert_eq!(
-            sort_value(&Target::path(["missing"]), &id(), &updated(), &body),
+            sort_value(&Target::path(["deceasedDateTime"]), &id(), &updated(), &body),
             SortValue::Missing
         );
+    }
+
+    #[test]
+    fn a_resource_with_no_value_for_the_key_sorts_after_every_other() {
+        let text = SortValue::Text("a".to_owned());
+        let instant = SortValue::Instant(updated().key());
+        for held in [&text, &instant] {
+            assert!(SortValue::Missing > *held, "{held:?}");
+            assert!(*held < SortValue::Missing, "{held:?}");
+        }
+        assert_eq!(SortValue::Missing.cmp(&SortValue::Missing), std::cmp::Ordering::Equal);
+    }
+
+    #[test]
+    fn keys_that_tie_leave_a_later_key_to_decide() {
+        let first = json!({"name": [{"family": "Ann"}], "birthDate": "1980-04-01"});
+        let second = json!({"name": [{"family": "ann"}], "birthDate": "1975-02-02"});
+        let family = Target::path(["name.family"]);
+        let birth = Target::path(["birthDate"]);
+        let left = ResourceId::parse("a").unwrap();
+        let right = ResourceId::parse("b").unwrap();
         assert_eq!(
-            sort_value(&Target::path(["active"]), &id(), &updated(), &body),
-            SortValue::Text("true".to_owned())
+            sort_value(&family, &left, &updated(), &first),
+            sort_value(&family, &right, &updated(), &second)
+        );
+        assert!(
+            sort_value(&birth, &right, &updated(), &second)
+                < sort_value(&birth, &left, &updated(), &first)
         );
     }
 
     #[test]
-    fn a_missing_sort_value_orders_last_in_either_direction() {
-        let text = SortValue::Text("a".to_owned());
-        let instant = SortValue::Instant(updated().key());
-        assert!(SortValue::Missing > text);
-        assert!(text < SortValue::Missing);
-        assert_eq!(SortValue::Missing.cmp(&SortValue::Missing), std::cmp::Ordering::Equal);
-        assert!(instant < text);
-        assert!(text > instant);
-        assert_eq!(text.partial_cmp(&SortValue::Text("B".to_owned())), Some(std::cmp::Ordering::Less));
+    fn instants_order_chronologically() {
+        let early = FhirInstant::parse("2020-01-01T00:00:00Z").unwrap();
+        let late = FhirInstant::parse("2026-09-06T04:00:00Z").unwrap();
+        assert!(SortValue::Instant(early.key()) < SortValue::Instant(late.key()));
     }
 
     #[test]
-    fn a_code_set_yields_every_code_it_defines() {
-        let body = serde_json::json!({
+    fn a_code_set_yields_the_codes_it_selects_and_no_code_it_excludes() {
+        let body = json!({
             "resourceType": "ValueSet",
-            "compose": {"include": [{"system": "urn:s", "concept": [{"code": "a"}, {"code": "b"}]}]},
-            "expansion": {"contains": [{"system": "urn:t", "code": "c"}, {"display": "no code"}]}
+            "compose": {
+                "include": [{"system": "urn:s", "concept": [{"code": "a"}, {"code": "b"}]}],
+                "exclude": [{"system": "urn:s", "concept": [{"code": "b"}]}]
+            }
         });
         let codes = code_set(&body);
+        assert_eq!(codes, vec![coded(Some("urn:s"), "a")]);
+        assert!(code_set(&json!({})).is_empty());
+    }
+
+    #[test]
+    fn a_nested_expansion_is_read_to_its_full_depth() {
+        let body = json!({
+            "resourceType": "ValueSet",
+            "expansion": {"contains": [{
+                "system": "urn:t",
+                "code": "top",
+                "contains": [
+                    {"system": "urn:t", "code": "mid", "contains": [{"system": "urn:t", "code": "leaf"}]},
+                    {"display": "an abstract grouping with no code"}
+                ]
+            }]}
+        });
+        let codes = code_set(&body);
+        for code in ["top", "mid", "leaf"] {
+            assert!(codes.contains(&coded(Some("urn:t"), code)), "{code}");
+        }
         assert_eq!(codes.len(), 3);
-        assert!(codes.contains(&SearchValue::Token(Token {
-            system: TokenSystem::Exact("urn:t".to_owned()),
-            code: Some("c".to_owned())
-        })));
-        assert!(code_set(&serde_json::json!({})).is_empty());
+    }
+
+    #[test]
+    fn every_version_reports_the_parameters_it_defines_but_cannot_answer() {
+        for version in FhirVersion::ALL {
+            let held = unsupported(version);
+            for name in ["_text", "_content", "_filter", "_query"] {
+                assert!(held.contains(&name), "{version:?} {name}");
+            }
+            for answered in ["_id", "_lastUpdated", "_profile", "_tag", "_security"] {
+                assert!(!held.contains(&answered), "{version:?} {answered}");
+            }
+        }
     }
 }

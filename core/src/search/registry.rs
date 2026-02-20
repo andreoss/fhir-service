@@ -323,6 +323,7 @@ const PATIENT: &[StaticDef] = &[
     refers("general-practitioner", &["generalPractitioner"], &["Practitioner", "Organization"]),
     def("given", ValueType::String, &["name.given"]),
     def("identifier", ValueType::Token, &["identifier"]),
+    refers("link", &["link.other"], &["Patient", "RelatedPerson"]),
     sorted("name", ValueType::String, &["name"]),
     refers("organization", &["managingOrganization"], &["Organization"]),
     def("telecom", ValueType::Token, &["telecom"]),
@@ -359,6 +360,14 @@ const OBSERVATION: &[StaticDef] = &[
         FhirVersion::Stu3,
         Some(FhirVersion::Stu3),
     ),
+    refers("device", &["device"], &["Device", "DeviceMetric"]),
+    refers_in(
+        "encounter",
+        &["context"],
+        &["Encounter"],
+        FhirVersion::Stu3,
+        Some(FhirVersion::Stu3),
+    ),
     refers_in(
         "encounter",
         &["encounter"],
@@ -368,6 +377,11 @@ const OBSERVATION: &[StaticDef] = &[
     ),
     def("identifier", ValueType::Token, &["identifier"]),
     refers("patient", &["subject"], &["Patient"]),
+    refers(
+        "performer",
+        &["performer"],
+        &["Practitioner", "Organization", "Patient", "RelatedPerson"],
+    ),
     sorted("status", ValueType::Token, &["status"]),
     refers("subject", &["subject"], &["Patient", "Group"]),
     def("value-quantity", ValueType::Quantity, &["valueQuantity"]),
@@ -378,7 +392,35 @@ const ENCOUNTER: &[StaticDef] = &[
     def("class", ValueType::Token, &["class"]),
     sorted("date", ValueType::Date, &["period"]),
     def("identifier", ValueType::Token, &["identifier"]),
+    refers_in(
+        "participant",
+        &["participant.individual"],
+        &["Practitioner", "RelatedPerson"],
+        FhirVersion::Stu3,
+        Some(FhirVersion::R4b),
+    ),
+    refers_in(
+        "participant",
+        &["participant.actor"],
+        &["Practitioner", "RelatedPerson", "Patient", "Device"],
+        FhirVersion::R5,
+        None,
+    ),
     refers("patient", &["subject"], &["Patient"]),
+    refers_in(
+        "practitioner",
+        &["participant.individual"],
+        &["Practitioner"],
+        FhirVersion::Stu3,
+        Some(FhirVersion::R4b),
+    ),
+    refers_in(
+        "practitioner",
+        &["participant.actor"],
+        &["Practitioner"],
+        FhirVersion::R5,
+        None,
+    ),
     refers("service-provider", &["serviceProvider"], &["Organization"]),
     sorted("status", ValueType::Token, &["status"]),
     refers("subject", &["subject"], &["Patient", "Group"]),
@@ -389,9 +431,17 @@ const LIST: &[StaticDef] = &[
     def("identifier", ValueType::Token, &["identifier"]),
     refers("item", &["entry.item"], &[]),
     refers("patient", &["subject"], &["Patient"]),
+    refers("source", &["source"], &["Practitioner", "Device", "Patient"]),
     sorted("status", ValueType::Token, &["status"]),
-    refers("subject", &["subject"], &["Patient", "Group"]),
+    refers("subject", &["subject"], &["Patient", "Group", "Device", "Location"]),
     sorted("title", ValueType::String, &["title"]),
+];
+
+const RELATED_PERSON: &[StaticDef] = &[
+    def("active", ValueType::Token, &["active"]),
+    def("identifier", ValueType::Token, &["identifier"]),
+    sorted("name", ValueType::String, &["name"]),
+    refers("patient", &["patient"], &["Patient"]),
 ];
 
 const ORGANIZATION: &[StaticDef] = &[
@@ -412,18 +462,52 @@ const PRACTITIONER: &[StaticDef] = &[
 const RISK_ASSESSMENT: &[StaticDef] = &[
     def("identifier", ValueType::Token, &["identifier"]),
     refers("patient", &["subject"], &["Patient"]),
+    refers("performer", &["performer"], &["Practitioner", "Device"]),
     def("probability", ValueType::Number, &["prediction.probabilityDecimal"]),
     refers("subject", &["subject"], &["Patient", "Group"]),
 ];
 
 const DOCUMENT_REFERENCE: &[StaticDef] = &[
+    refers_in(
+        "attester",
+        &["attester.party"],
+        &["Practitioner", "Organization", "Patient", "RelatedPerson"],
+        FhirVersion::R5,
+        None,
+    ),
+    refers_in(
+        "authenticator",
+        &["authenticator"],
+        &["Practitioner", "Organization"],
+        FhirVersion::Stu3,
+        Some(FhirVersion::R4b),
+    ),
+    refers(
+        "author",
+        &["author"],
+        &["Practitioner", "Organization", "Device", "Patient", "RelatedPerson"],
+    ),
     def("identifier", ValueType::Token, &["identifier"]),
     sorted("date", ValueType::Date, &["date"]),
     def("status", ValueType::Token, &["status"]),
     def("type", ValueType::Token, &["type"]),
     def("category", ValueType::Token, &["category"]),
+    refers_in(
+        "context",
+        &["context"],
+        &["Encounter", "EpisodeOfCare"],
+        FhirVersion::R5,
+        None,
+    ),
+    refers_in(
+        "encounter",
+        &["context.encounter"],
+        &["Encounter"],
+        FhirVersion::Stu3,
+        Some(FhirVersion::R4b),
+    ),
     refers("patient", &["subject"], &["Patient"]),
-    refers("subject", &["subject"], &["Patient", "Group", "Practitioner"]),
+    refers("subject", &["subject"], &["Patient", "Group", "Practitioner", "Device"]),
 ];
 
 const VALUE_SET: &[StaticDef] = &[
@@ -442,6 +526,7 @@ fn per_type(resource_type: ResourceType) -> &'static [StaticDef] {
         "List" => LIST,
         "Organization" => ORGANIZATION,
         "Practitioner" => PRACTITIONER,
+        "RelatedPerson" => RELATED_PERSON,
         "RiskAssessment" => RISK_ASSESSMENT,
         "ValueSet" => VALUE_SET,
         "DocumentReference" => DOCUMENT_REFERENCE,
@@ -474,13 +559,14 @@ impl Held {
 fn definitions() -> &'static Definitions {
     static DEFINITIONS: OnceLock<Definitions> = OnceLock::new();
     DEFINITIONS.get_or_init(|| {
-        const TYPES: [&str; 9] = [
+        const TYPES: [&str; 10] = [
             "Patient",
             "Observation",
             "Encounter",
             "List",
             "Organization",
             "Practitioner",
+            "RelatedPerson",
             "RiskAssessment",
             "ValueSet",
             "DocumentReference",
@@ -765,40 +851,11 @@ impl Registry {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_definition_is_visible_only_in_the_versions_it_spans() {
-        let observation: ResourceType = "Observation".parse().unwrap();
-        assert!(lookup_in(FhirVersion::Stu3, Some(observation), "context").is_some());
-        assert!(lookup_in(FhirVersion::Stu3, Some(observation), "encounter").is_none());
-        for version in [FhirVersion::R4, FhirVersion::R4b, FhirVersion::R5] {
-            assert!(lookup_in(version, Some(observation), "encounter").is_some());
-            assert!(lookup_in(version, Some(observation), "context").is_none());
-        }
-        assert!(lookup(Some(observation), "context").is_some());
-        let old: Vec<String> = for_type_in(FhirVersion::Stu3, observation)
-            .iter()
-            .map(|def| def.name.clone())
-            .collect();
-        assert!(old.contains(&"context".to_owned()));
-        assert!(!old.contains(&"encounter".to_owned()));
-        assert!(references_in(FhirVersion::Stu3, observation)
-            .iter()
-            .any(|def| def.name == "context"));
-        assert_eq!(common_in(FhirVersion::Stu3).len(), common().len());
-    }
-
-    #[test]
-    fn a_registry_answers_for_the_version_it_was_built_for() {
-        let old = Registry::for_version(FhirVersion::Stu3);
-        let observation: ResourceType = "Observation".parse().unwrap();
-        assert_eq!(old.fhir_version(), FhirVersion::Stu3);
-        assert!(old.lookup(Some(observation), "encounter").is_none());
-        assert!(old.lookup(Some(observation), "context").is_some());
-        assert!(Registry::new().lookup(Some(observation), "encounter").is_some());
+    fn kind(name: &str) -> ResourceType {
+        name.parse().expect("the type is published")
     }
 
     fn custom(name: &str, base: &str, status: ParamStatus) -> RegisteredParam {
-        let resource_type: ResourceType = base.parse().unwrap();
         RegisteredParam {
             def: Arc::new(ParamDef {
                 name: name.to_owned(),
@@ -808,45 +865,167 @@ mod tests {
                 sortable: false,
                 url: Some(format!("urn:p:{name}")),
             }),
-            base: vec![resource_type],
+            base: vec![kind(base)],
             url: format!("urn:p:{name}"),
             status,
         }
     }
 
     #[test]
-    fn every_common_parameter_resolves_without_a_type() {
-        for def in common() {
-            assert_eq!(lookup(None, &def.name).map(|found| found.name.clone()), Some(def.name.clone()));
+    fn a_parameter_is_visible_in_the_versions_that_publish_it_and_no_other() {
+        let published: &[(&str, &str, &[FhirVersion])] = &[
+            (
+                "Observation",
+                "context",
+                &[FhirVersion::Stu3],
+            ),
+            (
+                "Observation",
+                "encounter",
+                &[FhirVersion::Stu3, FhirVersion::R4, FhirVersion::R4b, FhirVersion::R5],
+            ),
+            (
+                "DocumentReference",
+                "authenticator",
+                &[FhirVersion::Stu3, FhirVersion::R4, FhirVersion::R4b],
+            ),
+            ("DocumentReference", "attester", &[FhirVersion::R5]),
+            ("DocumentReference", "context", &[FhirVersion::R5]),
+            (
+                "DocumentReference",
+                "encounter",
+                &[FhirVersion::Stu3, FhirVersion::R4, FhirVersion::R4b],
+            ),
+            (
+                "Patient",
+                "link",
+                &[FhirVersion::Stu3, FhirVersion::R4, FhirVersion::R4b, FhirVersion::R5],
+            ),
+        ];
+        for (resource_type, name, versions) in published {
+            for version in FhirVersion::ALL {
+                let held = lookup_in(version, Some(kind(resource_type)), name).is_some();
+                assert_eq!(
+                    held,
+                    versions.contains(&version),
+                    "{version:?} {resource_type}.{name}"
+                );
+            }
         }
-        assert!(lookup(None, "name").is_none());
     }
 
     #[test]
-    fn every_registered_type_resolves_its_own_parameters() {
-        for (type_name, name) in [
-            ("Patient", "family"),
-            ("Observation", "value-quantity"),
-            ("Encounter", "class"),
-            ("List", "item"),
-            ("Organization", "name"),
-            ("Practitioner", "given"),
-            ("RiskAssessment", "probability"),
-            ("ValueSet", "url"),
-        ] {
-            let resource_type = type_name.parse().unwrap();
-            assert!(lookup(Some(resource_type), name).is_some(), "{type_name} {name}");
+    fn a_registry_answers_for_the_version_it_was_built_for() {
+        let observation = Some(kind("Observation"));
+        let old = Registry::for_version(FhirVersion::Stu3);
+        assert_eq!(old.fhir_version(), FhirVersion::Stu3);
+        assert!(old.lookup(observation, "context").is_some());
+        assert!(old.lookup(observation, "encounter").is_some());
+        let current = Registry::for_version(FhirVersion::R4);
+        assert!(current.lookup(observation, "encounter").is_some());
+        assert!(current.lookup(observation, "context").is_none());
+        assert!(for_type_in(FhirVersion::Stu3, kind("Observation"))
+            .iter()
+            .any(|def| def.name == "context"));
+        assert!(references_in(FhirVersion::R5, kind("Observation"))
+            .iter()
+            .all(|def| def.name != "context"));
+        assert_eq!(common_in(FhirVersion::Stu3).len(), common().len());
+    }
+
+    #[test]
+    fn a_parameter_reads_the_element_the_published_expression_names() {
+        let published: &[(&str, &str, ValueType, &[&str])] = &[
+            ("Patient", "birthdate", ValueType::Date, &["birthDate"]),
+            ("Patient", "family", ValueType::String, &["name.family"]),
+            ("Patient", "gender", ValueType::Token, &["gender"]),
+            ("Patient", "link", ValueType::Reference, &["link.other"]),
+            ("Patient", "organization", ValueType::Reference, &["managingOrganization"]),
+            ("Observation", "code", ValueType::Token, &["code"]),
+            ("Observation", "device", ValueType::Reference, &["device"]),
+            ("Observation", "performer", ValueType::Reference, &["performer"]),
+            ("Observation", "subject", ValueType::Reference, &["subject"]),
+            ("Observation", "value-quantity", ValueType::Quantity, &["valueQuantity"]),
+            ("Observation", "value-string", ValueType::String, &["valueString"]),
+            ("Encounter", "status", ValueType::Token, &["status"]),
+            ("List", "source", ValueType::Reference, &["source"]),
+            ("RiskAssessment", "performer", ValueType::Reference, &["performer"]),
+            (
+                "RiskAssessment",
+                "probability",
+                ValueType::Number,
+                &["prediction.probabilityDecimal"],
+            ),
+            ("RelatedPerson", "patient", ValueType::Reference, &["patient"]),
+            ("ValueSet", "url", ValueType::Uri, &["url"]),
+        ];
+        for (resource_type, name, value_type, paths) in published {
+            let def = lookup(Some(kind(resource_type)), name)
+                .unwrap_or_else(|| panic!("{resource_type}.{name}"));
+            assert_eq!(def.value_type, *value_type, "{resource_type}.{name}");
+            assert_eq!(def.paths(), *paths, "{resource_type}.{name}");
         }
-        let unregistered = "Device".parse().unwrap();
-        assert!(lookup(Some(unregistered), "patient").is_none());
-        assert!(lookup(Some("Patient".parse().unwrap()), "_id").is_some());
-        assert_eq!(references("Patient".parse().unwrap()).len(), 2);
+    }
+
+    #[test]
+    fn a_reference_parameter_names_the_types_it_may_point_at() {
+        for (resource_type, name, targets) in [
+            ("Observation", "subject", &["Patient", "Group"][..]),
+            ("Observation", "patient", &["Patient"][..]),
+            ("Patient", "link", &["Patient", "RelatedPerson"][..]),
+            ("RelatedPerson", "patient", &["Patient"][..]),
+        ] {
+            let def = lookup(Some(kind(resource_type)), name).expect("the parameter is published");
+            assert_eq!(def.targets, targets, "{resource_type}.{name}");
+            for target in &def.targets {
+                assert!(target.parse::<ResourceType>().is_ok(), "{target}");
+            }
+        }
+        assert!(references(kind("Patient"))
+            .iter()
+            .all(|def| def.value_type == ValueType::Reference));
+        for name in ["general-practitioner", "link", "organization"] {
+            assert!(
+                references(kind("Patient")).iter().any(|def| def.name == name),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_common_parameter_applies_to_every_type_and_to_none() {
+        let published = ["_id", "_lastUpdated", "_profile", "_tag", "_security"];
+        let held: Vec<String> = common().iter().map(|def| def.name.clone()).collect();
+        for name in published {
+            assert!(held.contains(&name.to_owned()), "{name}");
+            assert!(lookup(None, name).is_some(), "{name}");
+            assert!(lookup(Some(kind("Observation")), name).is_some(), "{name}");
+        }
+        assert!(lookup(None, "name").is_none());
+        assert!(lookup(None, "_nonesuch").is_none());
+        for name in ["_count", "_sort", "_elements", "_summary", "_total", "_include"] {
+            assert!(lookup(None, name).is_none(), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_type_the_server_does_not_implement_resolves_no_parameter_of_its_own() {
+        assert!(lookup(Some(kind("Device")), "patient").is_none());
+        assert!(lookup(Some(kind("Device")), "_id").is_some());
+        assert!(lookup(Some(kind("Observation")), "family").is_none());
+        assert!(lookup(Some(kind("Patient")), "code").is_none());
     }
 
     #[test]
     fn a_composite_value_is_split_on_the_separator() {
-        let def = lookup(Some("Observation".parse().unwrap()), "code-value-quantity").unwrap();
-        assert!(def.value("http://loinc.org|8867-4$72.5").unwrap().components().is_some());
+        let def = lookup(Some(kind("Observation")), "code-value-quantity").unwrap();
+        let held = def.value("http://loinc.org|8867-4$72.5").unwrap();
+        let (left, right) = held.components().expect("a composite carries two halves");
+        assert_eq!(
+            left,
+            &SearchValue::parse(ValueType::Token, "http://loinc.org|8867-4").unwrap()
+        );
+        assert_eq!(right, &SearchValue::parse(ValueType::Quantity, "72.5").unwrap());
         assert!(matches!(def.value("8867-4").unwrap_err(), Error::InvalidParameter(_)));
         assert!(def.paths().is_empty());
     }
@@ -858,17 +1037,44 @@ mod tests {
     }
 
     #[test]
-    fn only_declared_parameters_are_sortable() {
-        let patient = Some("Patient".parse().unwrap());
-        assert!(lookup(patient, "birthdate").is_some_and(|def| def.sortable));
-        assert!(lookup(patient, "identifier").is_some_and(|def| !def.sortable));
+    fn only_a_parameter_of_a_single_ordered_value_is_sortable() {
+        for (resource_type, name) in [
+            ("Patient", "birthdate"),
+            ("Patient", "name"),
+            ("Observation", "date"),
+            ("Observation", "status"),
+        ] {
+            assert!(
+                lookup(Some(kind(resource_type)), name).is_some_and(|def| def.sortable),
+                "{resource_type}.{name}"
+            );
+        }
+        for (resource_type, name) in [
+            ("Patient", "identifier"),
+            ("Observation", "code-value-quantity"),
+            ("Observation", "subject"),
+        ] {
+            assert!(
+                lookup(Some(kind(resource_type)), name).is_some_and(|def| !def.sortable),
+                "{resource_type}.{name}"
+            );
+        }
+        for def in for_type(kind("Observation")) {
+            assert!(
+                !def.sortable || !matches!(def.target, Target::Composite(_)),
+                "{}",
+                def.name
+            );
+        }
+        assert!(lookup(None, "_id").is_some_and(|def| def.sortable));
+        assert!(lookup(None, "_lastUpdated").is_some_and(|def| def.sortable));
     }
 
     #[test]
     fn a_custom_parameter_answers_only_once_it_is_searchable() {
         let registry = Registry::new();
         registry.register(custom("risk-band", "Patient", ParamStatus::Supported)).unwrap();
-        let patient = Some("Patient".parse().unwrap());
+        let patient = Some(kind("Patient"));
         assert!(registry.lookup(patient, "risk-band").is_some());
         assert!(matches!(
             registry.searchable(patient, "risk-band").unwrap_err(),
@@ -921,9 +1127,10 @@ mod tests {
             url: Some(entry.url.clone()),
         });
         registry.register(entry).unwrap();
-        let found = registry.references("Patient".parse().unwrap());
+        let found = registry.references(kind("Patient"));
         assert!(found.iter().any(|def| def.name == "care-team"));
-        assert_eq!(found.first().map(|def| def.paths().len()), Some(1));
+        let built_in = references_in(FhirVersion::R4, kind("Patient")).len();
+        assert_eq!(found.len(), built_in + 1);
     }
 }
 

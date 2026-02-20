@@ -81,8 +81,10 @@ impl Modifier {
             Modifier::Exact => exact(value, element),
             Modifier::Contains => contains(value, element),
             Modifier::Text => narrative(value, element),
-            Modifier::Below => hierarchy(value, element, true),
-            Modifier::Above => hierarchy(value, element, false),
+            Modifier::Below | Modifier::Above => match value {
+                SearchValue::Token(_) => value.matches(element),
+                _ => hierarchy(value, element, matches!(self, Modifier::Below)),
+            },
             Modifier::Type(resource_type) => typed_reference(value, resource_type, element),
             Modifier::Identifier => identifier(value, element),
             Modifier::OfType => value.matches(element),
@@ -186,10 +188,15 @@ fn descends(child: &str, ancestor: &str) -> bool {
     if child == ancestor {
         return true;
     }
+    if child.starts_with(URN) || ancestor.starts_with(URN) {
+        return false;
+    }
     child
         .strip_prefix(ancestor)
         .is_some_and(|rest| rest.starts_with('.') || rest.starts_with('/'))
 }
+
+const URN: &str = "urn:";
 
 fn typed_reference(value: &SearchValue, resource_type: &ResourceType, element: &Value) -> bool {
     let Some(wanted) = wanted(value) else { return false };
@@ -229,6 +236,18 @@ pub fn value_of(
             other => Err(Error::InvalidParameter(format!(":missing {other:?}"))),
         },
         Modifier::OfType => SearchValue::of_type(raw),
+        Modifier::Type(resource_type) => {
+            if let Some((head, _)) = raw.rsplit_once('/') {
+                let named = head.rsplit('/').next().unwrap_or(head);
+                if named != resource_type.as_str() {
+                    return Err(Error::UnsupportedParameter(format!(
+                        "modifier :{} contradicts {raw:?}",
+                        resource_type.as_str()
+                    )));
+                }
+            }
+            SearchValue::parse(declared, raw)
+        }
         other => SearchValue::parse(other.value_type(declared), raw),
     }
 }
@@ -236,23 +255,187 @@ pub fn value_of(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
-    fn a_modifier_is_read_from_its_spelling() {
-        assert_eq!("missing".parse::<Modifier>().unwrap(), Modifier::Missing);
-        assert_eq!("not-in".parse::<Modifier>().unwrap(), Modifier::NotIn);
+    fn every_modifier_the_value_set_publishes_is_read_from_its_spelling() {
+        for (spelling, wanted) in [
+            ("missing", Modifier::Missing),
+            ("exact", Modifier::Exact),
+            ("contains", Modifier::Contains),
+            ("not", Modifier::Not),
+            ("text", Modifier::Text),
+            ("in", Modifier::In),
+            ("not-in", Modifier::NotIn),
+            ("below", Modifier::Below),
+            ("above", Modifier::Above),
+            ("identifier", Modifier::Identifier),
+            ("of-type", Modifier::OfType),
+        ] {
+            assert_eq!(spelling.parse::<Modifier>().unwrap(), wanted, "{spelling}");
+        }
         assert_eq!(
             "Patient".parse::<Modifier>().unwrap(),
             Modifier::Type("Patient".parse().unwrap())
         );
         assert!("nonesuch".parse::<Modifier>().is_err());
+        assert!("Below".parse::<Modifier>().is_err());
+    }
+
+    #[test]
+    fn a_modifier_applies_to_the_types_the_specification_gives_it() {
+        let published: &[(Modifier, &[ValueType])] = &[
+            (
+                Modifier::Missing,
+                &[
+                    ValueType::Number,
+                    ValueType::Date,
+                    ValueType::String,
+                    ValueType::Token,
+                    ValueType::Quantity,
+                    ValueType::Reference,
+                    ValueType::Composite,
+                    ValueType::Uri,
+                ],
+            ),
+            (Modifier::Exact, &[ValueType::String]),
+            (Modifier::Contains, &[ValueType::String]),
+            (Modifier::Not, &[ValueType::Token]),
+            (Modifier::Text, &[ValueType::Token]),
+            (Modifier::In, &[ValueType::Token]),
+            (Modifier::NotIn, &[ValueType::Token]),
+            (Modifier::OfType, &[ValueType::Token]),
+            (
+                Modifier::Below,
+                &[ValueType::Token, ValueType::Uri, ValueType::Reference],
+            ),
+            (
+                Modifier::Above,
+                &[ValueType::Token, ValueType::Uri, ValueType::Reference],
+            ),
+            (Modifier::Identifier, &[ValueType::Reference]),
+        ];
+        let every = [
+            ValueType::Number,
+            ValueType::Date,
+            ValueType::String,
+            ValueType::Token,
+            ValueType::Quantity,
+            ValueType::Reference,
+            ValueType::Composite,
+            ValueType::Uri,
+        ];
+        for (modifier, allowed) in published {
+            for value_type in every {
+                assert_eq!(
+                    modifier.applies_to(value_type),
+                    allowed.contains(&value_type),
+                    "{modifier:?} on {value_type:?}"
+                );
+            }
+        }
     }
 
     #[test]
     fn a_value_the_modifier_cannot_carry_is_rejected() {
-        assert!(value_of(&Modifier::Missing, ValueType::Token, "yes").is_err());
-        assert!(value_of(&Modifier::Exact, ValueType::Token, "a").is_err());
+        assert!(matches!(
+            value_of(&Modifier::Missing, ValueType::Token, "yes").unwrap_err(),
+            Error::InvalidParameter(_)
+        ));
+        assert!(matches!(
+            value_of(&Modifier::Exact, ValueType::Token, "a").unwrap_err(),
+            Error::UnsupportedParameter(_)
+        ));
         assert!(value_of(&Modifier::In, ValueType::Token, "http://x").is_ok());
+        assert_eq!(
+            value_of(&Modifier::In, ValueType::Token, "http://x").unwrap(),
+            SearchValue::Uri("http://x".to_owned())
+        );
+        assert_eq!(
+            value_of(&Modifier::Text, ValueType::Token, "fever").unwrap(),
+            SearchValue::Text("fever".to_owned())
+        );
+        assert_eq!(
+            value_of(&Modifier::Identifier, ValueType::Reference, "urn:mrn|42").unwrap(),
+            SearchValue::parse(ValueType::Token, "urn:mrn|42").unwrap()
+        );
+    }
+
+    #[test]
+    fn a_reference_that_already_names_a_type_refuses_a_type_modifier_naming_another() {
+        let patient = Modifier::Type("Patient".parse().unwrap());
+        assert!(matches!(
+            value_of(&patient, ValueType::Reference, "Group/g-1").unwrap_err(),
+            Error::UnsupportedParameter(_)
+        ));
+        assert!(matches!(
+            value_of(&patient, ValueType::Reference, "http://x/fhir/Group/g-1").unwrap_err(),
+            Error::UnsupportedParameter(_)
+        ));
+        assert_eq!(
+            value_of(&patient, ValueType::Reference, "Patient/p-1").unwrap(),
+            SearchValue::Reference("Patient/p-1".to_owned())
+        );
+        assert_eq!(
+            value_of(&patient, ValueType::Reference, "p-1").unwrap(),
+            SearchValue::Reference("p-1".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_type_modifier_admits_only_a_reference_of_that_type() {
+        let patient = Modifier::Type("Patient".parse().unwrap());
+        let group = Modifier::Type("Group".parse().unwrap());
+        let value = SearchValue::Reference("p-9".to_owned());
+        let element = json!({"reference": "Patient/p-9"});
+        assert!(patient.accepts(&value, &element));
+        assert!(!group.accepts(&value, &element));
+        assert!(!patient.accepts(&value, &json!({"reference": "Patient/p-8"})));
+    }
+
+    #[test]
+    fn a_subsumption_modifier_never_reads_a_hierarchy_into_the_spelling_of_a_code() {
+        let below = Modifier::Below;
+        let above = Modifier::Above;
+        let code = SearchValue::parse(ValueType::Token, "a.b").unwrap();
+        let element = json!({"coding": [{"code": "a.b.c"}]});
+        assert!(!below.accepts(&code, &element), "a code is not a dotted path");
+        assert!(!above.accepts(&SearchValue::parse(ValueType::Token, "a.b.c.d").unwrap(), &element));
+        let itself = SearchValue::parse(ValueType::Token, "a.b.c").unwrap();
+        assert!(below.accepts(&itself, &element));
+        assert!(above.accepts(&itself, &element));
+        let qualified = SearchValue::parse(ValueType::Token, "urn:other|a.b.c").unwrap();
+        assert!(!below.accepts(&qualified, &json!({"coding": [{"system": "urn:s", "code": "a.b.c"}]})));
+    }
+
+    #[test]
+    fn a_subsumption_modifier_on_a_uri_walks_the_address_it_is_a_prefix_of() {
+        let below = Modifier::Below;
+        let above = Modifier::Above;
+        let stored = json!("http://x/base/part");
+        let base = SearchValue::parse(ValueType::Uri, "http://x/base").unwrap();
+        assert!(below.accepts(&base, &stored));
+        assert!(!above.accepts(&base, &stored));
+        let deeper = SearchValue::parse(ValueType::Uri, "http://x/base/part/deep").unwrap();
+        assert!(above.accepts(&deeper, &stored));
+        assert!(!below.accepts(&deeper, &stored));
+        let sibling = SearchValue::parse(ValueType::Uri, "http://x/bas").unwrap();
+        assert!(!below.accepts(&sibling, &stored));
+        let urn = json!("urn:oid:1.2.3.4");
+        let stem = SearchValue::parse(ValueType::Uri, "urn:oid:1.2").unwrap();
+        assert!(!below.accepts(&stem, &urn), "a urn carries no hierarchy");
+        let same = SearchValue::parse(ValueType::Uri, "urn:oid:1.2.3.4").unwrap();
+        assert!(below.accepts(&same, &urn));
+    }
+
+    #[test]
+    fn a_set_membership_modifier_is_answered_by_an_expansion_and_never_by_the_address() {
+        let address = value_of(&Modifier::In, ValueType::Token, "http://x/vs").unwrap();
+        let coded = json!({"coding": [{"system": "urn:s", "code": "a"}]});
+        assert!(!Modifier::In.accepts(&address, &coded));
+        assert!(!Modifier::NotIn.accepts(&address, &coded));
+        assert!(!Modifier::In.is_exclusive());
+        assert!(Modifier::NotIn.is_exclusive());
     }
 
     #[test]
@@ -261,7 +444,7 @@ mod tests {
             SearchValue::parse(ValueType::Token, "a").unwrap(),
             SearchValue::parse(ValueType::Token, "b").unwrap(),
         );
-        let element = serde_json::json!("a");
+        let element = json!("a");
         for modifier in [
             Modifier::Exact,
             Modifier::Contains,

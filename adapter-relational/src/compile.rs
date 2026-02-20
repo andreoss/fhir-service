@@ -132,7 +132,7 @@ impl<'a> Compiler<'a> {
         match comparator {
             Comparator::Eq | Comparator::Ne => {
                 let span = self.place(Bind::Real(tolerance));
-                format!("abs({column} - {bound}) < {span}")
+                format!("abs({column} - {bound}) <= {span}")
             }
             Comparator::Gt | Comparator::Sa => format!("{column} > {bound}"),
             Comparator::Lt | Comparator::Eb => format!("{column} < {bound}"),
@@ -632,12 +632,11 @@ impl<'a> Compiler<'a> {
         for member in definition.members {
             let kind = self.text(member.resource_type);
             let owner = format!("{outer}.resource_type = {kind}");
-            if member.params.is_empty() {
-                let id = self.text(compartment.id.as_str());
-                parts.push(format!("({owner} and {outer}.resource_id = {id})"));
-                continue;
-            }
             let mut links = Vec::new();
+            if member.root {
+                let id = self.text(compartment.id.as_str());
+                links.push(format!("{outer}.resource_id = {id}"));
+            }
             for name in member.params {
                 let full = root.clone();
                 let bare = compartment.id.as_str().to_owned();

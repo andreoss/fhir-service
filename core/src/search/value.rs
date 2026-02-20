@@ -286,13 +286,20 @@ fn number_matches(comparator: Comparator, value: f64, tolerance: f64, element: &
 
 fn compare_number(comparator: Comparator, value: f64, tolerance: f64, stored: f64) -> bool {
     match comparator {
-        Comparator::Eq | Comparator::Ne => (stored - value).abs() < tolerance,
+        Comparator::Eq | Comparator::Ne => (stored - value).abs() <= widened(value, tolerance),
         Comparator::Gt | Comparator::Sa => stored > value,
         Comparator::Lt | Comparator::Eb => stored < value,
         Comparator::Ge => stored >= value,
         Comparator::Le => stored <= value,
-        Comparator::Ap => (stored - value).abs() <= value.abs() * 0.1 + tolerance,
+        Comparator::Ap => {
+            let reach = value.abs() * 0.1 + tolerance;
+            (stored - value).abs() <= widened(value, reach)
+        }
     }
+}
+
+fn widened(value: f64, tolerance: f64) -> f64 {
+    tolerance + value.abs().max(tolerance) * f64::EPSILON * 4.0
 }
 
 fn text_matches(wanted: &str, element: &Value) -> bool {
@@ -474,10 +481,49 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn a_prefix_is_split_off_and_a_bare_value_is_equality() {
-        assert_eq!(Comparator::split("ge2026"), (Comparator::Ge, "2026"));
-        assert_eq!(Comparator::split("2026"), (Comparator::Eq, "2026"));
-        assert_eq!(Comparator::split("eq"), (Comparator::Eq, "eq"));
+    fn a_prefix_is_carried_only_by_the_types_that_publish_one() {
+        for (raw, comparator) in [
+            ("eq2026", Comparator::Eq),
+            ("ne2026", Comparator::Ne),
+            ("gt2026", Comparator::Gt),
+            ("lt2026", Comparator::Lt),
+            ("ge2026", Comparator::Ge),
+            ("le2026", Comparator::Le),
+            ("sa2026", Comparator::Sa),
+            ("eb2026", Comparator::Eb),
+            ("ap2026", Comparator::Ap),
+            ("2026", Comparator::Eq),
+        ] {
+            let held = SearchValue::parse(ValueType::Date, raw).expect("the date parses");
+            assert!(
+                matches!(held, SearchValue::Date { comparator: found, .. } if found == comparator),
+                "{raw}"
+            );
+        }
+        let number = SearchValue::parse(ValueType::Number, "ge4.5").unwrap();
+        assert!(matches!(number, SearchValue::Number { comparator: Comparator::Ge, .. }));
+        let quantity = SearchValue::parse(ValueType::Quantity, "lt5|urn:u|kg").unwrap();
+        let SearchValue::Quantity { number, .. } = quantity else {
+            panic!("a quantity carries a number")
+        };
+        assert!(matches!(*number, SearchValue::Number { comparator: Comparator::Lt, .. }));
+
+        assert_eq!(
+            SearchValue::parse(ValueType::String, "gtAnn").unwrap(),
+            SearchValue::Text("gtAnn".to_owned())
+        );
+        assert_eq!(
+            SearchValue::parse(ValueType::Uri, "eqhttp://x/y").unwrap(),
+            SearchValue::Uri("eqhttp://x/y".to_owned())
+        );
+        assert_eq!(
+            SearchValue::parse(ValueType::Reference, "sa-1").unwrap(),
+            SearchValue::Reference("sa-1".to_owned())
+        );
+        let token = SearchValue::parse(ValueType::Token, "lead").unwrap();
+        assert_eq!(token, SearchValue::Token(parse_token("lead")));
+        assert!(token.matches(&json!("lead")));
+        assert!(!token.matches(&json!("ad")));
     }
 
     #[test]
@@ -519,6 +565,43 @@ mod tests {
     }
 
     #[test]
+    fn a_number_selects_the_closed_range_its_precision_denotes() {
+        let held = SearchValue::parse(ValueType::Number, "0.4").expect("a number parses");
+        for inside in [0.35, 0.36, 0.4, 0.42, 0.44, 0.45] {
+            assert!(held.matches(&json!(inside)), "{inside}");
+        }
+        for outside in [0.34, 0.46, 0.5] {
+            assert!(!held.matches(&json!(outside)), "{outside}");
+        }
+        let exact = SearchValue::parse(ValueType::Number, "100").expect("a number parses");
+        for inside in [99.5, 100.0, 100.5] {
+            assert!(exact.matches(&json!(inside)), "{inside}");
+        }
+        assert!(!exact.matches(&json!(100.6)));
+        let negated = SearchValue::parse(ValueType::Number, "ne0.4").expect("a number parses");
+        assert!(negated.is_negated());
+        assert!(negated.matches(&json!(0.45)));
+        assert!(!negated.matches(&json!(0.46)));
+    }
+
+    #[test]
+    fn an_ordering_comparator_on_a_number_is_the_bare_relation() {
+        for (raw, stored, wanted) in [
+            ("gt0.4", 0.45, true),
+            ("gt0.4", 0.4, false),
+            ("ge0.4", 0.4, true),
+            ("lt0.4", 0.35, true),
+            ("lt0.4", 0.4, false),
+            ("le0.4", 0.4, true),
+            ("sa0.4", 0.45, true),
+            ("eb0.4", 0.35, true),
+        ] {
+            let held = SearchValue::parse(ValueType::Number, raw).expect("the number parses");
+            assert_eq!(held.matches(&json!(stored)), wanted, "{raw} against {stored}");
+        }
+    }
+
+    #[test]
     fn a_malformed_date_is_an_invalid_parameter() {
         let error = SearchValue::parse(ValueType::Date, "whenever").unwrap_err();
         assert!(matches!(error, Error::InvalidParameter(_)));
@@ -540,6 +623,26 @@ mod tests {
     }
 
     #[test]
+    fn a_token_matches_the_way_its_system_was_supplied() {
+        let with = json!({"system": "urn:s", "code": "c"});
+        let without = json!({"code": "c"});
+        for (raw, wanted, sample) in [
+            ("c", true, &with),
+            ("c", true, &without),
+            ("urn:s|c", true, &with),
+            ("urn:s|c", false, &without),
+            ("|c", false, &with),
+            ("|c", true, &without),
+            ("urn:s|", true, &with),
+            ("urn:s|", false, &without),
+            ("urn:other|c", false, &with),
+        ] {
+            let token = parse_token(raw);
+            assert_eq!(token_matches(&token, sample), wanted, "{raw} against {sample}");
+        }
+    }
+
+    #[test]
     fn a_token_reaches_into_a_codeable_concept() {
         let token = parse_token("urn:s|c");
         let concept = json!({"coding": [{"system": "urn:s", "code": "c"}]});
@@ -547,6 +650,11 @@ mod tests {
         assert!(!token_matches(&parse_token("urn:s|d"), &concept));
         assert!(!token_matches(&token, &Value::Null));
         assert!(token_matches(&parse_token("7"), &json!(7)));
+        assert!(token_matches(&parse_token("true"), &json!(true)));
+        assert!(token_matches(
+            &parse_token("urn:mrn|42"),
+            &json!({"system": "urn:mrn", "value": "42"})
+        ));
     }
 
     #[test]
@@ -582,7 +690,22 @@ mod tests {
         assert!(value.matches(&json!(["http://x/y"])));
         assert!(value.matches(&json!({"reference": "http://x/y"})));
         assert!(!value.matches(&json!("http://x/z")));
+        assert!(!value.matches(&json!("http://x/y/z")));
+        assert!(!value.matches(&json!("HTTP://X/Y")));
         assert!(!value.matches(&json!(4)));
         assert!(!value.is_negated());
+    }
+
+    #[test]
+    fn a_reference_without_a_type_matches_the_id_alone() {
+        let stored = json!({"reference": "Patient/p-1"});
+        assert!(SearchValue::parse(ValueType::Reference, "Patient/p-1")
+            .unwrap()
+            .matches(&stored));
+        assert!(SearchValue::parse(ValueType::Reference, "p-1").unwrap().matches(&stored));
+        assert!(!SearchValue::parse(ValueType::Reference, "Group/p-1")
+            .unwrap()
+            .matches(&stored));
+        assert!(!SearchValue::parse(ValueType::Reference, "p-2").unwrap().matches(&stored));
     }
 }

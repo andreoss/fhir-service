@@ -586,7 +586,7 @@ mod tests {
 
     #[test]
     fn an_unimplemented_parameter_is_rejected() {
-        for raw in ["nonesuch=1", "_include=Patient:link", "subject.name=Ann"] {
+        for raw in ["nonesuch=1", "_include=Patient:nonesuch", "subject.name=Ann"] {
             let error = parse_query(&Registry::new(), patient(), Some(raw)).unwrap_err();
             assert!(matches!(error, Error::UnsupportedParameter(_)), "{raw} gave {error:?}");
         }

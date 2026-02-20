@@ -212,8 +212,8 @@ impl Compiler {
     ) -> Bson {
         match comparator {
             Comparator::Eq | Comparator::Ne => all(vec![
-                Bson::Document(doc! {"$gt": [measured.clone(), value - tolerance]}),
-                Bson::Document(doc! {"$lt": [measured, value + tolerance]}),
+                Bson::Document(doc! {"$gte": [measured.clone(), value - tolerance]}),
+                Bson::Document(doc! {"$lte": [measured, value + tolerance]}),
             ]),
             Comparator::Gt | Comparator::Sa => Bson::Document(doc! {"$gt": [measured, value]}),
             Comparator::Lt | Comparator::Eb => Bson::Document(doc! {"$lt": [measured, value]}),
@@ -639,17 +639,13 @@ impl Compiler {
                 Bson::String("$resource_type".to_owned()),
                 Bson::String(member.resource_type.to_owned()),
             );
-            if member.params.is_empty() {
-                parts.push(all(vec![
-                    owner,
-                    equals(
-                        Bson::String("$resource_id".to_owned()),
-                        Bson::String(compartment.id.as_str().to_owned()),
-                    ),
-                ]));
-                continue;
-            }
             let mut links = Vec::new();
+            if member.root {
+                links.push(equals(
+                    Bson::String("$resource_id".to_owned()),
+                    Bson::String(compartment.id.as_str().to_owned()),
+                ));
+            }
             for name in member.params {
                 let full = root.clone();
                 let bare = compartment.id.as_str().to_owned();

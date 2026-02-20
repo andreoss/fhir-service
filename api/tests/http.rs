@@ -1122,7 +1122,12 @@ async fn a_deleted_resource_is_invisible_to_search() {
 #[tokio::test]
 async fn an_unsupported_search_parameter_is_rejected() {
     let app = seeded().await;
-    for uri in ["/Patient?nonesuch=1", "/Patient?_include=Patient:link", "/Patient?_text=x", "/Patient?_type=Patient"] {
+    for uri in [
+        "/Patient?nonesuch=1",
+        "/Patient?_include=Patient:nonesuch",
+        "/Patient?_text=x",
+        "/Patient?_type=Patient",
+    ] {
         let reply = request(&app, "GET", uri, &[], &[]).await;
         assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{uri}");
         let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
@@ -1385,14 +1390,32 @@ async fn code_set_membership_is_resolved_by_the_store() {
 }
 
 #[tokio::test]
-async fn hierarchy_modifiers_walk_a_code() {
+async fn a_subsumption_modifier_needs_a_code_system_that_defines_the_code() {
     let app = qualified().await;
-    assert_eq!(found(&app, "/Observation?code:below=vital").await, vec!["ob-m1".to_owned()]);
-    assert!(found(&app, "/Observation?code:below=other").await.is_empty());
+    let system = br#"{"resourceType":"CodeSystem","id":"cs-m1","url":"urn:s","status":"active","content":"complete","hierarchyMeaning":"is-a","concept":[{"code":"vital","concept":[{"code":"vital.temperature"}]}]}"#;
+    request(&app, "POST", "/CodeSystem", &[], system).await;
     assert_eq!(
-        found(&app, "/Observation?code:above=vital.temperature.core").await,
+        found(&app, "/Observation?code:below=urn:s%7Cvital").await,
         vec!["ob-m1".to_owned()]
     );
+    assert_eq!(
+        found(&app, "/Observation?code:above=urn:s%7Cvital.temperature").await,
+        vec!["ob-m1".to_owned()]
+    );
+    assert_eq!(
+        found(&app, "/Observation?code:below=vital").await,
+        vec!["ob-m1".to_owned()],
+        "a code with no system is resolved against every system the server holds"
+    );
+    for uri in [
+        "/Observation?code:below=urn:s%7Cnonesuch",
+        "/Observation?code:above=vital.temperature.core",
+    ] {
+        let reply = request(&app, "GET", uri, &[], &[]).await;
+        assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{uri} gave {}", reply.body);
+        let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
+        assert_eq!(value["issue"][0]["code"], "not-supported", "{uri}");
+    }
 }
 
 #[tokio::test]
@@ -1604,16 +1627,32 @@ async fn a_wildcard_compartment_gathers_every_type_it_covers() {
 }
 
 #[tokio::test]
-async fn an_organization_compartment_gathers_by_its_own_references() {
+async fn a_compartment_gathers_by_the_references_its_definition_names() {
     let app = qualified().await;
-    let value = page(&app, "/Organization/org-m1/Patient").await;
-    assert_eq!(by_mode(&value, "match"), vec!["pt-m1".to_owned()]);
+    let device = br#"{"resourceType":"Device","id":"dev-m1","status":"active"}"#;
+    request(&app, "POST", "/Device", &[], device).await;
+    let reading = br#"{"resourceType":"Observation","id":"ob-m3","status":"final","code":{"coding":[{"system":"urn:s","code":"survey"}]},"subject":{"reference":"Patient/pt-m1"},"device":{"reference":"Device/dev-m1"},"performer":[{"reference":"Patient/pt-m2"}]}"#;
+    request(&app, "POST", "/Observation", &[], reading).await;
+
+    let by_device = page(&app, "/Device/dev-m1/Observation").await;
+    assert_eq!(by_mode(&by_device, "match"), vec!["ob-m3".to_owned()]);
+
+    let by_performer = page(&app, "/Patient/pt-m2/Observation").await;
+    assert_eq!(
+        by_mode(&by_performer, "match"),
+        vec!["ob-m3".to_owned()],
+        "a patient who is only the performer is still in their own compartment"
+    );
 }
 
 #[tokio::test]
 async fn a_compartment_the_server_does_not_define_is_rejected() {
     let app = qualified().await;
-    for uri in ["/Observation/ob-m1/Patient", "/Patient/pt-m1/Organization"] {
+    for uri in [
+        "/Observation/ob-m1/Patient",
+        "/Patient/pt-m1/Organization",
+        "/Organization/org-m1/Patient",
+    ] {
         let reply = request(&app, "GET", uri, &[], &[]).await;
         assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{uri} gave {}", reply.body);
         let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
