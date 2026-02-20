@@ -83,7 +83,10 @@ async fn convert_data_persists_nothing() {
         "Patient",
         "PID|1||pt-2||Cyd",
     );
-    assert_eq!(request(&app, "POST", "/$convert-data", &body).await.status, StatusCode::OK);
+    assert_eq!(
+        request(&app, "POST", "/$convert-data", &body).await.status,
+        StatusCode::OK
+    );
     let read = request(&app, "GET", "/Patient/pt-2", &[]).await;
     assert_eq!(read.status, StatusCode::NOT_FOUND);
     let searched = request(&app, "GET", "/Patient", &[]).await;
@@ -115,7 +118,9 @@ async fn an_unknown_template_and_input_form_are_refused() {
     let app = service();
     let unknown = conversion(fhir_core::convert::DEFAULT_COLLECTION, "Nonesuch", "PID|1");
     assert_eq!(
-        request(&app, "POST", "/$convert-data", &unknown).await.status,
+        request(&app, "POST", "/$convert-data", &unknown)
+            .await
+            .status,
         StatusCode::BAD_REQUEST
     );
     let form = serde_json::to_vec(&serde_json::json!({
@@ -148,8 +153,14 @@ async fn validate_reports_a_submitted_resource_without_storing_it() {
     let value = json(&reply);
     assert_eq!(value["resourceType"], "OperationOutcome");
     assert_eq!(value["issue"][0]["severity"], "information");
-    assert_eq!(request(&app, "GET", "/Patient/pt-v1", &[]).await.status, StatusCode::NOT_FOUND);
-    assert_eq!(json(&request(&app, "GET", "/Patient", &[]).await)["total"], 0);
+    assert_eq!(
+        request(&app, "GET", "/Patient/pt-v1", &[]).await.status,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        json(&request(&app, "GET", "/Patient", &[]).await)["total"],
+        0
+    );
 }
 
 #[tokio::test]
@@ -175,10 +186,20 @@ async fn validate_reads_a_stored_resource_and_leaves_its_version() {
 #[tokio::test]
 async fn validate_checks_a_profile_and_a_narrative() {
     let app = service();
-    let body = br#"{"resourceType":"Patient","id":"pt-v3","text":{"status":"invented","div":"plain"}}"#;
-    let reply = request(&app, "POST", "/Patient/$validate?profile=http://x/one", body).await;
+    let body =
+        br#"{"resourceType":"Patient","id":"pt-v3","text":{"status":"invented","div":"plain"}}"#;
+    let reply = request(
+        &app,
+        "POST",
+        "/Patient/$validate?profile=http://x/one",
+        body,
+    )
+    .await;
     assert_eq!(reply.status, StatusCode::OK);
-    let issues = json(&reply)["issue"].as_array().cloned().unwrap_or_default();
+    let issues = json(&reply)["issue"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
     assert!(issues.len() >= 3, "{}", reply.body);
     assert!(issues.iter().all(|issue| issue["severity"] == "error"));
 }
@@ -258,8 +279,16 @@ fn ids(value: &Value) -> Vec<String> {
 #[tokio::test]
 async fn everything_gathers_the_patient_and_its_compartment() {
     let app = service();
-    create(&app, serde_json::json!({"resourceType": "Patient", "id": "pt-e1"})).await;
-    create(&app, serde_json::json!({"resourceType": "Patient", "id": "pt-e2"})).await;
+    create(
+        &app,
+        serde_json::json!({"resourceType": "Patient", "id": "pt-e1"}),
+    )
+    .await;
+    create(
+        &app,
+        serde_json::json!({"resourceType": "Patient", "id": "pt-e2"}),
+    )
+    .await;
     create(&app, observation("ob-e1", "pt-e1")).await;
     create(&app, observation("ob-e2", "pt-e2")).await;
     let reply = request(&app, "GET", "/Patient/pt-e1/$everything", &[]).await;
@@ -276,7 +305,11 @@ async fn everything_gathers_the_patient_and_its_compartment() {
 #[tokio::test]
 async fn everything_answers_the_same_over_post() {
     let app = service();
-    create(&app, serde_json::json!({"resourceType": "Patient", "id": "pt-e3"})).await;
+    create(
+        &app,
+        serde_json::json!({"resourceType": "Patient", "id": "pt-e3"}),
+    )
+    .await;
     let got = request(&app, "GET", "/Patient/pt-e3/$everything", &[]).await;
     let posted = request(&app, "POST", "/Patient/pt-e3/$everything", &[]).await;
     assert_eq!(posted.status, StatusCode::OK);
@@ -286,9 +319,19 @@ async fn everything_answers_the_same_over_post() {
 #[tokio::test]
 async fn everything_narrows_by_type_and_time() {
     let app = stepping_service();
-    create(&app, serde_json::json!({"resourceType": "Patient", "id": "pt-e4"})).await;
+    create(
+        &app,
+        serde_json::json!({"resourceType": "Patient", "id": "pt-e4"}),
+    )
+    .await;
     create(&app, observation("ob-e4", "pt-e4")).await;
-    let typed = request(&app, "GET", "/Patient/pt-e4/$everything?_type=Observation", &[]).await;
+    let typed = request(
+        &app,
+        "GET",
+        "/Patient/pt-e4/$everything?_type=Observation",
+        &[],
+    )
+    .await;
     assert_eq!(ids(&json(&typed)), vec!["ob-e4".to_owned()]);
     let since = request(
         &app,
@@ -311,7 +354,11 @@ async fn everything_narrows_by_type_and_time() {
 #[tokio::test]
 async fn everything_pages_through_search_continuation_tokens() {
     let app = service();
-    create(&app, serde_json::json!({"resourceType": "Patient", "id": "pt-e5"})).await;
+    create(
+        &app,
+        serde_json::json!({"resourceType": "Patient", "id": "pt-e5"}),
+    )
+    .await;
     create(&app, observation("ob-e5", "pt-e5")).await;
     let first = request(&app, "GET", "/Patient/pt-e5/$everything?_count=1", &[]).await;
     let value = json(&first);
@@ -336,10 +383,20 @@ async fn everything_refuses_an_unknown_patient_and_parameter() {
     let app = service();
     let missing = request(&app, "GET", "/Patient/nonesuch/$everything", &[]).await;
     assert_eq!(missing.status, StatusCode::NOT_FOUND);
-    create(&app, serde_json::json!({"resourceType": "Patient", "id": "pt-e6"})).await;
+    create(
+        &app,
+        serde_json::json!({"resourceType": "Patient", "id": "pt-e6"}),
+    )
+    .await;
     let unknown = request(&app, "GET", "/Patient/pt-e6/$everything?nonesuch=1", &[]).await;
     assert_eq!(unknown.status, StatusCode::BAD_REQUEST);
-    let typed = request(&app, "GET", "/Patient/pt-e6/$everything?_type=Medication", &[]).await;
+    let typed = request(
+        &app,
+        "GET",
+        "/Patient/pt-e6/$everything?_type=Medication",
+        &[],
+    )
+    .await;
     assert_eq!(typed.status, StatusCode::BAD_REQUEST);
 }
 
@@ -455,7 +512,10 @@ async fn request_with(
     headers: &[(&str, &str)],
     body: &[u8],
 ) -> Reply {
-    let mut builder = Request::builder().method(method).uri(uri).header("host", "localhost");
+    let mut builder = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("host", "localhost");
     for (name, value) in headers {
         builder = builder.header(*name, *value);
     }
@@ -488,7 +548,11 @@ fn modes(value: &Value) -> Vec<String> {
 #[tokio::test]
 async fn includes_answers_with_the_related_resources_only() {
     let app = service();
-    create(&app, serde_json::json!({"resourceType": "Patient", "id": "pt-i1"})).await;
+    create(
+        &app,
+        serde_json::json!({"resourceType": "Patient", "id": "pt-i1"}),
+    )
+    .await;
     create(&app, observation("ob-i1", "pt-i1")).await;
     let reply = request(
         &app,
@@ -508,8 +572,16 @@ async fn includes_answers_with_the_related_resources_only() {
 #[tokio::test]
 async fn includes_pages_through_a_continuation_token() {
     let app = service();
-    create(&app, serde_json::json!({"resourceType": "Patient", "id": "pt-i2"})).await;
-    create(&app, serde_json::json!({"resourceType": "Patient", "id": "pt-i3"})).await;
+    create(
+        &app,
+        serde_json::json!({"resourceType": "Patient", "id": "pt-i2"}),
+    )
+    .await;
+    create(
+        &app,
+        serde_json::json!({"resourceType": "Patient", "id": "pt-i3"}),
+    )
+    .await;
     create(&app, observation("ob-i2", "pt-i2")).await;
     create(&app, observation("ob-i3", "pt-i3")).await;
     let first = request(
@@ -543,7 +615,11 @@ async fn includes_pages_through_a_continuation_token() {
 #[tokio::test]
 async fn includes_stays_inside_the_grant() {
     let app = service();
-    create(&app, serde_json::json!({"resourceType": "Patient", "id": "pt-i4"})).await;
+    create(
+        &app,
+        serde_json::json!({"resourceType": "Patient", "id": "pt-i4"}),
+    )
+    .await;
     create(&app, observation("ob-i4", "pt-i4")).await;
     let reply = request_with(
         &app,
@@ -599,7 +675,11 @@ fn docref_body(pairs: &[(&str, &str)]) -> Vec<u8> {
 #[tokio::test]
 async fn docref_answers_the_documents_of_one_patient() {
     let app = service();
-    create(&app, serde_json::json!({"resourceType": "Patient", "id": "pt-d1"})).await;
+    create(
+        &app,
+        serde_json::json!({"resourceType": "Patient", "id": "pt-d1"}),
+    )
+    .await;
     create(&app, document("dr-d1", "pt-d1", "2026-03-01", "note")).await;
     create(&app, document("dr-d2", "pt-d2", "2026-03-01", "note")).await;
     let reply = request(&app, "GET", "/DocumentReference/$docref?patient=pt-d1", &[]).await;
@@ -612,7 +692,11 @@ async fn docref_answers_the_documents_of_one_patient() {
 #[tokio::test]
 async fn docref_answers_the_same_over_get_and_post() {
     let app = service();
-    create(&app, serde_json::json!({"resourceType": "Patient", "id": "pt-d3"})).await;
+    create(
+        &app,
+        serde_json::json!({"resourceType": "Patient", "id": "pt-d3"}),
+    )
+    .await;
     create(&app, document("dr-d3", "pt-d3", "2026-03-01", "note")).await;
     create(&app, document("dr-d4", "pt-d3", "2026-06-01", "summary")).await;
     let uri = "/DocumentReference/$docref?patient=pt-d3&start=2026-05-01&type=urn:doc|summary";
@@ -639,20 +723,39 @@ async fn docref_answers_the_same_over_get_and_post() {
 #[tokio::test]
 async fn docref_narrows_by_the_end_of_the_window() {
     let app = service();
-    create(&app, serde_json::json!({"resourceType": "Patient", "id": "pt-d5"})).await;
+    create(
+        &app,
+        serde_json::json!({"resourceType": "Patient", "id": "pt-d5"}),
+    )
+    .await;
     create(&app, document("dr-d5", "pt-d5", "2026-03-01", "note")).await;
     create(&app, document("dr-d6", "pt-d5", "2026-06-01", "note")).await;
     let uri = "/DocumentReference/$docref?patient=Patient/pt-d5&end=2026-04-01";
-    assert_eq!(ids(&json(&request(&app, "GET", uri, &[]).await)), vec!["dr-d5".to_owned()]);
+    assert_eq!(
+        ids(&json(&request(&app, "GET", uri, &[]).await)),
+        vec!["dr-d5".to_owned()]
+    );
 }
 
 #[tokio::test]
 async fn docref_pages_like_a_search() {
     let app = service();
-    create(&app, serde_json::json!({"resourceType": "Patient", "id": "pt-d7"})).await;
+    create(
+        &app,
+        serde_json::json!({"resourceType": "Patient", "id": "pt-d7"}),
+    )
+    .await;
     create(&app, document("dr-d7", "pt-d7", "2026-03-01", "note")).await;
     create(&app, document("dr-d8", "pt-d7", "2026-06-01", "note")).await;
-    let first = json(&request(&app, "GET", "/DocumentReference/$docref?patient=pt-d7&_count=1", &[]).await);
+    let first = json(
+        &request(
+            &app,
+            "GET",
+            "/DocumentReference/$docref?patient=pt-d7&_count=1",
+            &[],
+        )
+        .await,
+    );
     assert_eq!(first["total"], 2);
     let next = first["link"]
         .as_array()
@@ -742,14 +845,25 @@ async fn terminology_service() -> Service {
 #[tokio::test]
 async fn expand_answers_the_codes_of_a_value_set() {
     let app = terminology_service().await;
-    let reply = request(&app, "GET", "/ValueSet/$expand?url=urn:vs&excludeNested=true", &[]).await;
+    let reply = request(
+        &app,
+        "GET",
+        "/ValueSet/$expand?url=urn:vs&excludeNested=true",
+        &[],
+    )
+    .await;
     assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
     let value = json(&reply);
     assert_eq!(value["resourceType"], "ValueSet");
     assert_eq!(value["expansion"]["total"], 4);
     assert_eq!(
         codes(&value),
-        vec!["top".to_owned(), "mid".to_owned(), "leaf".to_owned(), "old".to_owned()]
+        vec![
+            "top".to_owned(),
+            "mid".to_owned(),
+            "leaf".to_owned(),
+            "old".to_owned()
+        ]
     );
 }
 
@@ -757,7 +871,13 @@ async fn expand_answers_the_codes_of_a_value_set() {
 async fn expand_narrows_by_filter_paging_and_activity() {
     let app = terminology_service().await;
     let filtered = json(
-        &request(&app, "GET", "/ValueSet/$expand?url=urn:vs&filter=lea&excludeNested=true", &[]).await,
+        &request(
+            &app,
+            "GET",
+            "/ValueSet/$expand?url=urn:vs&filter=lea&excludeNested=true",
+            &[],
+        )
+        .await,
     );
     assert_eq!(codes(&filtered), vec!["leaf".to_owned()]);
     let paged = json(
@@ -795,14 +915,28 @@ async fn expand_honours_language_designations_and_nesting() {
     .await;
     let value = json(&reply);
     assert_eq!(value["expansion"]["contains"][0]["display"], "Boven");
-    assert_eq!(value["expansion"]["contains"][0]["designation"][0]["value"], "Boven");
-    assert_eq!(value["expansion"]["contains"][0]["contains"][0]["code"], "mid");
+    assert_eq!(
+        value["expansion"]["contains"][0]["designation"][0]["value"],
+        "Boven"
+    );
+    assert_eq!(
+        value["expansion"]["contains"][0]["contains"][0]["code"],
+        "mid"
+    );
 }
 
 #[tokio::test]
 async fn expand_answers_the_same_over_a_parameters_body() {
     let app = terminology_service().await;
-    let got = json(&request(&app, "GET", "/ValueSet/$expand?url=urn:vs&excludeNested=true", &[]).await);
+    let got = json(
+        &request(
+            &app,
+            "GET",
+            "/ValueSet/$expand?url=urn:vs&excludeNested=true",
+            &[],
+        )
+        .await,
+    );
     let body = serde_json::to_vec(&serde_json::json!({
         "resourceType": "Parameters",
         "parameter": [
@@ -826,7 +960,13 @@ async fn expand_reports_failures_as_outcomes() {
     assert_eq!(without.status, StatusCode::BAD_REQUEST);
     let count = request(&app, "GET", "/ValueSet/$expand?url=urn:vs&count=many", &[]).await;
     assert_eq!(count.status, StatusCode::BAD_REQUEST);
-    let version = request(&app, "GET", "/ValueSet/$expand?url=urn:vs&valueSetVersion=9.9", &[]).await;
+    let version = request(
+        &app,
+        "GET",
+        "/ValueSet/$expand?url=urn:vs&valueSetVersion=9.9",
+        &[],
+    )
+    .await;
     assert_eq!(version.status, StatusCode::NOT_FOUND);
     let pinned = request(
         &app,
@@ -891,7 +1031,12 @@ async fn a_code_no_system_defines_is_refused_rather_than_compared_as_text() {
         "/Observation?code:below=urn:cs%7Cnonesuch",
     ] {
         let reply = request(&app, "GET", uri, &[]).await;
-        assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{uri} gave {}", reply.body);
+        assert_eq!(
+            reply.status,
+            StatusCode::BAD_REQUEST,
+            "{uri} gave {}",
+            reply.body
+        );
         let value = json(&reply);
         assert_eq!(value["issue"][0]["code"], "not-supported", "{uri}");
     }
@@ -901,7 +1046,13 @@ async fn a_code_no_system_defines_is_refused_rather_than_compared_as_text() {
 async fn validate_names_the_rule_that_failed() {
     let app = service();
     let body = br#"{"resourceType":"Observation","id":"ob-r1","status":"draft","gender":"x","text":{"status":"invented","div":"plain"}}"#;
-    let reply = request(&app, "POST", "/Observation/$validate?profile=http://x/one", body).await;
+    let reply = request(
+        &app,
+        "POST",
+        "/Observation/$validate?profile=http://x/one",
+        body,
+    )
+    .await;
     assert_eq!(reply.status, StatusCode::OK);
     let named: Vec<String> = json(&reply)["issue"]
         .as_array()
@@ -917,7 +1068,13 @@ async fn validate_names_the_rule_that_failed() {
         })
         .collect();
     let text = named.join(" | ");
-    for rule in ["structure", "cardinality", "binding", "profile", "narrative"] {
+    for rule in [
+        "structure",
+        "cardinality",
+        "binding",
+        "profile",
+        "narrative",
+    ] {
         assert!(text.contains(rule), "{rule} was not named in {text}");
     }
     assert!(text.contains("Observation.code"), "{text}");
@@ -927,6 +1084,27 @@ async fn validate_names_the_rule_that_failed() {
 const CONFIDENTIALITY: &str = "http://terminology.hl7.org/CodeSystem/v3-Confidentiality";
 const CONFIDENTIALITY_ENCODED: &str =
     "http%3A%2F%2Fterminology.hl7.org%2FCodeSystem%2Fv3-Confidentiality";
+
+fn service_with_supplied(bodies: Vec<serde_json::Value>) -> Service {
+    let held: Arc<MemoryStore> = Arc::new(MemoryStore::with_clock(Arc::new(|| {
+        FhirInstant::parse("2026-09-06T04:00:00.000Z").unwrap()
+    })));
+    let store: Arc<dyn fhir_store::ResourceStore> = held.clone();
+    let terminology = Arc::new(
+        fhir_api::StoredTerminology::new(Arc::clone(&store), FhirVersion::R4).with_catalogue(
+            Arc::new(fhir_core::Catalogue::of(FhirVersion::R4).with(bodies)),
+        ),
+    );
+    Service::new(
+        store,
+        FhirVersion::R4,
+        vec![Dependency {
+            name: "memory-store",
+            check: Arc::new(|| Box::pin(async { Ok(()) })),
+        }],
+    )
+    .with_terminology(terminology)
+}
 
 fn published_set() -> serde_json::Value {
     serde_json::json!({
@@ -958,6 +1136,38 @@ async fn expand_answers_from_published_content_no_one_stored() {
     assert!(held.contains(&"_Confidentiality".to_owned()));
     assert!(held.contains(&"R".to_owned()));
     assert_eq!(value["expansion"]["contains"][0]["system"], CONFIDENTIALITY);
+}
+
+#[tokio::test]
+async fn expand_answers_from_a_supplied_value_set_no_one_stored() {
+    let supplied = serde_json::json!({
+        "resourceType": "ValueSet",
+        "url": "urn:vs-supplied",
+        "status": "active",
+        "compose": {"include": [{
+            "system": CONFIDENTIALITY,
+            "filter": [{"property": "concept", "op": "is-a", "value": "_Confidentiality"}]
+        }]}
+    });
+    let app = service_with_supplied(vec![supplied]);
+    let reply = request(
+        &app,
+        "GET",
+        "/ValueSet/$expand?url=urn:vs-supplied&excludeNested=true",
+        &[],
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    let held = codes(&json(&reply));
+    assert!(held.contains(&"_Confidentiality".to_owned()));
+    assert!(held.contains(&"R".to_owned()));
+}
+
+#[tokio::test]
+async fn a_value_set_no_one_stored_and_no_one_supplied_is_not_found() {
+    let app = service();
+    let reply = request(&app, "GET", "/ValueSet/$expand?url=urn:vs-supplied", &[]).await;
+    assert_eq!(reply.status, StatusCode::NOT_FOUND, "{}", reply.body);
 }
 
 #[tokio::test]
@@ -1000,7 +1210,11 @@ async fn stored_content_overrides_the_published_system() {
 async fn subsumption_resolves_over_a_published_hierarchy() {
     let app = service();
     create(&app, coded("ob-p1", Some(CONFIDENTIALITY), "R")).await;
-    create(&app, coded("ob-p2", Some(CONFIDENTIALITY), "_Confidentiality")).await;
+    create(
+        &app,
+        coded("ob-p2", Some(CONFIDENTIALITY), "_Confidentiality"),
+    )
+    .await;
     assert_eq!(
         found(
             &app,

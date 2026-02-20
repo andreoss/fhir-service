@@ -16,7 +16,9 @@ fn every_version_carries_published_code_system_content() {
 #[test]
 fn a_published_system_is_held_at_its_published_version() {
     let held = Catalogue::of(FhirVersion::R4);
-    let found = held.system(CONFIDENTIALITY, None).expect("the system is held");
+    let found = held
+        .system(CONFIDENTIALITY, None)
+        .expect("the system is held");
     assert_eq!(
         found.get("resourceType").and_then(|held| held.as_str()),
         Some("CodeSystem")
@@ -75,10 +77,17 @@ fn supplied_content_replaces_the_published_system() {
         "concept": [{"code": "local"}]
     });
     let held = Catalogue::of(FhirVersion::R4).with(vec![supplied]);
-    let found = held.system(CONFIDENTIALITY, None).expect("the system is held");
-    let concepts = found.get("concept").and_then(|held| held.as_array()).unwrap();
+    let found = held
+        .system(CONFIDENTIALITY, None)
+        .expect("the system is held");
+    let concepts = found
+        .get("concept")
+        .and_then(|held| held.as_array())
+        .unwrap();
     assert_eq!(concepts.len(), 1);
-    assert!(held.descendants(Some(CONFIDENTIALITY), "_Confidentiality").is_empty());
+    assert!(held
+        .descendants(Some(CONFIDENTIALITY), "_Confidentiality")
+        .is_empty());
 }
 
 #[test]
@@ -104,10 +113,63 @@ fn supplied_content_adds_a_system_the_publication_does_not_carry() {
 }
 
 #[test]
-fn a_body_that_is_not_a_code_system_is_refused() {
+fn a_supplied_value_set_is_held_and_found_by_its_url() {
+    let supplied = json!({
+        "resourceType": "ValueSet",
+        "url": "urn:vs-supplied",
+        "version": "2.0",
+        "status": "active",
+        "compose": {"include": [{"system": CONFIDENTIALITY}]}
+    });
+    let held = Catalogue::of(FhirVersion::R4).with(vec![supplied]);
+    let found = held.set("urn:vs-supplied", None).expect("the set is held");
+    assert_eq!(
+        found.get("resourceType").and_then(|held| held.as_str()),
+        Some("ValueSet")
+    );
+    assert!(held.set("urn:vs-supplied", Some("2.0")).is_some());
+    assert!(held.set("urn:vs-supplied", Some("0.0")).is_none());
+    assert!(held.set("urn:nonesuch", None).is_none());
+}
+
+#[test]
+fn a_supplied_value_set_without_a_version_replaces_every_version() {
+    let held = Catalogue::of(FhirVersion::R4).with(vec![
+        json!({
+            "resourceType": "ValueSet",
+            "url": "urn:vs-supplied",
+            "version": "2.0",
+            "compose": {"include": [{"system": CONFIDENTIALITY}]}
+        }),
+        json!({
+            "resourceType": "ValueSet",
+            "url": "urn:vs-supplied",
+            "expansion": {"contains": [{"code": "one"}]}
+        }),
+    ]);
+    assert!(held.set("urn:vs-supplied", Some("2.0")).is_none());
+    assert_eq!(held.sets().len(), 1);
+}
+
+#[test]
+fn a_body_that_is_neither_a_code_system_nor_a_value_set_is_refused() {
     let held = Catalogue::of(FhirVersion::R4);
-    assert!(held.clone().loaded(&json!({"resourceType": "ValueSet"})).is_err());
-    assert!(held.clone().loaded(&json!({"resourceType": "CodeSystem"})).is_err());
+    assert!(held
+        .clone()
+        .loaded(&json!({"resourceType": "Patient"}))
+        .is_err());
+    assert!(held
+        .clone()
+        .loaded(&json!({"resourceType": "CodeSystem"}))
+        .is_err());
+    assert!(held
+        .clone()
+        .loaded(&json!({"resourceType": "ValueSet"}))
+        .is_err());
+    assert!(held
+        .clone()
+        .loaded(&json!({"resourceType": "ValueSet", "url": "urn:vs"}))
+        .is_err());
 }
 
 #[test]

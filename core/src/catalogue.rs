@@ -1,4 +1,3 @@
-
 use crate::fhir_version::FhirVersion;
 use crate::terminology::{ancestors, descendants, Coding};
 use crate::Error;
@@ -30,6 +29,7 @@ pub struct Catalogue {
     version: FhirVersion,
     sources: Vec<Source>,
     systems: BTreeMap<(String, String), Value>,
+    sets: BTreeMap<(String, String), Value>,
     unsupplied: Vec<Unsupplied>,
 }
 
@@ -46,11 +46,22 @@ impl Catalogue {
         let held: Value =
             serde_json::from_str(text).map_err(|reason| Error::InvalidJson(reason.to_string()))?;
         let mut systems = BTreeMap::new();
-        for found in held.get("systems").and_then(Value::as_array).unwrap_or(&Vec::new()) {
-            let Some(object) = found.as_object() else { continue };
-            let Some(url) = text_at(found, "url") else { continue };
+        for found in held
+            .get("systems")
+            .and_then(Value::as_array)
+            .unwrap_or(&Vec::new())
+        {
+            let Some(object) = found.as_object() else {
+                continue;
+            };
+            let Some(url) = text_at(found, "url") else {
+                continue;
+            };
             systems.insert(
-                (url.to_owned(), text_at(found, "version").unwrap_or_default().to_owned()),
+                (
+                    url.to_owned(),
+                    text_at(found, "version").unwrap_or_default().to_owned(),
+                ),
                 body(object),
             );
         }
@@ -66,6 +77,7 @@ impl Catalogue {
                 .and_then(Value::as_array)
                 .map(|items| items.iter().filter_map(source).collect())
                 .unwrap_or_default(),
+            sets: BTreeMap::new(),
             systems,
             unsupplied: held
                 .get("unsupplied")
@@ -89,6 +101,22 @@ impl Catalogue {
 
     pub fn unsupplied(&self) -> &[Unsupplied] {
         &self.unsupplied
+    }
+
+    pub fn sets(&self) -> Vec<&Value> {
+        self.sets.values().collect()
+    }
+
+    pub fn set(&self, url: &str, version: Option<&str>) -> Option<&Value> {
+        match version {
+            Some(wanted) => self.sets.get(&(url.to_owned(), wanted.to_owned())),
+            None => self
+                .sets
+                .range((url.to_owned(), String::new())..)
+                .take_while(|((held, _), _)| held == url)
+                .last()
+                .map(|(_, body)| body),
+        }
     }
 
     pub fn system(&self, url: &str, version: Option<&str>) -> Option<&Value> {
@@ -122,15 +150,23 @@ impl Catalogue {
     }
 
     pub fn loaded(mut self, body: &Value) -> Result<Catalogue, Error> {
-        if text_at(body, "resourceType") != Some("CodeSystem") {
-            return Err(Error::InvalidParameter(
-                "supplied terminology is not a code system".to_owned(),
-            ));
+        match text_at(body, "resourceType") {
+            Some("ValueSet") => return self.loaded_set(body),
+            Some("CodeSystem") => {}
+            _ => {
+                return Err(Error::InvalidParameter(
+                    "supplied terminology is neither a code system nor a value set".to_owned(),
+                ))
+            }
         }
         let url = text_at(body, "url").ok_or_else(|| {
             Error::InvalidParameter("a supplied code system carries no url".to_owned())
         })?;
-        if body.get("concept").and_then(Value::as_array).is_none_or(Vec::is_empty) {
+        if body
+            .get("concept")
+            .and_then(Value::as_array)
+            .is_none_or(Vec::is_empty)
+        {
             return Err(Error::InvalidParameter(format!(
                 "the supplied code system {url:?} carries no concept"
             )));
@@ -141,6 +177,28 @@ impl Catalogue {
         }
         self.systems.insert((url.to_owned(), version), body.clone());
         self.unsupplied.retain(|found| found.url != url);
+        Ok(self)
+    }
+
+    fn loaded_set(mut self, body: &Value) -> Result<Catalogue, Error> {
+        let url = text_at(body, "url").ok_or_else(|| {
+            Error::InvalidParameter("a supplied value set carries no url".to_owned())
+        })?;
+        let defined = |name: &str| {
+            body.get(name)
+                .and_then(Value::as_object)
+                .is_some_and(|held| !held.is_empty())
+        };
+        if !defined("compose") && !defined("expansion") {
+            return Err(Error::InvalidParameter(format!(
+                "the supplied value set {url:?} carries neither a compose nor an expansion"
+            )));
+        }
+        let version = text_at(body, "version").unwrap_or_default().to_owned();
+        if version.is_empty() {
+            self.sets.retain(|(held, _), _| held != url);
+        }
+        self.sets.insert((url.to_owned(), version), body.clone());
         Ok(self)
     }
 

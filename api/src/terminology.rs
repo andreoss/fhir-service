@@ -57,7 +57,7 @@ impl StoredTerminology {
             .collect()
     }
 
-    async fn set(&self, url: &str) -> Result<Value, Error> {
+    async fn set(&self, url: &str, version: Option<&str>) -> Result<Value, Error> {
         let resource_type = VALUE_SET.parse::<ResourceType>()?;
         let query = SearchQuery {
             types: vec![resource_type],
@@ -69,15 +69,22 @@ impl StoredTerminology {
             ..SearchQuery::default()
         };
         let page = self.store.search(&query).await?;
-        let found = page.entries.first().ok_or(Error::NotFound)?;
-        serde_json::from_slice(found.raw()).map_err(|error| Error::InvalidJson(error.to_string()))
+        match page.entries.first() {
+            Some(found) => serde_json::from_slice(found.raw())
+                .map_err(|error| Error::InvalidJson(error.to_string())),
+            None => self
+                .catalogue
+                .set(url, version)
+                .cloned()
+                .ok_or(Error::NotFound),
+        }
     }
 }
 
 #[async_trait]
 impl Terminology for StoredTerminology {
     async fn expand(&self, url: &str, request: &ExpansionRequest) -> Result<Expansion, Error> {
-        let set = self.set(url).await?;
+        let set = self.set(url, request.value_set_version.as_deref()).await?;
         let mut systems = self.bodies(CODE_SYSTEM).await?;
         systems.extend(self.published(&set, &systems));
         expand(&set, &systems, request)
@@ -161,11 +168,7 @@ fn coded(concept: Coding) -> SearchValue {
     })
 }
 
-
-pub async fn resolve(
-    terminology: &dyn Terminology,
-    query: &mut SearchQuery,
-) -> Result<(), Error> {
+pub async fn resolve(terminology: &dyn Terminology, query: &mut SearchQuery) -> Result<(), Error> {
     for filter in &mut query.filters {
         if let Some(found) = subsumed(terminology, filter).await? {
             *filter = found;
@@ -177,10 +180,7 @@ pub async fn resolve(
     Ok(())
 }
 
-async fn walked(
-    terminology: &dyn Terminology,
-    criterion: &mut Criterion,
-) -> Result<(), Error> {
+async fn walked(terminology: &dyn Terminology, criterion: &mut Criterion) -> Result<(), Error> {
     let mut pending = vec![criterion];
     while let Some(held) = pending.pop() {
         match held {
