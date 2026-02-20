@@ -10,16 +10,14 @@ use tokio::net::TcpListener;
 
 use crate::capability::{capability, version_report};
 use crate::definition::{operation_definition, operation_definitions};
-use crate::smart::configuration;
 use crate::handlers::{
     compartment_definition, compartment_definitions, compartment_search, conditional_delete,
-    conditional_patch, conditional_update, create, delete_instance, health,
-    instance_history, method_not_allowed, not_found, parameter_refresh, parameter_reindex,
-    parameter_status,
-    parameter_status_query,
-    parameter_status_update, patch_instance, purge_history, read,
+    conditional_patch, conditional_update, create, delete_instance, health, instance_history,
+    method_not_allowed, not_found, parameter_refresh, parameter_reindex, parameter_status,
+    parameter_status_query, parameter_status_update, patch_instance, purge_history, read,
     search_system, search_type, system_history, type_history, update, vread,
 };
+use crate::smart::configuration;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -250,7 +248,7 @@ impl Service {
     }
 
     pub fn router(&self) -> Router<()> {
-        measured(routes().with_state(self.state.clone()), &self.state)
+        layered(routes().with_state(self.state.clone()), &self.state)
     }
 
     pub async fn bind(&self, addr: SocketAddr) -> Result<Bound, Error> {
@@ -273,14 +271,16 @@ pub(crate) fn over(state: &AppState, store: Arc<dyn ResourceStore>) -> Router<()
         store,
         ..state.clone()
     };
-    measured(routes().with_state(held.clone()), &held)
+    layered(routes().with_state(held.clone()), &held)
 }
 
-fn measured(router: Router<()>, state: &AppState) -> Router<()> {
-    router.layer(axum::middleware::from_fn_with_state(
-        state.clone(),
-        crate::measure::measured,
-    ))
+fn layered(router: Router<()>, state: &AppState) -> Router<()> {
+    router
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::measure::measured,
+        ))
+        .layer(axum::middleware::from_fn(crate::representation::negotiated))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -347,7 +347,9 @@ fn entries() -> Vec<Entry> {
         entry(
             "/SearchParameter/$status",
             &[Verb::Get, Verb::Post, Verb::Put],
-            get(parameter_status).post(parameter_status_query).put(parameter_status_update),
+            get(parameter_status)
+                .post(parameter_status_query)
+                .put(parameter_status_update),
         ),
         entry(
             "/AuditEvent/$verify",
@@ -364,13 +366,24 @@ fn entries() -> Vec<Entry> {
         entry("/SearchParameter/$refresh", WRITE, post(parameter_refresh)),
         entry("/CompartmentDefinition", READ, get(compartment_definitions)),
         entry("/OperationDefinition", READ, get(operation_definitions)),
-        entry("/OperationDefinition/{code}", READ, get(operation_definition)),
-        entry("/CompartmentDefinition/{id}", READ, get(compartment_definition)),
+        entry(
+            "/OperationDefinition/{code}",
+            READ,
+            get(operation_definition),
+        ),
+        entry(
+            "/CompartmentDefinition/{id}",
+            READ,
+            get(compartment_definition),
+        ),
         entry("/{type}/{id}/{target}", READ, get(compartment_search)),
         entry(
             "/{type}/{id}",
             &[Verb::Get, Verb::Put, Verb::Delete, Verb::Patch],
-            get(read).put(update).delete(delete_instance).patch(patch_instance),
+            get(read)
+                .put(update)
+                .delete(delete_instance)
+                .patch(patch_instance),
         ),
         entry("/_history", READ, get(system_history)),
         entry("/{type}/_history", READ, get(type_history)),
@@ -416,7 +429,11 @@ fn entries() -> Vec<Entry> {
             BOTH,
             get(crate::operation::expand_query).post(crate::operation::expand_body),
         ),
-        entry("/$convert-data", WRITE, post(crate::operation::convert_data)),
+        entry(
+            "/$convert-data",
+            WRITE,
+            post(crate::operation::convert_data),
+        ),
         entry(
             "/{type}/$validate",
             BOTH,
