@@ -109,7 +109,6 @@ pub struct ResultControl {
 impl ResultControl {
     pub fn parse(raw: Option<&str>) -> Result<ResultControl, Error> {
         let summary = summary_of(raw)?;
-        rendering(raw)?;
         let elements = param(raw, "_elements")
             .map(|text| {
                 text.split(',')
@@ -144,16 +143,6 @@ fn summary_of(raw: Option<&str>) -> Result<Summary, Error> {
         Some("text") => Ok(Summary::Text),
         Some("count") => Ok(Summary::Count),
         Some(other) => Err(Error::UnsupportedParameter(format!("_summary {other:?}"))),
-    }
-}
-
-fn rendering(raw: Option<&str>) -> Result<(), Error> {
-    match param(raw, "_format") {
-        None => Ok(()),
-        Some(text) => match text.replace(' ', "+").as_str() {
-            "json" | "fhir+json" | "text/json" | "application/json" | "application/fhir+json" => Ok(()),
-            other => Err(Error::UnsupportedFormat(other.to_owned())),
-        },
     }
 }
 

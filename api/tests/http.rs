@@ -1326,6 +1326,10 @@ async fn format_selects_a_supported_rendering() {
         assert_eq!(request(&app, "GET", uri, &[], &[]).await.status, StatusCode::OK, "{uri}");
     }
     let reply = request(&app, "GET", "/Patient?_format=xml", &[], &[]).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert_eq!(header(&reply, "content-type"), "application/fhir+xml");
+    assert!(reply.body.starts_with("<Bundle"), "{}", reply.body);
+    let reply = request(&app, "GET", "/Patient?_format=yaml", &[], &[]).await;
     assert_eq!(reply.status, StatusCode::NOT_ACCEPTABLE, "{}", reply.body);
     let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
     assert_eq!(value["issue"][0]["code"], "not-supported");

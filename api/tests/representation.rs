@@ -129,7 +129,10 @@ async fn the_best_supported_media_type_is_chosen_by_quality() {
         &app,
         "GET",
         "/Patient/rp-1",
-        &[("accept", "application/fhir+xml;q=1, application/json;q=0.5")],
+        &[(
+            "accept",
+            "application/json;q=1, application/fhir+json;q=0.5",
+        )],
         &[],
     )
     .await;
@@ -144,7 +147,7 @@ async fn a_media_type_refused_by_quality_is_not_answered() {
         &app,
         "GET",
         "/Patient/rp-1",
-        &[("accept", "application/fhir+xml, application/fhir+json;q=0")],
+        &[("accept", "text/html, application/fhir+json;q=0")],
         &[],
     )
     .await;
@@ -154,11 +157,7 @@ async fn a_media_type_refused_by_quality_is_not_answered() {
 #[tokio::test]
 async fn an_unsupported_accept_header_is_refused() {
     let app = seeded().await;
-    for accept in [
-        "application/fhir+xml",
-        "text/html",
-        "application/fhir+turtle",
-    ] {
+    for accept in ["text/html", "application/fhir+turtle", "text/plain"] {
         let reply = request(&app, "GET", "/Patient/rp-1", &[("accept", accept)], &[]).await;
         assert_eq!(
             reply.status,
@@ -181,10 +180,10 @@ async fn an_unsupported_accept_header_is_refused() {
 async fn an_unsupported_format_parameter_is_refused_on_every_interaction() {
     let app = seeded().await;
     for uri in [
-        "/Patient/rp-1?_format=xml",
-        "/Patient?_format=xml",
-        "/metadata?_format=xml",
-        "/Patient/rp-1/_history?_format=xml",
+        "/Patient/rp-1?_format=yaml",
+        "/Patient?_format=yaml",
+        "/metadata?_format=yaml",
+        "/Patient/rp-1/_history?_format=yaml",
     ] {
         let reply = request(&app, "GET", uri, &[], &[]).await;
         assert_eq!(
@@ -202,7 +201,7 @@ async fn a_refused_representation_has_no_effect_on_the_store() {
     let reply = request(
         &app,
         "PUT",
-        "/Patient/rp-refused?_format=xml",
+        "/Patient/rp-refused?_format=yaml",
         &[],
         &patient("rp-refused"),
     )
@@ -378,20 +377,16 @@ async fn live_the_asked_representation_is_served_over_a_socket() {
     assert_eq!(asked.status, StatusCode::OK, "{}", asked.body);
     assert_eq!(header(&asked, "content-type"), "application/json");
 
-    let refused = running
+    let xml = running
         .exchange(
             "GET",
             "/Patient/rp-1",
             &[("accept", "application/fhir+xml")],
         )
         .await;
-    assert_eq!(
-        refused.status,
-        StatusCode::NOT_ACCEPTABLE,
-        "{}",
-        refused.body
-    );
-    assert_eq!(header(&refused, "content-type"), "application/fhir+json");
+    assert_eq!(xml.status, StatusCode::OK, "{}", xml.body);
+    assert_eq!(header(&xml, "content-type"), "application/fhir+xml");
+    assert!(xml.body.starts_with("<Patient"), "{}", xml.body);
 
     let pretty = running
         .exchange("GET", "/Patient/rp-1?_pretty=true", &[])

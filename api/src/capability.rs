@@ -9,6 +9,7 @@ use crate::app::{served, AppState, Route, Verb};
 use crate::handlers::AppError;
 
 const FHIR_JSON: &str = "application/fhir+json";
+const FHIR_XML: &str = "application/fhir+xml";
 
 pub const BUILD: &str = env!("CARGO_PKG_VERSION");
 
@@ -119,7 +120,10 @@ fn interactions(route: &Route) -> Vec<(Scope, &'static str)> {
             }
         }
         [kind, "_history"] if scope_of(kind).is_some() => {
-            found.push((scope_of(kind).expect("the segment names a scope"), "history-type"));
+            found.push((
+                scope_of(kind).expect("the segment names a scope"),
+                "history-type",
+            ));
         }
         [kind, "{id}"] if scope_of(kind).is_some() => {
             let scope = scope_of(kind).expect("the segment names a scope");
@@ -368,13 +372,12 @@ pub fn statement(state: &AppState, base: &str) -> Value {
         "software": {"name": SOFTWARE, "version": BUILD},
         "implementation": {"description": "conformance of the running instance", "url": base},
         "fhirVersion": state.version.release(),
-        "format": ["json", FHIR_JSON],
+        "format": ["json", "xml", FHIR_JSON, FHIR_XML],
         "patchFormat": ["application/json-patch+json", FHIR_JSON],
         "rest": [Value::Object(rest)],
     });
     if !operations_are_typed(state.version) {
-        held
-            .as_object_mut()
+        held.as_object_mut()
             .expect("the statement is an object")
             .insert("acceptUnknown".to_owned(), json!("no"));
     }

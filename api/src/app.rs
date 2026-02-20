@@ -280,7 +280,10 @@ fn layered(router: Router<()>, state: &AppState) -> Router<()> {
             state.clone(),
             crate::measure::measured,
         ))
-        .layer(axum::middleware::from_fn(crate::representation::negotiated))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::representation::negotiated,
+        ))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

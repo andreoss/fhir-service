@@ -261,11 +261,13 @@ async fn live_the_statuses_the_specification_names_are_the_statuses_on_the_wire(
     assert_eq!(unmatched.status, 204, "{}", unmatched.body);
 
     let unrenderable = running
-        .exchange("GET", "/Patient?_format=xml", &[], &[])
+        .exchange("GET", "/Patient?_format=yaml", &[], &[])
         .await;
     assert_eq!(unrenderable.status, 406, "{}", unrenderable.body);
 
-    let unknown = running.exchange("GET", "/Patient/lv-absent", &[], &[]).await;
+    let unknown = running
+        .exchange("GET", "/Patient/lv-absent", &[], &[])
+        .await;
     assert_eq!(unknown.status, 404, "{}", unknown.body);
 
     running.stopped().await;
