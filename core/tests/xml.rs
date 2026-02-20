@@ -1,5 +1,5 @@
 use fhir_core::fhir_version::FhirVersion;
-use fhir_core::xml::{from_xml, to_xml};
+use fhir_core::xml::{from_xml, to_xml, to_xml_pretty};
 use serde_json::{json, Value};
 
 const PATIENT: &str = r#"{"resourceType":"Patient","id":"example","text":{"status":"generated","div":"<div xmlns=\"http://www.w3.org/1999/xhtml\"><p>Ann <b>Smith</b></p></div>"},"active":true,"name":[{"family":"Smith","given":["Ann"]}],"deceasedBoolean":false,"extension":[{"url":"http://example.org/ext","valueString":"note"}]}"#;
@@ -183,5 +183,89 @@ fn a_published_example_is_read_and_accepted_by_the_model() {
     assert_eq!(
         from_xml(FhirVersion::R4, &written).expect("the example is read again"),
         read
+    );
+}
+
+const PATIENT_XML_PRETTY: &str = r#"<Patient xmlns="http://hl7.org/fhir">
+  <id value="example"/>
+  <text>
+    <status value="generated"/>
+    <div xmlns="http://www.w3.org/1999/xhtml"><p>Ann <b>Smith</b></p></div>
+  </text>
+  <extension url="http://example.org/ext">
+    <valueString value="note"/>
+  </extension>
+  <active value="true"/>
+  <name>
+    <family value="Smith"/>
+    <given value="Ann"/>
+  </name>
+  <deceasedBoolean value="false"/>
+</Patient>"#;
+
+#[test]
+fn a_pretty_document_is_the_same_resource_as_the_compact_one() {
+    let written = to_xml_pretty(FhirVersion::R4, &body(PATIENT)).expect("the patient is written");
+    assert_eq!(written, PATIENT_XML_PRETTY);
+    assert_eq!(
+        from_xml(FhirVersion::R4, &written).expect("the patient is read"),
+        body(PATIENT)
+    );
+}
+
+#[test]
+fn every_version_writes_a_pretty_document_that_reads_back() {
+    for version in FhirVersion::ALL {
+        let written = to_xml_pretty(version, &body(PATIENT)).expect("the patient is written");
+        assert!(
+            written.contains("\n  <id value=\"example\"/>"),
+            "{version} wrote {written}"
+        );
+        let read = from_xml(version, &written).expect("the patient is read back");
+        assert_eq!(read, body(PATIENT), "{version} changed the resource");
+    }
+}
+
+#[test]
+fn a_pretty_document_keeps_the_shape_of_the_narrative_it_carries() {
+    let narrative = json!({
+        "resourceType": "Patient",
+        "id": "n1",
+        "text": {"status": "generated", "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\">\n  <p>two lines</p>\n</div>"},
+    });
+    let written = to_xml_pretty(FhirVersion::R4, &narrative).expect("the patient is written");
+    assert!(written.contains("\n    <div"), "{written}");
+    assert_eq!(
+        from_xml(FhirVersion::R4, &written).expect("the patient is read"),
+        narrative
+    );
+}
+
+#[test]
+fn a_pretty_document_indents_a_resource_it_contains() {
+    let bundle = json!({
+        "resourceType": "Bundle",
+        "type": "searchset",
+        "entry": [{
+            "resource": {"resourceType": "Patient", "id": "example", "active": true},
+        }],
+    });
+    let written = to_xml_pretty(FhirVersion::R4, &bundle).expect("the bundle is written");
+    assert!(
+        written.contains(concat!(
+            "  <entry>\n",
+            "    <resource>\n",
+            "      <Patient>\n",
+            "        <id value=\"example\"/>\n",
+            "        <active value=\"true\"/>\n",
+            "      </Patient>\n",
+            "    </resource>\n",
+            "  </entry>\n",
+        )),
+        "{written}"
+    );
+    assert_eq!(
+        from_xml(FhirVersion::R4, &written).expect("the bundle is read"),
+        bundle
     );
 }

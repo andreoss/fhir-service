@@ -5,7 +5,57 @@ use serde_json::{Map, Number, Value};
 
 const NAMESPACE: &str = "http://hl7.org/fhir";
 
+const INDENT: &str = "  ";
+
+#[derive(Clone, Copy)]
+struct Form {
+    pretty: bool,
+    depth: usize,
+}
+
+impl Form {
+    const COMPACT: Form = Form {
+        pretty: false,
+        depth: 0,
+    };
+    const PRETTY: Form = Form {
+        pretty: true,
+        depth: 0,
+    };
+
+    fn inner(self) -> Form {
+        Form {
+            depth: self.depth + 1,
+            ..self
+        }
+    }
+
+    fn line(self, out: &mut String) {
+        if !self.pretty {
+            return;
+        }
+        out.push('\n');
+        for _ in 0..self.depth {
+            out.push_str(INDENT);
+        }
+    }
+
+    fn closed(self, out: &mut String, children: usize) {
+        if self.pretty && children > 0 {
+            self.line(out);
+        }
+    }
+}
+
 pub fn to_xml(version: FhirVersion, body: &Value) -> Result<String, Error> {
+    written_document(version, body, Form::COMPACT)
+}
+
+pub fn to_xml_pretty(version: FhirVersion, body: &Value) -> Result<String, Error> {
+    written_document(version, body, Form::PRETTY)
+}
+
+fn written_document(version: FhirVersion, body: &Value, form: Form) -> Result<String, Error> {
     let model = Model::of(version);
     let object = body
         .as_object()
@@ -22,7 +72,8 @@ pub fn to_xml(version: FhirVersion, body: &Value) -> Result<String, Error> {
     out.push_str(name);
     attribute(&mut out, "xmlns", NAMESPACE);
     out.push('>');
-    written(&mut out, model, name, object)?;
+    let children = written(&mut out, form.inner(), model, name, object)?;
+    form.closed(&mut out, children);
     out.push_str("</");
     out.push_str(name);
     out.push('>');
@@ -45,33 +96,37 @@ pub fn from_xml(version: FhirVersion, text: &str) -> Result<Value, Error> {
 
 fn written(
     out: &mut String,
+    form: Form,
     model: &Model,
     node: &str,
     object: &Map<String, Value>,
-) -> Result<(), Error> {
+) -> Result<usize, Error> {
     let mut keys: Vec<&String> = object
         .keys()
         .filter(|key| key.as_str() != "resourceType" && !key.starts_with('_'))
         .collect();
     keys.sort_by_key(|key| model.order(node, key).unwrap_or(usize::MAX));
+    let mut children = 0;
     for key in keys {
         let value = &object[key.as_str()];
-        element(out, model, node, key, value, object)?;
+        children += element(out, form, model, node, key, value, object)?;
     }
-    Ok(())
+    Ok(children)
 }
 
 fn element(
     out: &mut String,
+    form: Form,
     model: &Model,
     node: &str,
     key: &str,
     value: &Value,
     parent: &Map<String, Value>,
-) -> Result<(), Error> {
+) -> Result<usize, Error> {
     if key == "div" {
+        form.line(out);
         out.push_str(value.as_str().unwrap_or_default());
-        return Ok(());
+        return Ok(1);
     }
     let field = model.field(node, key);
     let items = match value {
@@ -79,17 +134,19 @@ fn element(
         other => std::slice::from_ref(other),
     };
     for (index, item) in items.iter().enumerate() {
+        form.line(out);
         let shadow = shadow(parent, key, index);
         match item {
-            Value::Object(_) => complex(out, model, node, key, item, field.as_ref())?,
-            _ => primitive(out, model, node, key, item, shadow)?,
+            Value::Object(_) => complex(out, form, model, node, key, item, field.as_ref())?,
+            _ => primitive(out, form, model, node, key, item, shadow)?,
         }
     }
-    Ok(())
+    Ok(items.len())
 }
 
 fn primitive(
     out: &mut String,
+    form: Form,
     model: &Model,
     node: &str,
     key: &str,
@@ -129,22 +186,27 @@ fn primitive(
         return Ok(());
     }
     out.push('>');
+    let mut held = 0;
     for child in children {
         let items = match child {
             Value::Array(items) => items,
             other => vec![other],
         };
         for item in items {
+            form.inner().line(out);
             complex(
                 out,
+                form.inner(),
                 model,
                 "Extension",
                 "extension",
                 &item,
                 model.field("Extension", "extension").as_ref(),
             )?;
+            held += 1;
         }
     }
+    form.closed(out, held);
     out.push_str("</");
     out.push_str(key);
     out.push('>');
@@ -153,6 +215,7 @@ fn primitive(
 
 fn complex(
     out: &mut String,
+    form: Form,
     model: &Model,
     node: &str,
     key: &str,
@@ -172,27 +235,31 @@ fn complex(
     }
     out.push('>');
     if let Some(name) = wrapped(key, item, field) {
+        form.inner().line(out);
         out.push('<');
         out.push_str(name);
         out.push('>');
-        written(out, model, name, object)?;
+        let children = written(out, form.inner().inner(), model, name, object)?;
+        form.inner().closed(out, children);
         out.push_str("</");
         out.push_str(name);
         out.push('>');
+        form.closed(out, 1);
         out.push_str("</");
         out.push_str(key);
         out.push('>');
         return Ok(());
     }
     let inner = child_node(model, node, key, item, field);
-    match url.is_some() {
+    let children = match url.is_some() {
         true => {
             let mut kept = object.clone();
             kept.remove("url");
-            written(out, model, &inner, &kept)?;
+            written(out, form.inner(), model, &inner, &kept)?
         }
-        false => written(out, model, &inner, object)?,
-    }
+        false => written(out, form.inner(), model, &inner, object)?,
+    };
+    form.closed(out, children);
     out.push_str("</");
     out.push_str(key);
     out.push('>');

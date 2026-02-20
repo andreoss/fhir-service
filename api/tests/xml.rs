@@ -385,3 +385,178 @@ async fn live_xml_is_served_and_accepted_over_a_socket() {
 
     running.stopped().await;
 }
+
+#[tokio::test]
+async fn a_pretty_xml_answer_is_indented_and_reads_the_same() {
+    let app = seeded().await;
+    let reply = request(
+        &app,
+        "GET",
+        "/Patient/xa-1?_format=xml&_pretty=true",
+        &[],
+        &[],
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert_eq!(header(&reply, "content-type"), XML, "{}", reply.body);
+    assert!(reply.body.starts_with("<Patient"), "{}", reply.body);
+    assert!(
+        reply.body.contains("\n  <id value=\"xa-1\"/>"),
+        "{}",
+        reply.body
+    );
+    assert!(
+        reply.body.contains("\n  <active value=\"true\"/>"),
+        "{}",
+        reply.body
+    );
+    let pretty = fhir_core::xml::from_xml(FhirVersion::R4, &reply.body).expect("pretty is read");
+    let findings = fhir_core::model::Model::of(FhirVersion::R4).check(&pretty);
+    assert!(findings.is_empty(), "{findings:?}");
+    let compact = request(&app, "GET", "/Patient/xa-1?_format=xml", &[], &[]).await;
+    let plain = fhir_core::xml::from_xml(FhirVersion::R4, &compact.body).expect("compact is read");
+    assert_eq!(pretty, plain, "{pretty} is not {plain}");
+    assert!(!compact.body.contains('\n'), "{}", compact.body);
+}
+
+#[tokio::test]
+async fn a_pretty_xml_answer_comes_from_the_accept_header_too() {
+    let app = seeded().await;
+    let reply = request(
+        &app,
+        "GET",
+        "/Patient/xa-1?_pretty=true",
+        &[("accept", XML)],
+        &[],
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert!(
+        reply.body.contains("\n  <id value=\"xa-1\"/>"),
+        "{}",
+        reply.body
+    );
+    let asked = request(
+        &app,
+        "GET",
+        "/Patient/xa-1?_pretty=false",
+        &[("accept", XML)],
+        &[],
+    )
+    .await;
+    assert_eq!(asked.status, StatusCode::OK, "{}", asked.body);
+    assert!(!asked.body.contains('\n'), "{}", asked.body);
+}
+
+#[tokio::test]
+async fn a_pretty_xml_outcome_is_indented() {
+    let app = seeded().await;
+    let reply = request(
+        &app,
+        "GET",
+        "/Patient/absent?_format=xml&_pretty=true",
+        &[],
+        &[],
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::NOT_FOUND, "{}", reply.body);
+    assert_eq!(header(&reply, "content-type"), XML, "{}", reply.body);
+    assert!(
+        reply.body.starts_with("<OperationOutcome"),
+        "{}",
+        reply.body
+    );
+    assert!(reply.body.contains("\n  <issue>"), "{}", reply.body);
+    let read_back =
+        fhir_core::xml::from_xml(FhirVersion::R4, &reply.body).expect("the outcome is read");
+    assert_eq!(read_back["resourceType"], "OperationOutcome");
+}
+
+#[tokio::test]
+async fn a_pretty_xml_bundle_is_indented_and_reads_the_same() {
+    let app = seeded().await;
+    let reply = request(&app, "GET", "/Patient?_format=xml&_pretty=true", &[], &[]).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert!(reply.body.contains("\n  <entry>"), "{}", reply.body);
+    assert!(
+        reply.body.contains("\n        <id value=\"xa-1\"/>"),
+        "{}",
+        reply.body
+    );
+    let read_back =
+        fhir_core::xml::from_xml(FhirVersion::R4, &reply.body).expect("the bundle is read");
+    assert_eq!(read_back["entry"][0]["resource"]["id"], "xa-1");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn live_a_pretty_xml_answer_crosses_a_socket() {
+    let running = Running::started(service()).await;
+    let pretty = running
+        .exchange(
+            "GET",
+            "/Patient/xp-1?_format=xml&_pretty=true",
+            &[("accept", XML)],
+            &[],
+        )
+        .await;
+    assert_eq!(pretty.status, StatusCode::NOT_FOUND, "{}", pretty.body);
+    assert!(pretty.body.contains("\n  <issue>"), "{}", pretty.body);
+
+    let created = running
+        .exchange(
+            "POST",
+            "/Patient",
+            &[("content-type", XML)],
+            &patient_xml("xp-1", "true"),
+        )
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+
+    let read = running
+        .exchange("GET", "/Patient/xp-1?_format=xml&_pretty=true", &[], &[])
+        .await;
+    assert_eq!(read.status, StatusCode::OK, "{}", read.body);
+    assert!(
+        read.body.contains("\n  <id value=\"xp-1\"/>"),
+        "{}",
+        read.body
+    );
+    let again = running
+        .exchange("GET", "/Patient/xp-1?_format=xml", &[], &[])
+        .await;
+    assert_eq!(again.status, StatusCode::OK, "{}", again.body);
+    assert!(!again.body.contains('\n'), "{}", again.body);
+    assert!(
+        again.body.contains("<id value=\"xp-1\"/>"),
+        "{}",
+        again.body
+    );
+
+    running.stopped().await;
+}
+
+#[tokio::test]
+async fn an_indented_xml_body_is_accepted() {
+    let app = service();
+    let indented = concat!(
+        "<Patient xmlns=\"http://hl7.org/fhir\">\n",
+        "  <id value=\"xi-1\"/>\n",
+        "  <active value=\"true\"/>\n",
+        "  <name>\n",
+        "    <family value=\"Smith\"/>\n",
+        "  </name>\n",
+        "</Patient>",
+    );
+    let created = request(
+        &app,
+        "POST",
+        "/Patient",
+        &[("content-type", XML)],
+        indented.as_bytes(),
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    let read = request(&app, "GET", "/Patient/xi-1", &[], &[]).await;
+    assert_eq!(read.status, StatusCode::OK, "{}", read.body);
+    assert_eq!(json(&read)["name"][0]["family"], "Smith");
+}

@@ -244,7 +244,7 @@ async fn finished(
         }
     };
     if let Some(media) = media.filter(|media| media.is_xml()) {
-        match as_xml(state.version, &bytes) {
+        match as_xml(state.version, &bytes, pretty) {
             Some(rendered) => {
                 parts
                     .headers
@@ -278,11 +278,13 @@ async fn finished(
     }
 }
 
-fn as_xml(version: FhirVersion, bytes: &Bytes) -> Option<Vec<u8>> {
+fn as_xml(version: FhirVersion, bytes: &Bytes, pretty: bool) -> Option<Vec<u8>> {
     let value = serde_json::from_slice::<Value>(bytes).ok()?;
-    fhir_core::xml::to_xml(version, &value)
-        .ok()
-        .map(String::into_bytes)
+    let written = match pretty {
+        true => fhir_core::xml::to_xml_pretty(version, &value),
+        false => fhir_core::xml::to_xml(version, &value),
+    };
+    written.ok().map(String::into_bytes)
 }
 
 fn sized(length: u64) -> HeaderValue {
