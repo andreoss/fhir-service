@@ -696,10 +696,83 @@ async fn a_deleted_resource_is_restored_by_an_update() {
     request(&app, "POST", "/Patient", &[], &patient("pt-d5", true)).await;
     request(&app, "DELETE", "/Patient/pt-d5", &[], &[]).await;
     let reply = request(&app, "PUT", "/Patient/pt-d5", &[], &patient("pt-d5", false)).await;
-    assert_eq!(reply.status, StatusCode::OK);
+    assert_eq!(
+        reply.status,
+        StatusCode::CREATED,
+        "the specification asks for 201 when a deleted resource is brought back to life"
+    );
     assert_eq!(header(&reply, "etag"), "W/\"3\"");
+    assert!(header(&reply, "location").ends_with("/Patient/pt-d5/_history/3"));
     let read = request(&app, "GET", "/Patient/pt-d5", &[], &[]).await;
     assert_eq!(read.status, StatusCode::OK);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&read.body).unwrap()["active"],
+        false
+    );
+    let marker = request(&app, "GET", "/Patient/pt-d5/_history/2", &[], &[]).await;
+    assert_eq!(marker.status, StatusCode::GONE);
+}
+
+#[tokio::test]
+async fn an_update_under_the_etag_of_the_delete_brings_the_resource_back() {
+    let app = service();
+    request(&app, "POST", "/Patient", &[], &patient("pt-d9", true)).await;
+    let deleted = request(&app, "DELETE", "/Patient/pt-d9", &[], &[]).await;
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT);
+    let marker = header(&deleted, "etag").to_owned();
+    assert_eq!(marker, "W/\"2\"", "the delete names the version it wrote");
+    let reply = request(
+        &app,
+        "PUT",
+        "/Patient/pt-d9",
+        &[("if-match", &marker)],
+        &patient("pt-d9", false),
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::CREATED, "{}", reply.body);
+    assert_eq!(header(&reply, "etag"), "W/\"3\"");
+    let read = request(&app, "GET", "/Patient/pt-d9", &[], &[]).await;
+    assert_eq!(read.status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn a_stale_if_match_brings_nothing_back_and_writes_no_version() {
+    let app = service();
+    request(&app, "POST", "/Patient", &[], &patient("pt-d10", true)).await;
+    request(&app, "DELETE", "/Patient/pt-d10", &[], &[]).await;
+    let reply = request(
+        &app,
+        "PUT",
+        "/Patient/pt-d10",
+        &[("if-match", "W/\"1\"")],
+        &patient("pt-d10", false),
+    )
+    .await;
+    assert_eq!(
+        reply.status,
+        StatusCode::PRECONDITION_FAILED,
+        "{}",
+        reply.body
+    );
+    let read = request(&app, "GET", "/Patient/pt-d10", &[], &[]).await;
+    assert_eq!(read.status, StatusCode::GONE, "{}", read.body);
+    let version = request(&app, "GET", "/Patient/pt-d10/_history/3", &[], &[]).await;
+    assert_eq!(version.status, StatusCode::NOT_FOUND, "nothing was written");
+}
+
+#[tokio::test]
+async fn an_update_of_a_live_resource_answers_ok() {
+    let app = service();
+    request(&app, "POST", "/Patient", &[], &patient("pt-d11", true)).await;
+    let reply = request(
+        &app,
+        "PUT",
+        "/Patient/pt-d11",
+        &[],
+        &patient("pt-d11", false),
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
 }
 
 #[tokio::test]

@@ -399,13 +399,29 @@ fn contended(version: fhir_core::FhirVersion) -> Error {
     }
 }
 
+enum Presence {
+    Live,
+    Deleted,
+    Absent,
+}
+
+async fn presence(state: &AppState, id: &ResourceId) -> Presence {
+    match state.store.read(id).await {
+        Ok(current) if current.is_deleted() => Presence::Deleted,
+        Ok(_) => Presence::Live,
+        Err(_) => Presence::Absent,
+    }
+}
+
 async fn upsert(
     state: &AppState,
     envelope: ResourceEnvelope,
     expected: Option<&VersionId>,
 ) -> Result<Written, Error> {
     let offered = envelope.clone();
+    let recreated = matches!(presence(state, envelope.id()).await, Presence::Deleted);
     match state.store.update(envelope, expected).await {
+        Ok(stored) if recreated => Ok(Written::Created(stored)),
         Ok(stored) => Ok(Written::Updated(stored)),
         Err(Error::VersionConflict) => Err(contended(state.version)),
         Err(Error::NotFound) if expected.is_none() => {
