@@ -250,3 +250,119 @@ fn the_report_from_outside_names_every_version_and_carries_no_error() {
         assert!(failed.is_empty(), "{version}: {failed:?}");
     }
 }
+
+fn script_reports() -> Vec<Value> {
+    let held = folder().join("external").join("scripts").join("r4");
+    let mut reports: Vec<Value> = Vec::new();
+    for entry in std::fs::read_dir(&held).expect("the published suite kept its reports") {
+        let path = entry.expect("a kept report is readable").path();
+        if path.extension().and_then(|kind| kind.to_str()) != Some("json") {
+            continue;
+        }
+        let body = std::fs::read_to_string(&path).expect("a kept report is text");
+        reports.push(json(&body));
+    }
+    reports
+}
+
+fn push_actions<'a>(held: &mut Vec<&'a Value>, holder: &'a Value) {
+    if let Some(actions) = holder.get("action").and_then(Value::as_array) {
+        held.extend(actions);
+    }
+}
+
+fn script_actions<'a>(report: &'a Value, phase: &str) -> Vec<&'a Value> {
+    let mut held: Vec<&Value> = Vec::new();
+    match report.get(phase) {
+        Some(Value::Array(items)) => {
+            for item in items {
+                push_actions(&mut held, item);
+            }
+        }
+        Some(other) => push_actions(&mut held, other),
+        None => {}
+    }
+    held
+}
+
+fn script_failures(report: &Value, name: &str) -> Vec<String> {
+    let mut held: Vec<String> = Vec::new();
+    for phase in ["setup", "test", "teardown"] {
+        for action in script_actions(report, phase) {
+            for kind in ["operation", "assert"] {
+                let Some(action) = action.get(kind) else {
+                    continue;
+                };
+                let result = action
+                    .get("result")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                if result != "fail" && result != "error" {
+                    continue;
+                }
+                let message = action
+                    .get("message")
+                    .or_else(|| action.get("description"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                held.push(format!("{name}: {}", message.replace('"', "")));
+            }
+        }
+    }
+    held
+}
+
+const SCRIPT_NAMES: [&str; 5] = [
+    "testscript-example-general",
+    "testscript-example-history",
+    "testscript-example-readtest",
+    "testscript-example-search",
+    "testscript-example-update",
+];
+
+const SCRIPT_FAILURES: [&str; 6] = [
+    "testscript-example-general: Response Code: Expected Response Code equals [200], but found [201].",
+    "testscript-example-history: Response Code: Expected Response Code equals [201], but found [200].",
+    "testscript-example-readtest: Content-Type: Expected Content-Type equals [application/fhir+xml], but found [application/fhir+json].",
+    "testscript-example-readtest: Response: Expected Response equals [bad], but found [notFound].",
+    "testscript-example-search: Navigation Links: Expected all navigation links, but did not receive.",
+    "testscript-example-update: Response Code: Expected Response Code equals [201], but found [200].",
+];
+
+#[test]
+fn the_published_test_scripts_a_running_instance_answered() {
+    let reports = script_reports();
+    let mut named: Vec<String> = reports
+        .iter()
+        .filter_map(|report| report.get("name").and_then(Value::as_str))
+        .map(str::to_owned)
+        .collect();
+    named.sort();
+    for name in SCRIPT_NAMES {
+        assert!(
+            named.iter().any(|held| held.ends_with(name)),
+            "the suite never ran {name}: {named:?}"
+        );
+    }
+    let kept = reports.len();
+    assert_eq!(
+        kept,
+        SCRIPT_NAMES.len(),
+        "the suite kept {kept} report(s): {named:?}"
+    );
+    let mut found: Vec<String> = reports
+        .iter()
+        .flat_map(|report| {
+            let name = report
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim_start_matches("TestReport for ");
+            script_failures(report, name)
+        })
+        .collect();
+    found.sort();
+    let mut known: Vec<String> = SCRIPT_FAILURES.iter().map(|line| line.to_string()).collect();
+    known.sort();
+    assert_eq!(found, known, "the suite judged the instance differently");
+}
