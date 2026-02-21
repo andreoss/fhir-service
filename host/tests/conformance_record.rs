@@ -160,6 +160,28 @@ fn severities(report: &Value, wanted: &[&str]) -> Vec<String> {
         .collect()
 }
 
+fn kept_with_terminology(version: &str) -> Value {
+    let path = folder()
+        .join("external")
+        .join("tx")
+        .join(format!("{}.json", version.to_ascii_lowercase()));
+    let text = std::fs::read_to_string(&path)
+        .unwrap_or_else(|_| panic!("{version} has no report judged with a terminology server"));
+    serde_json::from_str(&text).expect("the report is json")
+}
+
+#[test]
+fn the_report_taken_with_a_terminology_server_carries_no_error() {
+    for version in VERSIONS {
+        let report = kept_with_terminology(version);
+        assert_eq!(report["resourceType"], "Bundle", "{version}");
+        let judged = report["entry"].as_array().map(Vec::len).unwrap_or_default();
+        assert_eq!(judged, 11, "{version} was judged on {judged} answers");
+        let failed = severities(&report, &["error", "fatal"]);
+        assert!(failed.is_empty(), "{version}: {failed:?}");
+    }
+}
+
 #[test]
 fn the_report_from_outside_names_every_version_and_carries_no_error() {
     for version in VERSIONS {
