@@ -182,6 +182,63 @@ fn the_report_taken_with_a_terminology_server_carries_no_error() {
     }
 }
 
+fn bulk_events(version: &str) -> Vec<Value> {
+    let path = folder()
+        .join("external")
+        .join("bulk")
+        .join(format!("{}.ndjson", version.to_ascii_lowercase()));
+    let text = std::fs::read_to_string(&path)
+        .unwrap_or_else(|_| panic!("{version} has no bulk export report from outside"));
+    text.lines()
+        .map(|line| serde_json::from_str(line).expect("the report row is json"))
+        .collect()
+}
+
+fn bulk_events_named(version: &str, event: &str) -> Vec<Value> {
+    bulk_events(version)
+        .into_iter()
+        .filter(|row| row["eventId"] == event)
+        .collect()
+}
+
+fn bulk_figure(row: &Value, name: &str) -> u64 {
+    row["eventDetail"][name].as_u64().unwrap_or_default()
+}
+
+#[test]
+fn the_bulk_export_the_published_client_drove_carries_no_error() {
+    for version in VERSIONS {
+        let kickoff = bulk_events_named(version, "kickoff");
+        assert_eq!(kickoff.len(), 1, "{version} was kicked off {kickoff:?}");
+        let url = kickoff[0]["eventDetail"]["exportUrl"]
+            .as_str()
+            .unwrap_or_default();
+        assert!(url.ends_with("$export"), "{version} kicked off {url}");
+        assert!(
+            kickoff[0]["eventDetail"]["errorCode"].is_null(),
+            "{version} kickoff failed: {}",
+            kickoff[0]["eventDetail"]["errorBody"]
+        );
+        let pages = bulk_events_named(version, "status_page_complete");
+        assert!(!pages.is_empty(), "{version} reported no manifest page");
+        for page in &pages {
+            assert_eq!(bulk_figure(page, "errorFileCount"), 0, "{version}: {page}");
+        }
+        let downloaded: u64 = bulk_events_named(version, "download_complete")
+            .iter()
+            .map(|row| bulk_figure(row, "resourceCount"))
+            .sum();
+        assert!(downloaded > 0, "{version} downloaded no resource");
+        let complete = bulk_events_named(version, "export_complete");
+        assert_eq!(complete.len(), 1, "{version} never completed: {complete:?}");
+        assert!(
+            bulk_figure(&complete[0], "resources") == downloaded,
+            "{version} completed with {} of {downloaded} resources",
+            bulk_figure(&complete[0], "resources")
+        );
+    }
+}
+
 #[test]
 fn the_report_from_outside_names_every_version_and_carries_no_error() {
     for version in VERSIONS {
