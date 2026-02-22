@@ -777,6 +777,7 @@ dependencies = [
  "fhir-api",
  "fhir-core",
  "fhir-jobs",
+ "fhir-shadow",
  "fhir-store",
  "fhir-telemetry",
  "jsonwebtoken",
@@ -800,6 +801,14 @@ dependencies = [
  "serde_json",
  "sqlx",
  "tokio",
+]
+
+[[package]]
+name = "fhir-shadow"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]

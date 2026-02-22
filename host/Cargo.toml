@@ -23,6 +23,7 @@ backend-document = ["dep:fhir-adapter-document"]
 
 [dev-dependencies]
 fhir-core = { path = "../core", features = ["fixtures"] }
+fhir-shadow = { path = "../shadow" }
 jsonwebtoken = { version = "10", features = ["rust_crypto"] }
 mongodb = "3"
 serde_json = "1"

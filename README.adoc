@@ -65,7 +65,8 @@ The rest are read in `host`, each with a default that needs no operator.
 port and the suite every engine satisfies, `store` the query and index
 types, `adapter-memory`, `adapter-relational` and `adapter-document` the
 engines, `jobs` the durable queue and the bulk handlers, `telemetry` the
-measurements, `api` the HTTP surface and the authorization, `host` the
+measurements, `api` the HTTP surface and the authorization, `shadow` a
+second engine run beside the first to compare their answers, `host` the
 binary.
 
 == License
