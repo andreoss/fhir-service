@@ -322,11 +322,11 @@ const SCRIPT_NAMES: [&str; 5] = [
 
 const SCRIPT_FAILURES: [&str; 6] = [
     "testscript-example-general: Response Code: Expected Response Code equals [200], but found [201].",
-    "testscript-example-history: Response Code: Expected Response Code equals [201], but found [200].",
+    "testscript-example-history: Response Code: Expected Response Code equals [200], but found [400].",
     "testscript-example-readtest: Content-Type: Expected Content-Type equals [application/fhir+xml], but found [application/fhir+json].",
     "testscript-example-readtest: Response: Expected Response equals [bad], but found [notFound].",
     "testscript-example-search: Navigation Links: Expected all navigation links, but did not receive.",
-    "testscript-example-update: Response Code: Expected Response Code equals [201], but found [200].",
+    "testscript-example-update: Response: Expected Response equals [okay], but found [bad].",
 ];
 
 #[test]
