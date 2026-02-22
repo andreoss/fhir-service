@@ -812,3 +812,38 @@ async fn the_earliest_version_shapes_its_statement_as_that_version_defines_it() 
     assert!(later["rest"][0]["operation"][0]["definition"].is_string());
     assert!(later["rest"][0]["resource"][0]["operation"].is_array());
 }
+
+#[tokio::test]
+async fn the_statement_advertises_only_the_formats_the_build_serves() {
+    for version in FhirVersion::ALL {
+        let held = statement(&service(version)).await;
+        let declared: Vec<String> = held["format"]
+            .as_array()
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let wanted = [
+            "json",
+            "xml",
+            "application/fhir+json",
+            "application/fhir+xml",
+        ];
+        for format in wanted {
+            assert!(
+                declared.iter().any(|held| held == format),
+                "{version} must advertise {format:?}, got {declared:?}"
+            );
+        }
+        assert!(
+            declared
+                .iter()
+                .all(|held| !held.contains("turtle") && held != "application/rdf+xml"),
+            "{version} must not advertise a format it does not serve: {declared:?}"
+        );
+    }
+}
