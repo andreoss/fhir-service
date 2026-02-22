@@ -1,5 +1,5 @@
 use crate::search::value::{SearchValue, ValueType};
-use crate::{Error, ResourceType};
+use crate::{Error, FhirVersion, ResourceType};
 use serde_json::Value;
 use std::str::FromStr;
 
@@ -56,6 +56,13 @@ impl Modifier {
                 ValueType::Token | ValueType::Uri | ValueType::Reference
             ),
             Modifier::Type(_) | Modifier::Identifier => value_type == ValueType::Reference,
+        }
+    }
+
+    pub fn applies_in(&self, value_type: ValueType, version: FhirVersion) -> bool {
+        match self {
+            Modifier::Text if value_type == ValueType::Reference => version == FhirVersion::R5,
+            other => other.applies_to(value_type),
         }
     }
 
@@ -136,14 +143,18 @@ fn texts(element: &Value, out: &mut Vec<String>) {
 }
 
 fn exact(value: &SearchValue, element: &Value) -> bool {
-    let Some(wanted) = wanted(value) else { return false };
+    let Some(wanted) = wanted(value) else {
+        return false;
+    };
     let mut found = Vec::new();
     plain(element, &mut found);
     found.iter().any(|text| text == wanted)
 }
 
 fn contains(value: &SearchValue, element: &Value) -> bool {
-    let Some(wanted) = wanted(value) else { return false };
+    let Some(wanted) = wanted(value) else {
+        return false;
+    };
     let wanted = wanted.to_lowercase();
     let mut found = Vec::new();
     plain(element, &mut found);
@@ -162,7 +173,9 @@ fn plain(element: &Value, out: &mut Vec<String>) {
 }
 
 fn narrative(value: &SearchValue, element: &Value) -> bool {
-    let Some(wanted) = wanted(value) else { return false };
+    let Some(wanted) = wanted(value) else {
+        return false;
+    };
     let wanted = wanted.to_lowercase();
     let mut found = Vec::new();
     texts(element, &mut found);
@@ -172,7 +185,9 @@ fn narrative(value: &SearchValue, element: &Value) -> bool {
 }
 
 fn hierarchy(value: &SearchValue, element: &Value, below: bool) -> bool {
-    let Some(wanted) = wanted(value) else { return false };
+    let Some(wanted) = wanted(value) else {
+        return false;
+    };
     let mut found = Vec::new();
     strings(element, &mut found);
     found.iter().any(|stored| {
@@ -199,7 +214,9 @@ fn descends(child: &str, ancestor: &str) -> bool {
 const URN: &str = "urn:";
 
 fn typed_reference(value: &SearchValue, resource_type: &ResourceType, element: &Value) -> bool {
-    let Some(wanted) = wanted(value) else { return false };
+    let Some(wanted) = wanted(value) else {
+        return false;
+    };
     let mut found = Vec::new();
     strings(element, &mut found);
     found.iter().any(|stored| {
@@ -214,16 +231,14 @@ fn typed_reference(value: &SearchValue, resource_type: &ResourceType, element: &
 fn identifier(value: &SearchValue, element: &Value) -> bool {
     match element {
         Value::Array(items) => items.iter().any(|item| identifier(value, item)),
-        Value::Object(map) => map.get("identifier").is_some_and(|found| value.matches(found)),
+        Value::Object(map) => map
+            .get("identifier")
+            .is_some_and(|found| value.matches(found)),
         _ => false,
     }
 }
 
-pub fn value_of(
-    modifier: &Modifier,
-    declared: ValueType,
-    raw: &str,
-) -> Result<SearchValue, Error> {
+pub fn value_of(modifier: &Modifier, declared: ValueType, raw: &str) -> Result<SearchValue, Error> {
     if !modifier.applies_to(declared) {
         return Err(Error::UnsupportedParameter(format!(
             "modifier on {raw:?} does not apply to this parameter"
@@ -337,6 +352,22 @@ mod tests {
     }
 
     #[test]
+    fn a_text_modifier_is_allowed_on_a_reference_only_in_r5() {
+        for version in FhirVersion::ALL {
+            let allowed = Modifier::Text.applies_in(ValueType::Reference, version);
+            assert_eq!(allowed, version == FhirVersion::R5, "{version:?}");
+            assert!(
+                Modifier::Text.applies_in(ValueType::Token, version),
+                "{version:?}"
+            );
+            assert!(
+                !Modifier::Text.applies_in(ValueType::String, version),
+                "{version:?}"
+            );
+        }
+    }
+
+    #[test]
     fn a_value_the_modifier_cannot_carry_is_rejected() {
         assert!(matches!(
             value_of(&Modifier::Missing, ValueType::Token, "yes").unwrap_err(),
@@ -399,13 +430,22 @@ mod tests {
         let above = Modifier::Above;
         let code = SearchValue::parse(ValueType::Token, "a.b").unwrap();
         let element = json!({"coding": [{"code": "a.b.c"}]});
-        assert!(!below.accepts(&code, &element), "a code is not a dotted path");
-        assert!(!above.accepts(&SearchValue::parse(ValueType::Token, "a.b.c.d").unwrap(), &element));
+        assert!(
+            !below.accepts(&code, &element),
+            "a code is not a dotted path"
+        );
+        assert!(!above.accepts(
+            &SearchValue::parse(ValueType::Token, "a.b.c.d").unwrap(),
+            &element
+        ));
         let itself = SearchValue::parse(ValueType::Token, "a.b.c").unwrap();
         assert!(below.accepts(&itself, &element));
         assert!(above.accepts(&itself, &element));
         let qualified = SearchValue::parse(ValueType::Token, "urn:other|a.b.c").unwrap();
-        assert!(!below.accepts(&qualified, &json!({"coding": [{"system": "urn:s", "code": "a.b.c"}]})));
+        assert!(!below.accepts(
+            &qualified,
+            &json!({"coding": [{"system": "urn:s", "code": "a.b.c"}]})
+        ));
     }
 
     #[test]

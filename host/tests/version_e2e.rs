@@ -28,7 +28,10 @@ fn live_every_named_version_serves_a_whole_interaction_cycle() {
             port,
             "PUT",
             "/Patient/e2e-one",
-            &[("Content-Type", "application/fhir+json"), ("if-match", "W/\"1\"")],
+            &[
+                ("Content-Type", "application/fhir+json"),
+                ("if-match", "W/\"1\""),
+            ],
             r#"{"resourceType":"Patient","id":"e2e-one","active":false}"#.as_bytes(),
         );
         let searched = request(port, "GET", "/Patient?_id=e2e-one", &[], &[]);
@@ -49,9 +52,46 @@ fn live_every_named_version_serves_a_whole_interaction_cycle() {
         assert_eq!(capability.status, 200, "{version}: {}", capability.body);
         assert_eq!(json(&capability.body)["fhirVersion"], numbered, "{version}");
         assert_eq!(versions.status, 200, "{version}: {}", versions.body);
-        assert!(versions.body.contains(numbered), "{version}: {}", versions.body);
+        assert!(
+            versions.body.contains(numbered),
+            "{version}: {}",
+            versions.body
+        );
         assert_eq!(deleted.status, 204, "{version}: {}", deleted.body);
         assert_eq!(gone.status, 410, "{version}: {}", gone.body);
+    }
+}
+
+#[test]
+fn live_every_named_version_answers_a_full_text_search_over_the_narrative() {
+    for (version, _) in VERSIONS {
+        let (child, port) = spawn_with(&[("FHIR_VERSION", version)]);
+        let headers = [("Content-Type", "application/fhir+json")];
+        let observation = r#"{"resourceType":"Observation","id":"e2e-text","status":"final","text":{"status":"generated","div":"<div><p>Fever and chills with bone pain</p></div>"},"code":{"text":"note"}}"#;
+        let created = request(port, "POST", "/Observation", &headers, observation.as_bytes());
+        let found = request(port, "GET", "/Observation?_text=fever", &[], &[]);
+        let none = request(port, "GET", "/Observation?_text=rash", &[], &[]);
+        let boolean = request(
+            port,
+            "GET",
+            "/Observation?_text=(bone%20OR%20liver)%20AND%20pain",
+            &[],
+            &[],
+        );
+        stop(child);
+
+        assert_eq!(created.status, 201, "{version}: {}", created.body);
+        assert_eq!(found.status, 200, "{version}: {}", found.body);
+        assert_eq!(json(&found.body)["total"], 1, "{version}");
+        assert_eq!(
+            json(&found.body)["entry"][0]["resource"]["id"],
+            "e2e-text",
+            "{version}"
+        );
+        assert_eq!(none.status, 200, "{version}: {}", none.body);
+        assert_eq!(json(&none.body)["total"], 0, "{version}");
+        assert_eq!(boolean.status, 200, "{version}: {}", boolean.body);
+        assert_eq!(json(&boolean.body)["total"], 1, "{version}");
     }
 }
 
@@ -107,7 +147,13 @@ fn live_a_body_that_does_not_match_its_type_is_refused_by_every_version() {
     for (version, _) in VERSIONS {
         let (child, port) = spawn_with(&[("FHIR_VERSION", version)]);
         let headers = [("Content-Type", "application/fhir+json")];
-        let bad = request(port, "POST", "/Patient", &headers, br#"{"resourceType":"Patient","id":"pt-x1","favourite":"tea"}"#);
+        let bad = request(
+            port,
+            "POST",
+            "/Patient",
+            &headers,
+            br#"{"resourceType":"Patient","id":"pt-x1","favourite":"tea"}"#,
+        );
         let read = request(port, "GET", "/Patient/pt-x1", &[], &[]);
         let validated = request(
             port,
@@ -122,7 +168,11 @@ fn live_a_body_that_does_not_match_its_type_is_refused_by_every_version() {
         assert!(bad.body.contains("structure"), "{version}: {}", bad.body);
         assert_eq!(read.status, 404, "{version}: {}", read.body);
         assert_eq!(validated.status, 200, "{version}: {}", validated.body);
-        assert!(validated.body.contains("cardinality"), "{version}: {}", validated.body);
+        assert!(
+            validated.body.contains("cardinality"),
+            "{version}: {}",
+            validated.body
+        );
     }
 }
 
@@ -140,7 +190,10 @@ fn live_each_version_emits_the_shapes_that_version_defines() {
         let entry = &json(&history.body)["entry"][0];
         match version {
             "STU3" => {
-                assert!(profile["reference"].as_str().is_some(), "{version}: {profile}");
+                assert!(
+                    profile["reference"].as_str().is_some(),
+                    "{version}: {profile}"
+                );
                 assert!(entry["response"].is_null(), "{version}: {entry}");
             }
             _ => {

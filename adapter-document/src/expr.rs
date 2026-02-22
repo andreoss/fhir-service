@@ -3,7 +3,9 @@ use fhir_core::search::{
     SearchValue, Target, Token, TokenSystem, ValueType,
 };
 use fhir_core::{Error, InstantPeriod};
-use fhir_store::index::{IDENTIFIER, LEFT, MAIN, NARRATIVE, OF_TYPE, PLAIN, PRESENCE, RIGHT, WORDS};
+use fhir_store::index::{
+    IDENTIFIER, LEFT, MAIN, NARRATIVE, OF_TYPE, PLAIN, PRESENCE, RIGHT, WORDS,
+};
 use mongodb::bson::{doc, Bson, Document};
 
 use crate::record::{high_key, low_key};
@@ -351,12 +353,10 @@ impl Compiler {
                 code,
             } => self.quantity_condition(number, system, code.as_deref(), variable),
             SearchValue::Reference(text) => self.reference_condition(text, variable),
-            SearchValue::Uri(text) => {
-                equals(field(variable, "value"), Bson::String(text.clone()))
-            }
-            SearchValue::OfType { .. } | SearchValue::Composite { .. } | SearchValue::Missing(_) => {
-                Bson::Boolean(false)
-            }
+            SearchValue::Uri(text) => equals(field(variable, "value"), Bson::String(text.clone())),
+            SearchValue::OfType { .. }
+            | SearchValue::Composite { .. }
+            | SearchValue::Missing(_) => Bson::Boolean(false),
         }
     }
 
@@ -468,6 +468,9 @@ impl Compiler {
 
     fn qualified(&mut self, filter: &Filter, value: &SearchValue) -> Result<Bson, Error> {
         let param = param_key(filter);
+        if filter.modifier == Modifier::None && param == "_text" {
+            return Ok(self.full_text(value, &param));
+        }
         let text = wanted(value).map(str::to_owned);
         Ok(match &filter.modifier {
             Modifier::Exact => match text {
@@ -525,6 +528,40 @@ impl Compiler {
         })
     }
 
+    fn full_text(&mut self, value: &SearchValue, param: &str) -> Bson {
+        let SearchValue::Text(raw) = value else {
+            return Bson::Boolean(false);
+        };
+        let Ok(query) = fhir_core::search::text::text_query(raw) else {
+            return Bson::Boolean(false);
+        };
+        self.text_expression(&query.expr, param)
+    }
+
+    fn text_expression(&mut self, expr: &fhir_core::search::text::Expr, param: &str) -> Bson {
+        use fhir_core::search::text::Expr;
+        match expr {
+            Expr::Term(term) => {
+                let term = term.clone();
+                let param = param.to_owned();
+                self.holds("text", &param, NARRATIVE, move |_, variable| {
+                    matching(
+                        field(variable, "folded"),
+                        format!("(^| ){}($| )", escaped(&term)),
+                    )
+                })
+            }
+            Expr::All(parts) => all(parts
+                .iter()
+                .map(|part| self.text_expression(part, param))
+                .collect()),
+            Expr::Any(parts) => any(parts
+                .iter()
+                .map(|part| self.text_expression(part, param))
+                .collect()),
+        }
+    }
+
     fn scalar(&mut self, filter: &Filter, value: &SearchValue, held: Bson) -> Bson {
         let text = wanted(value).map(str::to_owned);
         match (&filter.modifier, text) {
@@ -538,9 +575,7 @@ impl Compiler {
                 equals(held.clone(), Bson::String(text.clone())),
                 matching(held, format!("^{}[./]", escaped(&text))),
             ]),
-            (Modifier::Above, Some(text)) => {
-                Bson::Document(doc! {"$in": [held, prefixes(&text)]})
-            }
+            (Modifier::Above, Some(text)) => Bson::Document(doc! {"$in": [held, prefixes(&text)]}),
             (_, Some(text)) => match value {
                 SearchValue::Token(token) => match token.system {
                     TokenSystem::Exact(_) => Bson::Boolean(false),
@@ -614,10 +649,12 @@ impl Compiler {
         let mut parts = Vec::new();
         for value in &filter.values {
             let hit = self.hit(filter, value)?;
-            parts.push(match filter.modifier.is_exclusive() || !value.is_negated() {
-                true => hit,
-                false => negate(hit),
-            });
+            parts.push(
+                match filter.modifier.is_exclusive() || !value.is_negated() {
+                    true => hit,
+                    false => negate(hit),
+                },
+            );
         }
         let found = any(parts);
         Ok(match filter.modifier.is_exclusive() {
@@ -839,6 +876,30 @@ mod tests {
     }
 
     #[test]
+    fn a_text_search_matches_whole_words_in_the_narrative() {
+        let def = def("Patient", "_text");
+        let filter = Filter {
+            modifier: Modifier::None,
+            ..Filter::new(
+                "_text",
+                def.target.clone(),
+                vec![
+                    SearchValue::parse(ValueType::String, "(bone OR liver) AND metastases")
+                        .expect("a valid value"),
+                ],
+            )
+        };
+        let text = compiled(&filter);
+        assert!(text.contains("\"$text\""), "{text}");
+        assert!(text.contains("\"_text\""), "{text}");
+        assert!(text.contains("\"narrative\""), "{text}");
+        assert!(text.contains("$regexMatch"), "{text}");
+        assert!(text.contains("(^| )metastases($| )"), "{text}");
+        assert!(text.contains("$or"), "{text}");
+        assert!(text.contains("\"$and\""), "{text}");
+    }
+
+    #[test]
     fn a_code_without_a_system_places_no_bound_on_the_system() {
         let bare = compiled(&built("Observation", "code", Modifier::None, "c1"));
         assert!(!bare.contains("\"system\""), "{bare}");
@@ -848,7 +909,9 @@ mod tests {
 
     #[test]
     fn every_comparator_of_a_span_reaches_the_condition() {
-        for raw in ["1980", "gt1980", "lt1980", "ge1980", "le1980", "sa1980", "eb1980", "ap1980"] {
+        for raw in [
+            "1980", "gt1980", "lt1980", "ge1980", "le1980", "sa1980", "eb1980", "ap1980",
+        ] {
             let text = compiled(&built("Patient", "birthdate", Modifier::None, raw));
             assert!(text.contains("$date"), "{raw}: {text}");
         }
@@ -856,7 +919,9 @@ mod tests {
 
     #[test]
     fn every_comparator_of_a_decimal_reaches_the_condition() {
-        for raw in ["4.5", "gt4.5", "lt4.5", "ge4.5", "le4.5", "sa4.5", "eb4.5", "ap4.5"] {
+        for raw in [
+            "4.5", "gt4.5", "lt4.5", "ge4.5", "le4.5", "sa4.5", "eb4.5", "ap4.5",
+        ] {
             let text = compiled(&built("Observation", "value-quantity", Modifier::None, raw));
             assert!(text.contains("$quantity"), "{raw}: {text}");
         }
@@ -872,7 +937,10 @@ mod tests {
             ("Observation", "code", Modifier::Above, WORDS),
         ] {
             let text = compiled(&built(resource_type, name, modifier.clone(), "Stone"));
-            assert!(text.contains(slot), "{modifier:?} should read {slot}: {text}");
+            assert!(
+                text.contains(slot),
+                "{modifier:?} should read {slot}: {text}"
+            );
         }
     }
 
@@ -906,7 +974,12 @@ mod tests {
 
     #[test]
     fn a_pointer_written_with_a_type_is_matched_whole() {
-        let full = compiled(&built("Observation", "subject", Modifier::None, "Patient/p1"));
+        let full = compiled(&built(
+            "Observation",
+            "subject",
+            Modifier::None,
+            "Patient/p1",
+        ));
         assert!(full.contains("pointer"), "{full}");
         assert!(!full.contains("logical"), "{full}");
         let bare = compiled(&built("Observation", "subject", Modifier::None, "p1"));
@@ -938,7 +1011,10 @@ mod tests {
             }],
             filters: Vec::new(),
         };
-        let text = compiler.grant(&grant).expect("the grant compiles").to_string();
+        let text = compiler
+            .grant(&grant)
+            .expect("the grant compiles")
+            .to_string();
         assert!(text.contains("$resource_type"), "{text}");
         assert!(text.contains("$reference"), "{text}");
     }

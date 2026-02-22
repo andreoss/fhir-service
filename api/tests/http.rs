@@ -17,7 +17,7 @@ struct Reply {
     body: String,
 }
 
-fn service() -> Service {
+fn writing(version: FhirVersion) -> Service {
     let store = MemoryStore::with_clock(Arc::new(|| {
         FhirInstant::parse("2026-09-06T04:00:00.000Z").unwrap()
     }));
@@ -25,7 +25,11 @@ fn service() -> Service {
         name: "memory-store",
         check: Arc::new(|| Box::pin(async { Ok(()) })),
     }];
-    Service::new(Arc::new(store), FhirVersion::R4, dependencies)
+    Service::new(Arc::new(store), version, dependencies)
+}
+
+fn service() -> Service {
+    writing(FhirVersion::R4)
 }
 
 async fn request(
@@ -35,7 +39,10 @@ async fn request(
     headers: &[(&str, &str)],
     body: &[u8],
 ) -> Reply {
-    let mut builder = Request::builder().method(method).uri(uri).header("host", "localhost");
+    let mut builder = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("host", "localhost");
     for (name, value) in headers {
         builder = builder.header(*name, *value);
     }
@@ -45,7 +52,12 @@ async fn request(
     let headers = response
         .headers()
         .iter()
-        .map(|(name, value)| (name.to_string(), value.to_str().unwrap_or_default().to_owned()))
+        .map(|(name, value)| {
+            (
+                name.to_string(),
+                value.to_str().unwrap_or_default().to_owned(),
+            )
+        })
         .collect();
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     Reply {
@@ -196,7 +208,14 @@ async fn read_unknown_id_returns_outcome_404() {
 async fn vread_returns_historical_version_and_rejects_unknown() {
     let app = service();
     request(&app, "POST", "/Patient", &[], &patient("pt-5", true)).await;
-    let reply = request(&app, "PUT", "/Patient/pt-5", &[("if-match", "W/\"1\"")], &patient("pt-5", false)).await;
+    let reply = request(
+        &app,
+        "PUT",
+        "/Patient/pt-5",
+        &[("if-match", "W/\"1\"")],
+        &patient("pt-5", false),
+    )
+    .await;
     assert_eq!(reply.status, StatusCode::OK);
     assert_eq!(header(&reply, "etag"), "W/\"2\"");
 
@@ -224,7 +243,14 @@ async fn vread_returns_historical_version_and_rejects_unknown() {
 async fn update_with_current_if_match_creates_new_version() {
     let app = service();
     request(&app, "POST", "/Patient", &[], &patient("pt-6", true)).await;
-    let reply = request(&app, "PUT", "/Patient/pt-6", &[("if-match", "W/\"1\"")], &patient("pt-6", false)).await;
+    let reply = request(
+        &app,
+        "PUT",
+        "/Patient/pt-6",
+        &[("if-match", "W/\"1\"")],
+        &patient("pt-6", false),
+    )
+    .await;
     assert_eq!(reply.status, StatusCode::OK);
     assert_eq!(header(&reply, "etag"), "W/\"2\"");
     assert_eq!(header(&reply, "last-modified"), LAST_MODIFIED);
@@ -236,9 +262,28 @@ async fn update_with_current_if_match_creates_new_version() {
 async fn a_stale_if_match_on_update_is_precondition_failed_and_writes_no_version() {
     let app = service();
     request(&app, "POST", "/Patient", &[], &patient("pt-7", true)).await;
-    request(&app, "PUT", "/Patient/pt-7", &[("if-match", "W/\"1\"")], &patient("pt-7", false)).await;
-    let reply = request(&app, "PUT", "/Patient/pt-7", &[("if-match", "W/\"1\"")], &patient("pt-7", true)).await;
-    assert_eq!(reply.status, StatusCode::PRECONDITION_FAILED, "{}", reply.body);
+    request(
+        &app,
+        "PUT",
+        "/Patient/pt-7",
+        &[("if-match", "W/\"1\"")],
+        &patient("pt-7", false),
+    )
+    .await;
+    let reply = request(
+        &app,
+        "PUT",
+        "/Patient/pt-7",
+        &[("if-match", "W/\"1\"")],
+        &patient("pt-7", true),
+    )
+    .await;
+    assert_eq!(
+        reply.status,
+        StatusCode::PRECONDITION_FAILED,
+        "{}",
+        reply.body
+    );
     let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
     assert_eq!(value["issue"][0]["code"], "conflict");
     let current = request(&app, "GET", "/Patient/pt-7", &[], &[]).await;
@@ -256,8 +301,22 @@ async fn an_early_release_answers_a_stale_if_match_with_a_conflict() {
     }));
     let app = Service::new(Arc::new(store), FhirVersion::Stu3, vec![]);
     request(&app, "POST", "/Patient", &[], &patient("pt-7s", true)).await;
-    request(&app, "PUT", "/Patient/pt-7s", &[("if-match", "W/\"1\"")], &patient("pt-7s", false)).await;
-    let reply = request(&app, "PUT", "/Patient/pt-7s", &[("if-match", "W/\"1\"")], &patient("pt-7s", true)).await;
+    request(
+        &app,
+        "PUT",
+        "/Patient/pt-7s",
+        &[("if-match", "W/\"1\"")],
+        &patient("pt-7s", false),
+    )
+    .await;
+    let reply = request(
+        &app,
+        "PUT",
+        "/Patient/pt-7s",
+        &[("if-match", "W/\"1\"")],
+        &patient("pt-7s", true),
+    )
+    .await;
     assert_eq!(reply.status, StatusCode::CONFLICT, "{}", reply.body);
 }
 
@@ -274,9 +333,20 @@ async fn update_without_if_match_writes_new_version() {
 async fn noop_update_creates_no_version() {
     let app = service();
     request(&app, "POST", "/Patient", &[], &patient("pt-9", true)).await;
-    let reply = request(&app, "PUT", "/Patient/pt-9", &[("if-match", "W/\"1\"")], &patient("pt-9", true)).await;
+    let reply = request(
+        &app,
+        "PUT",
+        "/Patient/pt-9",
+        &[("if-match", "W/\"1\"")],
+        &patient("pt-9", true),
+    )
+    .await;
     assert_eq!(reply.status, StatusCode::OK);
-    assert_eq!(header(&reply, "etag"), "W/\"1\"", "a no-op update must not advance the version");
+    assert_eq!(
+        header(&reply, "etag"),
+        "W/\"1\"",
+        "a no-op update must not advance the version"
+    );
     assert!(header(&reply, "content-location").ends_with("/Patient/pt-9/_history/1"));
     let read = request(&app, "GET", "/Patient/pt-9", &[], &[]).await;
     assert_eq!(header(&read, "etag"), "W/\"1\"");
@@ -310,7 +380,14 @@ async fn update_of_an_unknown_id_creates_the_version_the_statement_advertises() 
         "this test states the branch the statement advertises"
     );
 
-    let reply = request(&app, "PUT", "/Patient/nobody", &[], &patient("nobody", true)).await;
+    let reply = request(
+        &app,
+        "PUT",
+        "/Patient/nobody",
+        &[],
+        &patient("nobody", true),
+    )
+    .await;
     assert_eq!(reply.status, StatusCode::CREATED, "{}", reply.body);
     assert_eq!(header(&reply, "etag"), "W/\"1\"");
     assert!(header(&reply, "location").ends_with("/Patient/nobody/_history/1"));
@@ -337,14 +414,25 @@ async fn update_of_an_unknown_id_under_an_if_match_is_not_found() {
     let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
     assert_eq!(value["issue"][0]["code"], "not-found");
     let read = request(&app, "GET", "/Patient/nobody-either", &[], &[]).await;
-    assert_eq!(read.status, StatusCode::NOT_FOUND, "no version may be written");
+    assert_eq!(
+        read.status,
+        StatusCode::NOT_FOUND,
+        "no version may be written"
+    );
 }
 
 #[tokio::test]
 async fn invalid_if_match_header_is_rejected() {
     let app = service();
     request(&app, "POST", "/Patient", &[], &patient("pt-11", true)).await;
-    let reply = request(&app, "PUT", "/Patient/pt-11", &[("if-match", "\"1\"")], &patient("pt-11", true)).await;
+    let reply = request(
+        &app,
+        "PUT",
+        "/Patient/pt-11",
+        &[("if-match", "\"1\"")],
+        &patient("pt-11", true),
+    )
+    .await;
     assert_eq!(reply.status, StatusCode::BAD_REQUEST);
     let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
     assert_eq!(value["issue"][0]["code"], "invalid");
@@ -392,7 +480,11 @@ impl ResourceStore for FailingStore {
     async fn vread(&self, _: &ResourceId, _: &VersionId) -> Result<ResourceEnvelope, Error> {
         Err((self.0)())
     }
-    async fn update(&self, _: ResourceEnvelope, _: Option<&VersionId>) -> Result<ResourceEnvelope, Error> {
+    async fn update(
+        &self,
+        _: ResourceEnvelope,
+        _: Option<&VersionId>,
+    ) -> Result<ResourceEnvelope, Error> {
         Err((self.0)())
     }
     async fn search(&self, _: &SearchQuery) -> Result<SearchPage, Error> {
@@ -431,15 +523,27 @@ async fn an_internal_failure_is_a_500_outcome_that_names_nothing_inside() {
         ("GET", "/Patient/boom/_history"),
     ] {
         let reply = request(&app, method, uri, &[], &[]).await;
-        assert_eq!(reply.status, StatusCode::INTERNAL_SERVER_ERROR, "{method} {uri}");
+        assert_eq!(
+            reply.status,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "{method} {uri}"
+        );
         assert_eq!(header(&reply, "content-type"), "application/fhir+json");
         let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
         let object = value.as_object().expect("outcome must be an object");
-        assert_eq!(object.len(), 2, "outcome must expose only resourceType and issue");
+        assert_eq!(
+            object.len(),
+            2,
+            "outcome must expose only resourceType and issue"
+        );
         assert_eq!(value["resourceType"], "OperationOutcome");
         assert_eq!(value["issue"][0]["code"], "processing");
         for named in ["dbuser", "10.0.0.4", "poisoned", "row 7"] {
-            assert!(!reply.body.contains(named), "{method} {uri} leaked {named}: {}", reply.body);
+            assert!(
+                !reply.body.contains(named),
+                "{method} {uri} leaked {named}: {}",
+                reply.body
+            );
         }
     }
 }
@@ -535,7 +639,14 @@ async fn conditional_create_with_many_matches_is_412() {
 #[tokio::test]
 async fn conditional_create_without_parameters_is_rejected() {
     let app = service();
-    let reply = request(&app, "POST", "/Patient", &[("if-none-exist", "")], &patient("pt-c7", true)).await;
+    let reply = request(
+        &app,
+        "POST",
+        "/Patient",
+        &[("if-none-exist", "")],
+        &patient("pt-c7", true),
+    )
+    .await;
     assert_eq!(reply.status, StatusCode::BAD_REQUEST);
     let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
     assert_eq!(value["issue"][0]["code"], "invalid");
@@ -544,7 +655,14 @@ async fn conditional_create_without_parameters_is_rejected() {
 #[tokio::test]
 async fn conditional_update_without_a_match_creates_the_resource() {
     let app = service();
-    let reply = request(&app, "PUT", "/Patient?_id=pt-u1", &[], &patient("pt-u1", true)).await;
+    let reply = request(
+        &app,
+        "PUT",
+        "/Patient?_id=pt-u1",
+        &[],
+        &patient("pt-u1", true),
+    )
+    .await;
     assert_eq!(reply.status, StatusCode::CREATED);
     assert!(header(&reply, "location").ends_with("/Patient/pt-u1/_history/1"));
     let read = request(&app, "GET", "/Patient/pt-u1", &[], &[]).await;
@@ -586,18 +704,34 @@ async fn conditional_update_honours_a_stale_if_match() {
         &patient("pt-u3", false),
     )
     .await;
-    assert_eq!(reply.status, StatusCode::PRECONDITION_FAILED, "{}", reply.body);
+    assert_eq!(
+        reply.status,
+        StatusCode::PRECONDITION_FAILED,
+        "{}",
+        reply.body
+    );
     let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
     assert_eq!(value["issue"][0]["code"], "conflict");
     let read = request(&app, "GET", "/Patient/pt-u3", &[], &[]).await;
-    assert_eq!(header(&read, "etag"), "W/\"1\"", "no version may be written");
+    assert_eq!(
+        header(&read, "etag"),
+        "W/\"1\"",
+        "no version may be written"
+    );
 }
 
 #[tokio::test]
 async fn conditional_update_with_a_mismatched_body_id_is_rejected() {
     let app = service();
     request(&app, "POST", "/Patient", &[], &patient("pt-u4", true)).await;
-    let reply = request(&app, "PUT", "/Patient?_id=pt-u4", &[], &patient("pt-other", false)).await;
+    let reply = request(
+        &app,
+        "PUT",
+        "/Patient?_id=pt-u4",
+        &[],
+        &patient("pt-other", false),
+    )
+    .await;
     assert_eq!(reply.status, StatusCode::BAD_REQUEST);
     let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
     assert_eq!(value["issue"][0]["code"], "invalid");
@@ -608,7 +742,14 @@ async fn conditional_update_with_many_matches_is_412() {
     let app = service();
     request(&app, "POST", "/Patient", &[], &patient("pt-u5", true)).await;
     request(&app, "POST", "/Patient", &[], &patient("pt-u6", true)).await;
-    let reply = request(&app, "PUT", "/Patient?active=true", &[], &patient("pt-u5", false)).await;
+    let reply = request(
+        &app,
+        "PUT",
+        "/Patient?active=true",
+        &[],
+        &patient("pt-u5", false),
+    )
+    .await;
     assert_eq!(reply.status, StatusCode::PRECONDITION_FAILED);
     let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
     assert_eq!(value["issue"][0]["code"], "multiple-matches");
@@ -626,7 +767,14 @@ async fn conditional_update_without_parameters_is_rejected() {
 #[tokio::test]
 async fn result_control_parameters_do_not_count_as_a_condition() {
     let app = service();
-    let reply = request(&app, "PUT", "/Patient?_format=json", &[], &patient("pt-u8", true)).await;
+    let reply = request(
+        &app,
+        "PUT",
+        "/Patient?_format=json",
+        &[],
+        &patient("pt-u8", true),
+    )
+    .await;
     assert_eq!(reply.status, StatusCode::BAD_REQUEST);
 }
 
@@ -851,7 +999,14 @@ async fn conditional_delete_without_parameters_is_rejected() {
 async fn conditional_hard_delete_removes_the_history() {
     let app = service();
     request(&app, "POST", "/Patient", &[], &patient("pt-db", true)).await;
-    let reply = request(&app, "DELETE", "/Patient?_id=pt-db&_hardDelete=true", &[], &[]).await;
+    let reply = request(
+        &app,
+        "DELETE",
+        "/Patient?_id=pt-db&_hardDelete=true",
+        &[],
+        &[],
+    )
+    .await;
     assert_eq!(reply.status, StatusCode::NO_CONTENT);
     let old = request(&app, "GET", "/Patient/pt-db/_history/1", &[], &[]).await;
     assert_eq!(old.status, StatusCode::NOT_FOUND);
@@ -921,8 +1076,20 @@ async fn a_patch_may_not_change_the_id_or_type() {
         br#"[{"op":"replace","path":"/id","value":"other"}]"#.to_vec(),
         br#"[{"op":"replace","path":"/resourceType","value":"Observation"}]"#.to_vec(),
     ] {
-        let reply = request(&app, "PATCH", "/Patient/pt-p4", &[("content-type", JSON_PATCH)], &patch).await;
-        assert_eq!(reply.status, StatusCode::BAD_REQUEST, "body was {}", reply.body);
+        let reply = request(
+            &app,
+            "PATCH",
+            "/Patient/pt-p4",
+            &[("content-type", JSON_PATCH)],
+            &patch,
+        )
+        .await;
+        assert_eq!(
+            reply.status,
+            StatusCode::BAD_REQUEST,
+            "body was {}",
+            reply.body
+        );
     }
 }
 
@@ -938,9 +1105,18 @@ async fn patch_honours_a_stale_if_match() {
         br#"[{"op":"replace","path":"/active","value":false}]"#,
     )
     .await;
-    assert_eq!(reply.status, StatusCode::PRECONDITION_FAILED, "{}", reply.body);
+    assert_eq!(
+        reply.status,
+        StatusCode::PRECONDITION_FAILED,
+        "{}",
+        reply.body
+    );
     let read = request(&app, "GET", "/Patient/pt-p5", &[], &[]).await;
-    assert_eq!(header(&read, "etag"), "W/\"1\"", "no version may be written");
+    assert_eq!(
+        header(&read, "etag"),
+        "W/\"1\"",
+        "no version may be written"
+    );
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&read.body).unwrap()["active"],
         true
@@ -1009,11 +1185,32 @@ async fn conditional_patch_reports_no_match_and_many_matches() {
     request(&app, "POST", "/Patient", &[], &patient("pt-p9", true)).await;
     request(&app, "POST", "/Patient", &[], &patient("pt-pa", true)).await;
     let patch = br#"[{"op":"replace","path":"/active","value":false}]"#;
-    let none = request(&app, "PATCH", "/Patient?_id=pt-none", &[("content-type", JSON_PATCH)], patch).await;
+    let none = request(
+        &app,
+        "PATCH",
+        "/Patient?_id=pt-none",
+        &[("content-type", JSON_PATCH)],
+        patch,
+    )
+    .await;
     assert_eq!(none.status, StatusCode::NOT_FOUND);
-    let many = request(&app, "PATCH", "/Patient?active=true", &[("content-type", JSON_PATCH)], patch).await;
+    let many = request(
+        &app,
+        "PATCH",
+        "/Patient?active=true",
+        &[("content-type", JSON_PATCH)],
+        patch,
+    )
+    .await;
     assert_eq!(many.status, StatusCode::PRECONDITION_FAILED);
-    let empty = request(&app, "PATCH", "/Patient", &[("content-type", JSON_PATCH)], patch).await;
+    let empty = request(
+        &app,
+        "PATCH",
+        "/Patient",
+        &[("content-type", JSON_PATCH)],
+        patch,
+    )
+    .await;
     assert_eq!(empty.status, StatusCode::BAD_REQUEST);
 }
 
@@ -1035,7 +1232,14 @@ async fn seeded_history() -> Service {
     request(&app, "POST", "/Patient", &[], &patient("pt-h1", true)).await;
     request(&app, "PUT", "/Patient/pt-h1", &[], &patient("pt-h1", false)).await;
     request(&app, "DELETE", "/Patient/pt-h1", &[], &[]).await;
-    request(&app, "POST", "/Observation", &[], br#"{"resourceType":"Observation","id":"ob-h1","status":"final","code":{"text":"probe"}}"#).await;
+    request(
+        &app,
+        "POST",
+        "/Observation",
+        &[],
+        br#"{"resourceType":"Observation","id":"ob-h1","status":"final","code":{"text":"probe"}}"#,
+    )
+    .await;
     app
 }
 
@@ -1049,7 +1253,12 @@ fn entry_versions(value: &serde_json::Value) -> Vec<String> {
         .map(|entries| {
             entries
                 .iter()
-                .map(|entry| entry["response"]["etag"].as_str().unwrap_or_default().to_owned())
+                .map(|entry| {
+                    entry["response"]["etag"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_owned()
+                })
                 .collect()
         })
         .unwrap_or_default()
@@ -1082,7 +1291,10 @@ async fn instance_history_is_a_bundle_newest_first() {
     assert_eq!(value["entry"][0]["request"]["method"], "DELETE");
     assert_eq!(value["entry"][0]["request"]["url"], "Patient/pt-h1");
     assert_eq!(value["entry"][0]["response"]["status"], "204");
-    assert!(value["entry"][0]["resource"].is_null(), "a delete marker carries no resource");
+    assert!(
+        value["entry"][0]["resource"].is_null(),
+        "a delete marker carries no resource"
+    );
     assert_eq!(value["entry"][1]["request"]["method"], "PUT");
     assert_eq!(value["entry"][1]["request"]["url"], "Patient/pt-h1");
     assert_eq!(value["entry"][1]["response"]["status"], "200");
@@ -1090,8 +1302,14 @@ async fn instance_history_is_a_bundle_newest_first() {
     assert_eq!(value["entry"][2]["request"]["method"], "POST");
     assert_eq!(value["entry"][2]["request"]["url"], "Patient");
     assert_eq!(value["entry"][2]["response"]["status"], "201");
-    assert_eq!(value["entry"][2]["fullUrl"], "http://localhost/Patient/pt-h1");
-    assert_eq!(value["entry"][2]["response"]["lastModified"], "2026-09-06T04:00:00Z");
+    assert_eq!(
+        value["entry"][2]["fullUrl"],
+        "http://localhost/Patient/pt-h1"
+    );
+    assert_eq!(
+        value["entry"][2]["response"]["lastModified"],
+        "2026-09-06T04:00:00Z"
+    );
 }
 
 #[tokio::test]
@@ -1125,9 +1343,27 @@ async fn history_pages_through_a_continuation_token() {
 #[tokio::test]
 async fn history_filters_by_write_time() {
     let app = seeded_history().await;
-    let since = bundle(&request(&app, "GET", "/_history?_since=2026-09-06T04:00:02Z", &[], &[]).await);
+    let since = bundle(
+        &request(
+            &app,
+            "GET",
+            "/_history?_since=2026-09-06T04:00:02Z",
+            &[],
+            &[],
+        )
+        .await,
+    );
     assert_eq!(since["total"], 2);
-    let before = bundle(&request(&app, "GET", "/_history?_before=2026-09-06T04:00:01Z", &[], &[]).await);
+    let before = bundle(
+        &request(
+            &app,
+            "GET",
+            "/_history?_before=2026-09-06T04:00:01Z",
+            &[],
+            &[],
+        )
+        .await,
+    );
     assert_eq!(before["total"], 1);
     let at = bundle(&request(&app, "GET", "/_history?_at=2026-09-06T04:00:01Z", &[], &[]).await);
     assert_eq!(at["total"], 1);
@@ -1140,9 +1376,27 @@ async fn history_filters_by_write_time() {
 #[tokio::test]
 async fn history_sorts_oldest_first_on_request() {
     let app = seeded_history().await;
-    let value = bundle(&request(&app, "GET", "/Patient/pt-h1/_history?_sort=_lastUpdated", &[], &[]).await);
+    let value = bundle(
+        &request(
+            &app,
+            "GET",
+            "/Patient/pt-h1/_history?_sort=_lastUpdated",
+            &[],
+            &[],
+        )
+        .await,
+    );
     assert_eq!(entry_versions(&value), ["W/\"1\"", "W/\"2\"", "W/\"3\""]);
-    let reverse = bundle(&request(&app, "GET", "/Patient/pt-h1/_history?_sort=-_lastUpdated", &[], &[]).await);
+    let reverse = bundle(
+        &request(
+            &app,
+            "GET",
+            "/Patient/pt-h1/_history?_sort=-_lastUpdated",
+            &[],
+            &[],
+        )
+        .await,
+    );
     assert_eq!(entry_versions(&reverse), ["W/\"3\"", "W/\"2\"", "W/\"1\""]);
 }
 
@@ -1160,7 +1414,16 @@ async fn summary_count_reports_the_total_without_entries() {
 #[tokio::test]
 async fn summary_true_carries_metadata_only() {
     let app = seeded_history().await;
-    let value = bundle(&request(&app, "GET", "/Patient/pt-h1/_history?_summary=true", &[], &[]).await);
+    let value = bundle(
+        &request(
+            &app,
+            "GET",
+            "/Patient/pt-h1/_history?_summary=true",
+            &[],
+            &[],
+        )
+        .await,
+    );
     let resource = &value["entry"][1]["resource"];
     assert_eq!(resource["resourceType"], "Patient");
     assert_eq!(resource["meta"]["versionId"], "2");
@@ -1179,7 +1442,11 @@ async fn malformed_history_parameters_are_rejected() {
         "ct=zz",
     ] {
         let reply = request(&app, "GET", &format!("/_history?{query}"), &[], &[]).await;
-        assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{query} must be rejected");
+        assert_eq!(
+            reply.status,
+            StatusCode::BAD_REQUEST,
+            "{query} must be rejected"
+        );
     }
 }
 
@@ -1205,7 +1472,12 @@ fn entries(value: &serde_json::Value) -> Vec<String> {
         .map(|items| {
             items
                 .iter()
-                .map(|item| item["resource"]["id"].as_str().unwrap_or_default().to_owned())
+                .map(|item| {
+                    item["resource"]["id"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_owned()
+                })
                 .collect()
         })
         .unwrap_or_default()
@@ -1240,7 +1512,8 @@ async fn a_search_selects_by_id_and_last_updated() {
     let app = seeded().await;
     let by_id = bundle(&request(&app, "GET", "/Patient?_id=pt-s2", &[], &[]).await);
     assert_eq!(entries(&by_id), vec!["pt-s2".to_owned()]);
-    let recent = bundle(&request(&app, "GET", "/Patient?_lastUpdated=ge2026-09-06", &[], &[]).await);
+    let recent =
+        bundle(&request(&app, "GET", "/Patient?_lastUpdated=ge2026-09-06", &[], &[]).await);
     assert_eq!(recent["total"], 3);
     let old = bundle(&request(&app, "GET", "/Patient?_lastUpdated=lt2020", &[], &[]).await);
     assert_eq!(old["total"], 0);
@@ -1290,7 +1563,7 @@ async fn an_unsupported_search_parameter_is_rejected() {
     for uri in [
         "/Patient?nonesuch=1",
         "/Patient?_include=Patient:nonesuch",
-        "/Patient?_text=x",
+        "/Patient?_content=x",
         "/Patient?_type=Patient",
     ] {
         let reply = request(&app, "GET", uri, &[], &[]).await;
@@ -1312,7 +1585,14 @@ async fn a_malformed_search_value_is_rejected() {
 async fn many() -> Service {
     let app = service();
     for index in 1..=5 {
-        request(&app, "POST", "/Patient", &[], &patient(&format!("pt-r{index}"), true)).await;
+        request(
+            &app,
+            "POST",
+            "/Patient",
+            &[],
+            &patient(&format!("pt-r{index}"), true),
+        )
+        .await;
     }
     app
 }
@@ -1322,12 +1602,27 @@ async fn count_pages_the_result_and_offers_a_next_link() {
     let app = many().await;
     let first = bundle(&request(&app, "GET", "/Patient?_count=2", &[], &[]).await);
     assert_eq!(first["total"], 5);
-    assert_eq!(entries(&first), vec!["pt-r1".to_owned(), "pt-r2".to_owned()]);
+    assert_eq!(
+        entries(&first),
+        vec!["pt-r1".to_owned(), "pt-r2".to_owned()]
+    );
     let next = link(&first, "next");
     assert!(next.contains("ct="), "next was {next}");
     let token = next.rsplit("ct=").next().unwrap().to_owned();
-    let second = bundle(&request(&app, "GET", &format!("/Patient?_count=2&ct={token}"), &[], &[]).await);
-    assert_eq!(entries(&second), vec!["pt-r3".to_owned(), "pt-r4".to_owned()]);
+    let second = bundle(
+        &request(
+            &app,
+            "GET",
+            &format!("/Patient?_count=2&ct={token}"),
+            &[],
+            &[],
+        )
+        .await,
+    );
+    assert_eq!(
+        entries(&second),
+        vec!["pt-r3".to_owned(), "pt-r4".to_owned()]
+    );
     let last = bundle(&request(&app, "GET", "/Patient?_count=10", &[], &[]).await);
     assert_eq!(last["link"].as_array().unwrap().len(), 1);
 }
@@ -1366,8 +1661,14 @@ async fn sort_on_an_unsortable_parameter_is_rejected() {
 #[tokio::test]
 async fn total_is_accurate_estimated_or_absent() {
     let app = many().await;
-    assert_eq!(bundle(&request(&app, "GET", "/Patient?_total=accurate", &[], &[]).await)["total"], 5);
-    assert_eq!(bundle(&request(&app, "GET", "/Patient?_total=estimate", &[], &[]).await)["total"], 5);
+    assert_eq!(
+        bundle(&request(&app, "GET", "/Patient?_total=accurate", &[], &[]).await)["total"],
+        5
+    );
+    assert_eq!(
+        bundle(&request(&app, "GET", "/Patient?_total=estimate", &[], &[]).await)["total"],
+        5
+    );
     let none = bundle(&request(&app, "GET", "/Patient?_total=none", &[], &[]).await);
     assert!(none["total"].is_null());
     let reply = request(&app, "GET", "/Patient?_total=guess", &[], &[]).await;
@@ -1395,13 +1696,26 @@ async fn elements_and_summary_narrow_every_entry() {
 #[tokio::test]
 async fn format_selects_a_supported_rendering() {
     let app = seeded().await;
-    for uri in ["/Patient?_format=json", "/Patient?_format=application/fhir%2Bjson"] {
-        assert_eq!(request(&app, "GET", uri, &[], &[]).await.status, StatusCode::OK, "{uri}");
+    for uri in [
+        "/Patient?_format=json",
+        "/Patient?_format=application/fhir%2Bjson",
+    ] {
+        assert_eq!(
+            request(&app, "GET", uri, &[], &[]).await.status,
+            StatusCode::OK,
+            "{uri}"
+        );
     }
     let reply = request(&app, "GET", "/Patient?_format=xml", &[], &[]).await;
     assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
-    assert_eq!(header(&reply, "content-type"), "application/fhir+xml");
-    assert!(reply.body.starts_with("<Bundle"), "{}", reply.body);
+    assert_eq!(
+        header(&reply, "content-type"),
+        "application/fhir+xml",
+        "{}",
+        reply.body
+    );
+    let text = reply.body;
+    assert!(text.starts_with("<Bundle"), "{text}");
     let reply = request(&app, "GET", "/Patient?_format=yaml", &[], &[]).await;
     assert_eq!(reply.status, StatusCode::NOT_ACCEPTABLE, "{}", reply.body);
     let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
@@ -1439,43 +1753,95 @@ async fn found(app: &Service, uri: &str) -> Vec<String> {
 #[tokio::test]
 async fn a_search_matches_string_and_date_values() {
     let app = clinical().await;
-    assert_eq!(found(&app, "/Patient?family=de%20la").await, vec!["pt-v1".to_owned()]);
-    assert_eq!(found(&app, "/Patient?given=BO").await, vec!["pt-v2".to_owned()]);
-    assert_eq!(found(&app, "/Patient?birthdate=lt1990").await, vec!["pt-v1".to_owned()]);
-    assert_eq!(found(&app, "/Patient?birthdate=1995-11-20").await, vec!["pt-v2".to_owned()]);
+    assert_eq!(
+        found(&app, "/Patient?family=de%20la").await,
+        vec!["pt-v1".to_owned()]
+    );
+    assert_eq!(
+        found(&app, "/Patient?given=BO").await,
+        vec!["pt-v2".to_owned()]
+    );
+    assert_eq!(
+        found(&app, "/Patient?birthdate=lt1990").await,
+        vec!["pt-v1".to_owned()]
+    );
+    assert_eq!(
+        found(&app, "/Patient?birthdate=1995-11-20").await,
+        vec!["pt-v2".to_owned()]
+    );
 }
 
 #[tokio::test]
 async fn a_search_matches_token_reference_and_uri_values() {
     let app = clinical().await;
-    assert_eq!(found(&app, "/Observation?code=http://loinc.org|8867-4").await, vec!["ob-v1".to_owned()]);
-    assert_eq!(found(&app, "/Observation?subject=Patient/pt-v2").await, vec!["ob-v2".to_owned()]);
-    assert_eq!(found(&app, "/Observation?patient=pt-v1").await, vec!["ob-v1".to_owned()]);
+    assert_eq!(
+        found(&app, "/Observation?code=http://loinc.org|8867-4").await,
+        vec!["ob-v1".to_owned()]
+    );
+    assert_eq!(
+        found(&app, "/Observation?subject=Patient/pt-v2").await,
+        vec!["ob-v2".to_owned()]
+    );
+    assert_eq!(
+        found(&app, "/Observation?patient=pt-v1").await,
+        vec!["ob-v1".to_owned()]
+    );
     assert_eq!(found(&app, "/Observation?status=final").await.len(), 2);
-    assert_eq!(found(&app, "/Patient?organization=Organization/org-1").await, vec!["pt-v1".to_owned()]);
+    assert_eq!(
+        found(&app, "/Patient?organization=Organization/org-1").await,
+        vec!["pt-v1".to_owned()]
+    );
 }
 
 #[tokio::test]
 async fn a_search_matches_quantity_number_and_composite_values() {
     let app = clinical().await;
     assert_eq!(
-        found(&app, "/Observation?value-quantity=72.5|http://unitsofmeasure.org|/min").await,
+        found(
+            &app,
+            "/Observation?value-quantity=72.5|http://unitsofmeasure.org|/min"
+        )
+        .await,
         vec!["ob-v1".to_owned()]
     );
-    assert_eq!(found(&app, "/Observation?value-quantity=gt70").await, vec!["ob-v1".to_owned()]);
-    assert!(found(&app, "/Observation?value-quantity=lt70").await.is_empty());
-    assert_eq!(found(&app, "/RiskAssessment?probability=0.42").await, vec!["ra-v1".to_owned()]);
     assert_eq!(
-        found(&app, "/Observation?component-code-value-quantity=8480-6$120").await,
+        found(&app, "/Observation?value-quantity=gt70").await,
+        vec!["ob-v1".to_owned()]
+    );
+    assert!(found(&app, "/Observation?value-quantity=lt70")
+        .await
+        .is_empty());
+    assert_eq!(
+        found(&app, "/RiskAssessment?probability=0.42").await,
+        vec!["ra-v1".to_owned()]
+    );
+    assert_eq!(
+        found(
+            &app,
+            "/Observation?component-code-value-quantity=8480-6$120"
+        )
+        .await,
         vec!["ob-v2".to_owned()]
     );
-    assert!(found(&app, "/Observation?component-code-value-quantity=8867-4$120").await.is_empty());
+    assert!(found(
+        &app,
+        "/Observation?component-code-value-quantity=8867-4$120"
+    )
+    .await
+    .is_empty());
 }
 
 #[tokio::test]
 async fn a_malformed_composite_value_is_rejected() {
     let app = clinical().await;
-    let reply = request(&app, "GET", "/Observation?component-code-value-quantity=8480-6", &[], &[]).await;
+    let reply = request(
+        &app,
+        "GET",
+        "/Observation?component-code-value-quantity=8480-6",
+        &[],
+        &[],
+    )
+    .await;
     assert_eq!(reply.status, StatusCode::BAD_REQUEST);
     let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
     assert_eq!(value["issue"][0]["code"], "invalid");
@@ -1508,7 +1874,8 @@ async fn qualified() -> Service {
     let ann = br#"{"resourceType":"Patient","id":"pt-m1","name":[{"family":"Sorensen","given":["Ann"]}],"gender":"female","managingOrganization":{"reference":"Organization/org-m1"},"identifier":[{"type":{"coding":[{"system":"urn:t","code":"MR"}]},"system":"urn:mrn","value":"12345"}]}"#;
     let clinic = br#"{"resourceType":"Organization","id":"org-m1","name":"Mercy","active":true}"#;
     request(&app, "POST", "/Organization", &[], clinic).await;
-    let bo = br#"{"resourceType":"Patient","id":"pt-m2","name":[{"family":"Okonkwo"}],"gender":"male"}"#;
+    let bo =
+        br#"{"resourceType":"Patient","id":"pt-m2","name":[{"family":"Okonkwo"}],"gender":"male"}"#;
     request(&app, "POST", "/Patient", &[], ann).await;
     request(&app, "POST", "/Patient", &[], bo).await;
     let warm = br#"{"resourceType":"Observation","id":"ob-m1","status":"final","code":{"text":"probe"},"code":{"text":"Body Temperature","coding":[{"system":"urn:s","code":"vital.temperature"}]},"subject":{"reference":"Patient/pt-m1"}}"#;
@@ -1523,37 +1890,67 @@ async fn qualified() -> Service {
 #[tokio::test]
 async fn string_modifiers_narrow_a_search() {
     let app = qualified().await;
-    assert_eq!(found(&app, "/Patient?family:exact=Okonkwo").await, vec!["pt-m2".to_owned()]);
-    assert!(found(&app, "/Patient?family:exact=okonkwo").await.is_empty());
-    assert_eq!(found(&app, "/Patient?family:contains=oren").await, vec!["pt-m1".to_owned()]);
+    assert_eq!(
+        found(&app, "/Patient?family:exact=Okonkwo").await,
+        vec!["pt-m2".to_owned()]
+    );
+    assert!(found(&app, "/Patient?family:exact=okonkwo")
+        .await
+        .is_empty());
+    assert_eq!(
+        found(&app, "/Patient?family:contains=oren").await,
+        vec!["pt-m1".to_owned()]
+    );
 }
 
 #[tokio::test]
 async fn the_missing_modifier_selects_by_presence() {
     let app = qualified().await;
-    assert_eq!(found(&app, "/Patient?identifier:missing=true").await, vec!["pt-m2".to_owned()]);
-    assert_eq!(found(&app, "/Patient?identifier:missing=false").await, vec!["pt-m1".to_owned()]);
+    assert_eq!(
+        found(&app, "/Patient?identifier:missing=true").await,
+        vec!["pt-m2".to_owned()]
+    );
+    assert_eq!(
+        found(&app, "/Patient?identifier:missing=false").await,
+        vec!["pt-m1".to_owned()]
+    );
 }
 
 #[tokio::test]
 async fn the_not_modifier_excludes_every_matching_value() {
     let app = qualified().await;
-    assert_eq!(found(&app, "/Patient?gender:not=male").await, vec!["pt-m1".to_owned()]);
-    assert!(found(&app, "/Observation?status:not=final,registered").await.is_empty());
+    assert_eq!(
+        found(&app, "/Patient?gender:not=male").await,
+        vec!["pt-m1".to_owned()]
+    );
+    assert!(found(&app, "/Observation?status:not=final,registered")
+        .await
+        .is_empty());
 }
 
 #[tokio::test]
 async fn the_text_modifier_matches_the_narrative_of_a_code() {
     let app = qualified().await;
-    assert_eq!(found(&app, "/Observation?code:text=temperature").await, vec!["ob-m1".to_owned()]);
-    assert!(found(&app, "/Observation?code:text=survey").await.is_empty());
+    assert_eq!(
+        found(&app, "/Observation?code:text=temperature").await,
+        vec!["ob-m1".to_owned()]
+    );
+    assert!(found(&app, "/Observation?code:text=survey")
+        .await
+        .is_empty());
 }
 
 #[tokio::test]
 async fn code_set_membership_is_resolved_by_the_store() {
     let app = qualified().await;
-    assert_eq!(found(&app, "/Observation?code:in=http://x/vitals").await, vec!["ob-m1".to_owned()]);
-    assert_eq!(found(&app, "/Observation?code:not-in=http://x/vitals").await, vec!["ob-m2".to_owned()]);
+    assert_eq!(
+        found(&app, "/Observation?code:in=http://x/vitals").await,
+        vec!["ob-m1".to_owned()]
+    );
+    assert_eq!(
+        found(&app, "/Observation?code:not-in=http://x/vitals").await,
+        vec!["ob-m2".to_owned()]
+    );
     let unknown = request(&app, "GET", "/Observation?code:in=http://x/none", &[], &[]).await;
     assert_eq!(unknown.status, StatusCode::BAD_REQUEST);
 }
@@ -1581,7 +1978,12 @@ async fn a_subsumption_modifier_needs_a_code_system_that_defines_the_code() {
         "/Observation?code:above=vital.temperature.core",
     ] {
         let reply = request(&app, "GET", uri, &[], &[]).await;
-        assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{uri} gave {}", reply.body);
+        assert_eq!(
+            reply.status,
+            StatusCode::BAD_REQUEST,
+            "{uri} gave {}",
+            reply.body
+        );
         let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
         assert_eq!(value["issue"][0]["code"], "not-supported", "{uri}");
     }
@@ -1590,8 +1992,13 @@ async fn a_subsumption_modifier_needs_a_code_system_that_defines_the_code() {
 #[tokio::test]
 async fn reference_modifiers_read_the_type_and_the_identifier() {
     let app = qualified().await;
-    assert_eq!(found(&app, "/Observation?subject:Patient=pt-m1").await, vec!["ob-m1".to_owned()]);
-    assert!(found(&app, "/Observation?subject:Group=pt-m1").await.is_empty());
+    assert_eq!(
+        found(&app, "/Observation?subject:Patient=pt-m1").await,
+        vec!["ob-m1".to_owned()]
+    );
+    assert!(found(&app, "/Observation?subject:Group=pt-m1")
+        .await
+        .is_empty());
     assert_eq!(
         found(&app, "/Observation?subject:identifier=urn:mrn|12345").await,
         vec!["ob-m2".to_owned()]
@@ -1605,7 +2012,9 @@ async fn the_of_type_modifier_matches_a_qualified_identifier() {
         found(&app, "/Patient?identifier:of-type=urn:t|MR|12345").await,
         vec!["pt-m1".to_owned()]
     );
-    assert!(found(&app, "/Patient?identifier:of-type=urn:t|MR|999").await.is_empty());
+    assert!(found(&app, "/Patient?identifier:of-type=urn:t|MR|999")
+        .await
+        .is_empty());
 }
 
 #[tokio::test]
@@ -1630,8 +2039,13 @@ async fn a_chained_search_follows_a_reference() {
         found(&app, "/Observation?subject:Patient.family:exact=Sorensen").await,
         vec!["ob-m1".to_owned()]
     );
-    assert_eq!(found(&app, "/Observation?patient.gender=female").await, vec!["ob-m1".to_owned()]);
-    assert!(found(&app, "/Observation?patient.gender=male").await.is_empty());
+    assert_eq!(
+        found(&app, "/Observation?patient.gender=female").await,
+        vec!["ob-m1".to_owned()]
+    );
+    assert!(found(&app, "/Observation?patient.gender=male")
+        .await
+        .is_empty());
 }
 
 #[tokio::test]
@@ -1641,7 +2055,9 @@ async fn a_chain_reaches_across_more_than_one_link() {
         found(&app, "/Observation?patient.organization.name=Mercy").await,
         vec!["ob-m1".to_owned()]
     );
-    assert!(found(&app, "/Observation?patient.organization.name=Other").await.is_empty());
+    assert!(found(&app, "/Observation?patient.organization.name=Other")
+        .await
+        .is_empty());
 }
 
 #[tokio::test]
@@ -1651,7 +2067,11 @@ async fn a_reverse_chain_selects_by_what_points_at_the_resource() {
         found(&app, "/Patient?_has:Observation:patient:status=final").await,
         vec!["pt-m1".to_owned()]
     );
-    assert!(found(&app, "/Patient?_has:Observation:patient:status=cancelled").await.is_empty());
+    assert!(
+        found(&app, "/Patient?_has:Observation:patient:status=cancelled")
+            .await
+            .is_empty()
+    );
 }
 
 #[tokio::test]
@@ -1681,7 +2101,12 @@ async fn a_chain_the_server_cannot_follow_is_rejected() {
         "/Patient?_has:Nonesuch:patient:status=final",
     ] {
         let reply = request(&app, "GET", uri, &[], &[]).await;
-        assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{uri} gave {}", reply.body);
+        assert_eq!(
+            reply.status,
+            StatusCode::BAD_REQUEST,
+            "{uri} gave {}",
+            reply.body
+        );
     }
 }
 
@@ -1692,7 +2117,12 @@ fn by_mode(value: &serde_json::Value, mode: &str) -> Vec<String> {
             items
                 .iter()
                 .filter(|item| item["search"]["mode"] == mode)
-                .map(|item| item["resource"]["id"].as_str().unwrap_or_default().to_owned())
+                .map(|item| {
+                    item["resource"]["id"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_owned()
+                })
                 .collect()
         })
         .unwrap_or_default()
@@ -1716,12 +2146,17 @@ async fn an_include_pulls_the_referenced_resource_in() {
 #[tokio::test]
 async fn an_iterating_include_follows_what_it_has_pulled_in() {
     let app = qualified().await;
-    let uri = "/Observation?_id=ob-m1&_include=Observation:subject&_include:iterate=Patient:organization";
+    let uri =
+        "/Observation?_id=ob-m1&_include=Observation:subject&_include:iterate=Patient:organization";
     let value = page(&app, uri).await;
     let mut included = by_mode(&value, "include");
     included.sort();
     assert_eq!(included, vec!["org-m1".to_owned(), "pt-m1".to_owned()]);
-    let once = page(&app, "/Observation?_id=ob-m1&_include=Observation:subject&_include=Patient:organization").await;
+    let once = page(
+        &app,
+        "/Observation?_id=ob-m1&_include=Observation:subject&_include=Patient:organization",
+    )
+    .await;
     assert_eq!(by_mode(&once, "include"), vec!["pt-m1".to_owned()]);
 }
 
@@ -1745,7 +2180,11 @@ async fn a_reverse_include_pulls_what_points_at_the_match() {
 #[tokio::test]
 async fn includes_apply_to_the_page_and_never_to_the_total() {
     let app = qualified().await;
-    let value = page(&app, "/Observation?_count=1&_sort=_id&_include=Observation:subject").await;
+    let value = page(
+        &app,
+        "/Observation?_count=1&_sort=_id&_include=Observation:subject",
+    )
+    .await;
     assert_eq!(value["total"], 2);
     assert_eq!(by_mode(&value, "match"), vec!["ob-m1".to_owned()]);
     assert_eq!(by_mode(&value, "include"), vec!["pt-m1".to_owned()]);
@@ -1763,7 +2202,12 @@ async fn an_include_the_server_cannot_follow_is_rejected() {
         "/Observation?_include=Observation",
     ] {
         let reply = request(&app, "GET", uri, &[], &[]).await;
-        assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{uri} gave {}", reply.body);
+        assert_eq!(
+            reply.status,
+            StatusCode::BAD_REQUEST,
+            "{uri} gave {}",
+            reply.body
+        );
     }
 }
 
@@ -1823,7 +2267,12 @@ async fn a_compartment_the_server_does_not_define_is_rejected() {
         "/Organization/org-m1/Patient",
     ] {
         let reply = request(&app, "GET", uri, &[], &[]).await;
-        assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{uri} gave {}", reply.body);
+        assert_eq!(
+            reply.status,
+            StatusCode::BAD_REQUEST,
+            "{uri} gave {}",
+            reply.body
+        );
         let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
         assert_eq!(value["issue"][0]["code"], "not-supported");
     }
@@ -1900,16 +2349,30 @@ async fn an_edited_continuation_token_is_refused() {
 async fn a_compartment_page_carries_its_own_token() {
     let app = qualified().await;
     let token = next_token(&app, "/Patient/pt-m1/*?_count=1&_sort=_id").await;
-    let second = page(&app, &format!("/Patient/pt-m1/*?_count=1&_sort=_id&ct={token}")).await;
+    let second = page(
+        &app,
+        &format!("/Patient/pt-m1/*?_count=1&_sort=_id&ct={token}"),
+    )
+    .await;
     assert_eq!(by_mode(&second, "match"), vec!["pt-m1".to_owned()]);
 }
 
 #[tokio::test]
 async fn a_parameter_spelled_without_a_value_is_never_dropped() {
     let app = seeded().await;
-    for uri in ["/Patient?nonesuch", "/Patient?_summary", "/Patient?_count", "/Patient?ct"] {
+    for uri in [
+        "/Patient?nonesuch",
+        "/Patient?_summary",
+        "/Patient?_count",
+        "/Patient?ct",
+    ] {
         let reply = request(&app, "GET", uri, &[], &[]).await;
-        assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{uri} gave {}", reply.body);
+        assert_eq!(
+            reply.status,
+            StatusCode::BAD_REQUEST,
+            "{uri} gave {}",
+            reply.body
+        );
     }
 }
 
@@ -1924,7 +2387,12 @@ async fn an_unknown_parameter_never_reaches_the_store() {
         "/Patient?nonesuch.name=Ann",
     ] {
         let reply = request(&app, "GET", uri, &[], &[]).await;
-        assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{uri} gave {}", reply.body);
+        assert_eq!(
+            reply.status,
+            StatusCode::BAD_REQUEST,
+            "{uri} gave {}",
+            reply.body
+        );
         let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
         assert_eq!(value["issue"][0]["code"], "not-supported", "{uri}");
     }
@@ -1932,8 +2400,22 @@ async fn an_unknown_parameter_never_reaches_the_store() {
 
 async fn granted() -> Service {
     let app = service();
-    request(&app, "POST", "/Patient", &[], br#"{"resourceType":"Patient","id":"pt-g1","active":true}"#).await;
-    request(&app, "POST", "/Patient", &[], br#"{"resourceType":"Patient","id":"pt-g2","active":true}"#).await;
+    request(
+        &app,
+        "POST",
+        "/Patient",
+        &[],
+        br#"{"resourceType":"Patient","id":"pt-g1","active":true}"#,
+    )
+    .await;
+    request(
+        &app,
+        "POST",
+        "/Patient",
+        &[],
+        br#"{"resourceType":"Patient","id":"pt-g2","active":true}"#,
+    )
+    .await;
     let mine = br#"{"resourceType":"Observation","id":"ob-g1","status":"final","code":{"text":"probe"},"subject":{"reference":"Patient/pt-g1"}}"#;
     let other = br#"{"resourceType":"Observation","id":"ob-g2","status":"final","code":{"text":"probe"},"subject":{"reference":"Patient/pt-g2"}}"#;
     request(&app, "POST", "/Observation", &[], mine).await;
@@ -1953,32 +2435,64 @@ async fn a_grant_confines_matches_to_its_compartment() {
     let value = scoped(&app, "/Observation", "compartment=Patient/pt-g1").await;
     assert_eq!(by_mode(&value, "match"), vec!["ob-g1".to_owned()]);
     assert_eq!(value["total"], 1);
-    let outside = scoped(&app, "/Observation?patient=pt-g2", "compartment=Patient/pt-g1").await;
+    let outside = scoped(
+        &app,
+        "/Observation?patient=pt-g2",
+        "compartment=Patient/pt-g1",
+    )
+    .await;
     assert_eq!(outside["total"], 0);
 }
 
 #[tokio::test]
 async fn a_grant_confines_the_resources_an_include_pulls_in() {
     let app = granted().await;
-    let value = scoped(&app, "/Observation?_include=Observation:subject", "types=Observation").await;
+    let value = scoped(
+        &app,
+        "/Observation?_include=Observation:subject",
+        "types=Observation",
+    )
+    .await;
     assert!(by_mode(&value, "include").is_empty(), "{value}");
-    let allowed = scoped(&app, "/Observation?_include=Observation:subject", "types=Observation,Patient;compartment=Patient/pt-g1").await;
+    let allowed = scoped(
+        &app,
+        "/Observation?_include=Observation:subject",
+        "types=Observation,Patient;compartment=Patient/pt-g1",
+    )
+    .await;
     assert_eq!(by_mode(&allowed, "include"), vec!["pt-g1".to_owned()]);
 }
 
 #[tokio::test]
 async fn a_grant_confines_what_a_chain_can_reach() {
     let app = granted().await;
-    let value = scoped(&app, "/Patient?_has:Observation:patient:_id=ob-g2", "compartment=Patient/pt-g1").await;
+    let value = scoped(
+        &app,
+        "/Patient?_has:Observation:patient:_id=ob-g2",
+        "compartment=Patient/pt-g1",
+    )
+    .await;
     assert_eq!(value["total"], 0);
-    let own = scoped(&app, "/Patient?_has:Observation:patient:_id=ob-g1", "compartment=Patient/pt-g1").await;
+    let own = scoped(
+        &app,
+        "/Patient?_has:Observation:patient:_id=ob-g1",
+        "compartment=Patient/pt-g1",
+    )
+    .await;
     assert_eq!(by_mode(&own, "match"), vec!["pt-g1".to_owned()]);
 }
 
 #[tokio::test]
 async fn a_type_outside_the_grant_is_refused() {
     let app = granted().await;
-    let reply = request(&app, "GET", "/Observation", &[("x-scope", "types=Patient")], &[]).await;
+    let reply = request(
+        &app,
+        "GET",
+        "/Observation",
+        &[("x-scope", "types=Patient")],
+        &[],
+    )
+    .await;
     assert_eq!(reply.status, StatusCode::FORBIDDEN, "{}", reply.body);
     let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
     assert_eq!(value["issue"][0]["code"], "forbidden");
@@ -2008,20 +2522,106 @@ async fn a_token_longer_than_the_index_key_matches_exactly() {
 #[tokio::test]
 async fn a_full_text_parameter_is_reported_unsupported() {
     let app = seeded().await;
-    for uri in ["/Patient?_text=fever", "/Patient?_content=fever", "/Patient?_text:exact=fever"] {
+    for uri in [
+        "/Patient?_content=fever",
+        "/Patient?_content:exact=fever",
+        "/Patient?_query=fever",
+    ] {
         let reply = request(&app, "GET", uri, &[], &[]).await;
-        assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{uri} gave {}", reply.body);
+        assert_eq!(
+            reply.status,
+            StatusCode::BAD_REQUEST,
+            "{uri} gave {}",
+            reply.body
+        );
         let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
         assert_eq!(value["issue"][0]["code"], "not-supported", "{uri}");
     }
 }
 
 #[tokio::test]
+async fn a_full_text_search_matches_the_words_of_the_narrative() {
+    let app = service();
+    let report = br#"{"resourceType":"Observation","id":"ob-t1","status":"final","text":{"status":"generated","div":"<div><p>The patient reported a <b>high fever</b> and chills, with bone pain</p></div>"},"code":{"text":"report"}}"#;
+    let plain = br#"{"resourceType":"Observation","id":"ob-t2","status":"final","text":{"status":"generated","div":"<div><p>An unrelated follow-up note</p></div>"},"code":{"text":"report"}}"#;
+    request(&app, "POST", "/Observation", &[], report).await;
+    request(&app, "POST", "/Observation", &[], plain).await;
+    assert_eq!(
+        found(&app, "/Observation?_text=fever").await,
+        vec!["ob-t1".to_owned()]
+    );
+    assert!(found(&app, "/Observation?_text=rash").await.is_empty());
+}
+
+#[tokio::test]
+async fn a_full_text_search_is_word_based() {
+    let app = service();
+    let feverish = br#"{"resourceType":"Observation","id":"ob-t3","status":"final","text":{"status":"generated","div":"<div><p>The patient felt feverish overnight</p></div>"},"code":{"text":"report"}}"#;
+    request(&app, "POST", "/Observation", &[], feverish).await;
+    assert!(found(&app, "/Observation?_text=fever").await.is_empty());
+    assert_eq!(
+        found(&app, "/Observation?_text=feverish").await,
+        vec!["ob-t3".to_owned()]
+    );
+}
+
+#[tokio::test]
+async fn a_full_text_search_reads_a_boolean_expression() {
+    let app = service();
+    let liver = br#"{"resourceType":"Observation","id":"ob-t4","status":"final","text":{"status":"generated","div":"<div><p>Metastases in the liver</p></div>"},"code":{"text":"report"}}"#;
+    let bone = br#"{"resourceType":"Observation","id":"ob-t5","status":"final","text":{"status":"generated","div":"<div><p>Bone metastases found</p></div>"},"code":{"text":"report"}}"#;
+    let none = br#"{"resourceType":"Observation","id":"ob-t6","status":"final","text":{"status":"generated","div":"<div><p>A routine check</p></div>"},"code":{"text":"report"}}"#;
+    request(&app, "POST", "/Observation", &[], liver).await;
+    request(&app, "POST", "/Observation", &[], bone).await;
+    request(&app, "POST", "/Observation", &[], none).await;
+    let query = "/Observation?_text=(bone%20OR%20liver)%20AND%20metastases";
+    let mut entries = found(&app, query).await;
+    entries.sort();
+    assert_eq!(entries, vec!["ob-t4".to_owned(), "ob-t5".to_owned()]);
+    assert!(found(&app, "/Observation?_text=bone%20AND%20liver")
+        .await
+        .is_empty());
+    assert!(!found(&app, "/Observation?_text=bone%20AND%20metastases")
+        .await
+        .is_empty());
+}
+
+#[tokio::test]
+async fn the_text_modifier_on_a_reference_is_answered_in_r5_only() {
+    let body = br#"{"resourceType":"Patient","id":"pt-r1","managingOrganization":{"reference":"Organization/org-r1","display":"Mercy General Hospital"}}"#;
+    let older = writing(FhirVersion::R4);
+    request(&older, "POST", "/Patient", &[], body).await;
+    let reply = request(&older, "GET", "/Patient?organization:text=mercy", &[], &[]).await;
+    assert_eq!(reply.status, StatusCode::BAD_REQUEST);
+    let latest = writing(FhirVersion::R5);
+    request(&latest, "POST", "/Patient", &[], body).await;
+    assert_eq!(
+        found(&latest, "/Patient?organization:text=mercy").await,
+        vec!["pt-r1".to_owned()]
+    );
+    assert!(found(&latest, "/Patient?organization:text=district")
+        .await
+        .is_empty());
+}
+
+#[tokio::test]
 async fn an_empty_value_is_reported_unsupported() {
     let app = seeded().await;
-    for uri in ["/Patient?_id=", "/Patient?name=", "/Patient?_sort=", "/Patient?_count=", "/Patient?_tag="] {
+    for uri in [
+        "/Patient?_id=",
+        "/Patient?name=",
+        "/Patient?_sort=",
+        "/Patient?_count=",
+        "/Patient?_tag=",
+        "/Patient?_text=",
+    ] {
         let reply = request(&app, "GET", uri, &[], &[]).await;
-        assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{uri} gave {}", reply.body);
+        assert_eq!(
+            reply.status,
+            StatusCode::BAD_REQUEST,
+            "{uri} gave {}",
+            reply.body
+        );
         let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
         assert_eq!(value["issue"][0]["code"], "not-supported", "{uri}");
     }
@@ -2036,19 +2636,31 @@ fn definition(id: &str, code: &str, expression: &str, status: &str) -> Vec<u8> {
 
 async fn diagnostics(app: &Service, uri: &str) -> String {
     let reply = request(app, "GET", uri, &[], &[]).await;
-    assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{uri} gave {}", reply.body);
+    assert_eq!(
+        reply.status,
+        StatusCode::BAD_REQUEST,
+        "{uri} gave {}",
+        reply.body
+    );
     let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
-    value["issue"][0]["diagnostics"].as_str().unwrap_or_default().to_owned()
+    value["issue"][0]["diagnostics"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned()
 }
 
 #[tokio::test]
 async fn a_definition_registers_a_custom_parameter() {
     let app = service();
-    assert!(!diagnostics(&app, "/Patient?risk-band=high").await.contains("is supported"));
+    assert!(!diagnostics(&app, "/Patient?risk-band=high")
+        .await
+        .contains("is supported"));
     let body = definition("sp-1", "risk-band", "Patient.extension.valueCode", "active");
     let reply = request(&app, "POST", "/SearchParameter", &[], &body).await;
     assert_eq!(reply.status, StatusCode::CREATED, "{}", reply.body);
-    assert!(diagnostics(&app, "/Patient?risk-band=high").await.contains("is supported"));
+    assert!(diagnostics(&app, "/Patient?risk-band=high")
+        .await
+        .contains("is supported"));
 }
 
 #[tokio::test]
@@ -2057,7 +2669,9 @@ async fn a_malformed_definition_registers_nothing() {
     let body = br#"{"resourceType":"SearchParameter","id":"sp-2","name":"bad","description":"a parameter","url":"urn:p:bad","status":"active","code":"bad","base":["Patient"],"type":"token"}"#;
     let reply = request(&app, "POST", "/SearchParameter", &[], body).await;
     assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{}", reply.body);
-    assert!(!diagnostics(&app, "/Patient?bad=1").await.contains("is supported"));
+    assert!(!diagnostics(&app, "/Patient?bad=1")
+        .await
+        .contains("is supported"));
     let read = request(&app, "GET", "/SearchParameter/sp-2", &[], &[]).await;
     assert_eq!(read.status, StatusCode::NOT_FOUND);
 }
@@ -2070,10 +2684,17 @@ async fn a_rejected_definition_leaves_the_registry_untouched() {
     let clash = br#"{"resourceType":"SearchParameter","id":"sp-4","name":"other","description":"a parameter","url":"urn:p:other","status":"active","code":"risk-band","base":["Patient"],"type":"token","expression":"Patient.extension.valueString"}"#;
     let reply = request(&app, "POST", "/SearchParameter", &[], clash).await;
     assert_eq!(reply.status, StatusCode::CONFLICT, "{}", reply.body);
-    let duplicate = definition("sp-3", "other-band", "Patient.extension.valueCode", "active");
+    let duplicate = definition(
+        "sp-3",
+        "other-band",
+        "Patient.extension.valueCode",
+        "active",
+    );
     let again = request(&app, "POST", "/SearchParameter", &[], &duplicate).await;
     assert_eq!(again.status, StatusCode::CONFLICT, "{}", again.body);
-    assert!(!diagnostics(&app, "/Patient?other-band=1").await.contains("is supported"));
+    assert!(!diagnostics(&app, "/Patient?other-band=1")
+        .await
+        .contains("is supported"));
     let read = request(&app, "GET", "/SearchParameter/sp-4", &[], &[]).await;
     assert_eq!(read.status, StatusCode::NOT_FOUND);
 }
@@ -2085,7 +2706,9 @@ async fn deleting_a_definition_withdraws_the_parameter() {
     request(&app, "POST", "/SearchParameter", &[], &body).await;
     let reply = request(&app, "DELETE", "/SearchParameter/sp-5", &[], &[]).await;
     assert_eq!(reply.status, StatusCode::NO_CONTENT, "{}", reply.body);
-    assert!(!diagnostics(&app, "/Patient?risk-band=high").await.contains("is supported"));
+    assert!(!diagnostics(&app, "/Patient?risk-band=high")
+        .await
+        .contains("is supported"));
 }
 
 #[tokio::test]
@@ -2093,11 +2716,20 @@ async fn a_replaced_definition_replaces_the_registration() {
     let app = service();
     let body = definition("sp-6", "risk-band", "Patient.extension.valueCode", "active");
     request(&app, "POST", "/SearchParameter", &[], &body).await;
-    let changed = definition("sp-6", "risk-level", "Patient.extension.valueCode", "active");
+    let changed = definition(
+        "sp-6",
+        "risk-level",
+        "Patient.extension.valueCode",
+        "active",
+    );
     let reply = request(&app, "PUT", "/SearchParameter/sp-6", &[], &changed).await;
     assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
-    assert!(diagnostics(&app, "/Patient?risk-level=high").await.contains("is supported"));
-    assert!(!diagnostics(&app, "/Patient?risk-band=high").await.contains("is supported"));
+    assert!(diagnostics(&app, "/Patient?risk-level=high")
+        .await
+        .contains("is supported"));
+    assert!(!diagnostics(&app, "/Patient?risk-band=high")
+        .await
+        .contains("is supported"));
 }
 
 async fn statuses(app: &Service, method: &str, uri: &str, body: &[u8]) -> serde_json::Value {
@@ -2124,7 +2756,11 @@ fn status_of(value: &serde_json::Value, url: &str) -> Option<String> {
             parts
                 .iter()
                 .find(|part| part["name"] == name)
-                .and_then(|part| part["valueCode"].as_str().or_else(|| part["valueUri"].as_str()))
+                .and_then(|part| {
+                    part["valueCode"]
+                        .as_str()
+                        .or_else(|| part["valueUri"].as_str())
+                })
                 .map(str::to_owned)
         };
         (found("url").as_deref() == Some(url)).then(|| found("status"))?
@@ -2138,10 +2774,26 @@ async fn the_status_endpoint_reports_index_readiness() {
     request(&app, "POST", "/SearchParameter", &[], &body).await;
     let listing = statuses(&app, "GET", "/SearchParameter/$status", &[]).await;
     assert_eq!(listing["resourceType"], "Parameters");
-    assert_eq!(status_of(&listing, "urn:p:risk-band").as_deref(), Some("supported"));
-    let one = statuses(&app, "GET", "/SearchParameter/$status?url=urn:p:risk-band", &[]).await;
+    assert_eq!(
+        status_of(&listing, "urn:p:risk-band").as_deref(),
+        Some("supported")
+    );
+    let one = statuses(
+        &app,
+        "GET",
+        "/SearchParameter/$status?url=urn:p:risk-band",
+        &[],
+    )
+    .await;
     assert_eq!(one["parameter"].as_array().map(Vec::len), Some(1));
-    let missing = request(&app, "GET", "/SearchParameter/$status?url=urn:p:nonesuch", &[], &[]).await;
+    let missing = request(
+        &app,
+        "GET",
+        "/SearchParameter/$status?url=urn:p:nonesuch",
+        &[],
+        &[],
+    )
+    .await;
     assert_eq!(missing.status, StatusCode::NOT_FOUND);
 }
 
@@ -2152,7 +2804,10 @@ async fn the_status_endpoint_answers_a_posted_query() {
     request(&app, "POST", "/SearchParameter", &[], &body).await;
     let query = br#"{"resourceType":"Parameters","parameter":[{"name":"url","valueUri":"urn:p:risk-band"}]}"#;
     let listing = statuses(&app, "POST", "/SearchParameter/$status", query).await;
-    assert_eq!(status_of(&listing, "urn:p:risk-band").as_deref(), Some("supported"));
+    assert_eq!(
+        status_of(&listing, "urn:p:risk-band").as_deref(),
+        Some("supported")
+    );
 }
 
 #[tokio::test]
@@ -2160,12 +2815,39 @@ async fn a_parameter_is_disabled_and_enabled_through_the_status_endpoint() {
     let app = service();
     let body = definition("sp-9", "risk-band", "Patient.extension.valueCode", "active");
     request(&app, "POST", "/SearchParameter", &[], &body).await;
-    let disabled = statuses(&app, "PUT", "/SearchParameter/$status?url=urn:p:risk-band&status=disabled", &[]).await;
-    assert_eq!(status_of(&disabled, "urn:p:risk-band").as_deref(), Some("disabled"));
-    assert!(diagnostics(&app, "/Patient?risk-band=high").await.contains("disabled"));
-    let enabled = statuses(&app, "PUT", "/SearchParameter/$status?url=urn:p:risk-band&status=supported", &[]).await;
-    assert_eq!(status_of(&enabled, "urn:p:risk-band").as_deref(), Some("supported"));
-    let refused = request(&app, "PUT", "/SearchParameter/$status?url=urn:p:risk-band&status=nonesuch", &[], &[]).await;
+    let disabled = statuses(
+        &app,
+        "PUT",
+        "/SearchParameter/$status?url=urn:p:risk-band&status=disabled",
+        &[],
+    )
+    .await;
+    assert_eq!(
+        status_of(&disabled, "urn:p:risk-band").as_deref(),
+        Some("disabled")
+    );
+    assert!(diagnostics(&app, "/Patient?risk-band=high")
+        .await
+        .contains("disabled"));
+    let enabled = statuses(
+        &app,
+        "PUT",
+        "/SearchParameter/$status?url=urn:p:risk-band&status=supported",
+        &[],
+    )
+    .await;
+    assert_eq!(
+        status_of(&enabled, "urn:p:risk-band").as_deref(),
+        Some("supported")
+    );
+    let refused = request(
+        &app,
+        "PUT",
+        "/SearchParameter/$status?url=urn:p:risk-band&status=nonesuch",
+        &[],
+        &[],
+    )
+    .await;
     assert_eq!(refused.status, StatusCode::BAD_REQUEST);
 }
 
@@ -2188,24 +2870,51 @@ async fn a_reindex_backfills_and_makes_a_parameter_searchable() {
     let app = service();
     request(&app, "POST", "/Patient", &[], &banded("pt-r1", "high")).await;
     request(&app, "POST", "/Patient", &[], &banded("pt-r2", "low")).await;
-    request(&app, "POST", "/Patient", &[], br#"{"resourceType":"Patient","id":"pt-r3"}"#).await;
-    let body = definition("sp-10", "risk-band", "Patient.extension.valueCode", "active");
+    request(
+        &app,
+        "POST",
+        "/Patient",
+        &[],
+        br#"{"resourceType":"Patient","id":"pt-r3"}"#,
+    )
+    .await;
+    let body = definition(
+        "sp-10",
+        "risk-band",
+        "Patient.extension.valueCode",
+        "active",
+    );
     request(&app, "POST", "/SearchParameter", &[], &body).await;
-    assert!(diagnostics(&app, "/Patient?risk-band=high").await.contains("is supported"));
+    assert!(diagnostics(&app, "/Patient?risk-band=high")
+        .await
+        .contains("is supported"));
     let report = statuses(&app, "POST", "/SearchParameter/$reindex", &[]).await;
     let entry = &report["parameter"][0];
     assert_eq!(part_of(entry, "indexed")["valueInteger"], 2);
     assert_eq!(part_of(entry, "failures")["valueInteger"], 0);
-    assert_eq!(found(&app, "/Patient?risk-band=high").await, vec!["pt-r1".to_owned()]);
+    assert_eq!(
+        found(&app, "/Patient?risk-band=high").await,
+        vec!["pt-r1".to_owned()]
+    );
     assert!(found(&app, "/Patient?risk-band=none").await.is_empty());
     let listing = statuses(&app, "GET", "/SearchParameter/$status", &[]).await;
-    assert_eq!(status_of(&listing, "urn:p:risk-band").as_deref(), Some("searchable"));
+    assert_eq!(
+        status_of(&listing, "urn:p:risk-band").as_deref(),
+        Some("searchable")
+    );
 }
 
 #[tokio::test]
 async fn a_reindex_reports_the_resources_it_could_not_index() {
     let app = service();
-    request(&app, "POST", "/Patient", &[], &banded("pt-r4", "1980-04-01")).await;
+    request(
+        &app,
+        "POST",
+        "/Patient",
+        &[],
+        &banded("pt-r4", "1980-04-01"),
+    )
+    .await;
     request(&app, "POST", "/Patient", &[], &banded("pt-r5", "whenever")).await;
     let body = br#"{"resourceType":"SearchParameter","id":"sp-11","name":"band-date","description":"a parameter","url":"urn:p:band-date","status":"active","code":"band-date","base":["Patient"],"type":"date","expression":"Patient.extension.valueCode"}"#;
     request(&app, "POST", "/SearchParameter", &[], body).await;
@@ -2214,22 +2923,45 @@ async fn a_reindex_reports_the_resources_it_could_not_index() {
     assert_eq!(part_of(entry, "indexed")["valueInteger"], 1);
     assert_eq!(part_of(entry, "failures")["valueInteger"], 1);
     let failure = part_of(entry, "failure");
-    assert_eq!(part_of(&failure, "resource")["valueString"], "Patient/pt-r5");
-    assert_eq!(found(&app, "/Patient?band-date=1980-04-01").await, vec!["pt-r4".to_owned()]);
+    assert_eq!(
+        part_of(&failure, "resource")["valueString"],
+        "Patient/pt-r5"
+    );
+    assert_eq!(
+        found(&app, "/Patient?band-date=1980-04-01").await,
+        vec!["pt-r4".to_owned()]
+    );
 }
 
 #[tokio::test]
 async fn a_retired_parameter_loses_its_index_on_the_next_reindex() {
     let app = service();
     request(&app, "POST", "/Patient", &[], &banded("pt-r6", "high")).await;
-    let body = definition("sp-12", "risk-band", "Patient.extension.valueCode", "active");
+    let body = definition(
+        "sp-12",
+        "risk-band",
+        "Patient.extension.valueCode",
+        "active",
+    );
     request(&app, "POST", "/SearchParameter", &[], &body).await;
     statuses(&app, "POST", "/SearchParameter/$reindex", &[]).await;
-    let listing = statuses(&app, "PUT", "/SearchParameter/$status?url=urn:p:risk-band&status=disabled", &[]).await;
-    assert_eq!(status_of(&listing, "urn:p:risk-band").as_deref(), Some("pending-disable"));
+    let listing = statuses(
+        &app,
+        "PUT",
+        "/SearchParameter/$status?url=urn:p:risk-band&status=disabled",
+        &[],
+    )
+    .await;
+    assert_eq!(
+        status_of(&listing, "urn:p:risk-band").as_deref(),
+        Some("pending-disable")
+    );
     statuses(&app, "POST", "/SearchParameter/$reindex", &[]).await;
     let after = statuses(&app, "GET", "/SearchParameter/$status", &[]).await;
-    assert_eq!(status_of(&after, "urn:p:risk-band").as_deref(), Some("disabled"));
+    assert_eq!(
+        status_of(&after, "urn:p:risk-band").as_deref(),
+        Some("disabled")
+    );
 }
 
 fn instance(store: Arc<MemoryStore>) -> Service {
@@ -2249,15 +2981,31 @@ async fn a_second_instance_converges_on_a_refresh() {
     let first = instance(Arc::clone(&store));
     let second = instance(Arc::clone(&store));
     request(&first, "POST", "/Patient", &[], &banded("pt-c1", "high")).await;
-    let body = definition("sp-13", "risk-band", "Patient.extension.valueCode", "active");
+    let body = definition(
+        "sp-13",
+        "risk-band",
+        "Patient.extension.valueCode",
+        "active",
+    );
     request(&first, "POST", "/SearchParameter", &[], &body).await;
     statuses(&first, "POST", "/SearchParameter/$reindex", &[]).await;
-    assert_eq!(found(&first, "/Patient?risk-band=high").await, vec!["pt-c1".to_owned()]);
-    assert!(!diagnostics(&second, "/Patient?risk-band=high").await.contains("is supported"));
+    assert_eq!(
+        found(&first, "/Patient?risk-band=high").await,
+        vec!["pt-c1".to_owned()]
+    );
+    assert!(!diagnostics(&second, "/Patient?risk-band=high")
+        .await
+        .contains("is supported"));
     statuses(&second, "POST", "/SearchParameter/$refresh", &[]).await;
-    assert_eq!(found(&second, "/Patient?risk-band=high").await, vec!["pt-c1".to_owned()]);
+    assert_eq!(
+        found(&second, "/Patient?risk-band=high").await,
+        vec!["pt-c1".to_owned()]
+    );
     let again = statuses(&second, "POST", "/SearchParameter/$refresh", &[]).await;
-    assert_eq!(status_of(&again, "urn:p:risk-band").as_deref(), Some("searchable"));
+    assert_eq!(
+        status_of(&again, "urn:p:risk-band").as_deref(),
+        Some("searchable")
+    );
 }
 
 #[tokio::test]
@@ -2265,12 +3013,22 @@ async fn an_instance_started_over_a_loaded_store_answers_at_once() {
     let store = shared().await;
     let first = instance(Arc::clone(&store));
     request(&first, "POST", "/Patient", &[], &banded("pt-c2", "high")).await;
-    let body = definition("sp-14", "risk-band", "Patient.extension.valueCode", "active");
+    let body = definition(
+        "sp-14",
+        "risk-band",
+        "Patient.extension.valueCode",
+        "active",
+    );
     request(&first, "POST", "/SearchParameter", &[], &body).await;
     statuses(&first, "POST", "/SearchParameter/$reindex", &[]).await;
     let handle: Arc<dyn ResourceStore> = store.clone();
-    let late = Service::started(handle, FhirVersion::R4, Vec::new()).await.unwrap();
-    assert_eq!(found(&late, "/Patient?risk-band=high").await, vec!["pt-c2".to_owned()]);
+    let late = Service::started(handle, FhirVersion::R4, Vec::new())
+        .await
+        .unwrap();
+    assert_eq!(
+        found(&late, "/Patient?risk-band=high").await,
+        vec!["pt-c2".to_owned()]
+    );
 }
 
 #[tokio::test]
@@ -2278,21 +3036,44 @@ async fn a_withdrawn_definition_converges_too() {
     let store = shared().await;
     let first = instance(Arc::clone(&store));
     let second = instance(Arc::clone(&store));
-    let body = definition("sp-15", "risk-band", "Patient.extension.valueCode", "active");
+    let body = definition(
+        "sp-15",
+        "risk-band",
+        "Patient.extension.valueCode",
+        "active",
+    );
     request(&first, "POST", "/SearchParameter", &[], &body).await;
     statuses(&second, "POST", "/SearchParameter/$refresh", &[]).await;
     request(&first, "DELETE", "/SearchParameter/sp-15", &[], &[]).await;
     let listing = statuses(&second, "POST", "/SearchParameter/$refresh", &[]).await;
-    assert!(listing["parameter"].as_array().is_none_or(Vec::is_empty), "{listing}");
+    assert!(
+        listing["parameter"].as_array().is_none_or(Vec::is_empty),
+        "{listing}"
+    );
 }
 
 #[tokio::test]
 async fn concurrent_definition_updates_never_lose_one() {
     let app = service();
-    let body = definition("sp-16", "risk-band", "Patient.extension.valueCode", "active");
+    let body = definition(
+        "sp-16",
+        "risk-band",
+        "Patient.extension.valueCode",
+        "active",
+    );
     request(&app, "POST", "/SearchParameter", &[], &body).await;
-    let first = definition("sp-16", "risk-alpha", "Patient.extension.valueCode", "active");
-    let second = definition("sp-16", "risk-beta", "Patient.extension.valueCode", "active");
+    let first = definition(
+        "sp-16",
+        "risk-alpha",
+        "Patient.extension.valueCode",
+        "active",
+    );
+    let second = definition(
+        "sp-16",
+        "risk-beta",
+        "Patient.extension.valueCode",
+        "active",
+    );
     let etag = &[("if-match", "W/\"1\"")];
     let (left, right) = tokio::join!(
         request(&app, "PUT", "/SearchParameter/sp-16", etag, &first),
@@ -2308,8 +3089,12 @@ async fn concurrent_definition_updates_never_lose_one() {
         StatusCode::OK => ("risk-alpha", "risk-beta"),
         _ => ("risk-beta", "risk-alpha"),
     };
-    assert!(diagnostics(&app, &format!("/Patient?{won}=x")).await.contains("is supported"));
-    assert!(!diagnostics(&app, &format!("/Patient?{lost}=x")).await.contains("is supported"));
+    assert!(diagnostics(&app, &format!("/Patient?{won}=x"))
+        .await
+        .contains("is supported"));
+    assert!(!diagnostics(&app, &format!("/Patient?{lost}=x"))
+        .await
+        .contains("is supported"));
     let listing = statuses(&app, "GET", "/SearchParameter/$status", &[]).await;
     assert_eq!(listing["parameter"].as_array().map(Vec::len), Some(1));
     let stored = request(&app, "GET", "/SearchParameter/sp-16", &[], &[]).await;
@@ -2319,15 +3104,46 @@ async fn concurrent_definition_updates_never_lose_one() {
 #[tokio::test]
 async fn a_stale_definition_update_changes_nothing() {
     let app = service();
-    let body = definition("sp-17", "risk-band", "Patient.extension.valueCode", "active");
+    let body = definition(
+        "sp-17",
+        "risk-band",
+        "Patient.extension.valueCode",
+        "active",
+    );
     request(&app, "POST", "/SearchParameter", &[], &body).await;
-    let next = definition("sp-17", "risk-band", "Patient.extension.valueString", "active");
+    let next = definition(
+        "sp-17",
+        "risk-band",
+        "Patient.extension.valueString",
+        "active",
+    );
     request(&app, "PUT", "/SearchParameter/sp-17", &[], &next).await;
-    let stale = definition("sp-17", "risk-stale", "Patient.extension.valueCode", "active");
-    let reply = request(&app, "PUT", "/SearchParameter/sp-17", &[("if-match", "W/\"1\"")], &stale).await;
-    assert_eq!(reply.status, StatusCode::PRECONDITION_FAILED, "{}", reply.body);
-    assert!(!diagnostics(&app, "/Patient?risk-stale=x").await.contains("is supported"));
-    assert!(diagnostics(&app, "/Patient?risk-band=x").await.contains("is supported"));
+    let stale = definition(
+        "sp-17",
+        "risk-stale",
+        "Patient.extension.valueCode",
+        "active",
+    );
+    let reply = request(
+        &app,
+        "PUT",
+        "/SearchParameter/sp-17",
+        &[("if-match", "W/\"1\"")],
+        &stale,
+    )
+    .await;
+    assert_eq!(
+        reply.status,
+        StatusCode::PRECONDITION_FAILED,
+        "{}",
+        reply.body
+    );
+    assert!(!diagnostics(&app, "/Patient?risk-stale=x")
+        .await
+        .contains("is supported"));
+    assert!(diagnostics(&app, "/Patient?risk-band=x")
+        .await
+        .contains("is supported"));
 }
 
 #[tokio::test]
@@ -2365,7 +3181,14 @@ async fn an_update_with_a_body_that_does_not_match_its_type_leaves_the_stored_on
     let app = service();
     request(&app, "POST", "/Patient", &[], &patient("pt-6", true)).await;
     let body = br#"{"resourceType":"Patient","id":"pt-6","favourite":"tea"}"#.to_vec();
-    let reply = request(&app, "PUT", "/Patient/pt-6", &[("if-match", "W/\"1\"")], &body).await;
+    let reply = request(
+        &app,
+        "PUT",
+        "/Patient/pt-6",
+        &[("if-match", "W/\"1\"")],
+        &body,
+    )
+    .await;
     assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{}", reply.body);
     let read = request(&app, "GET", "/Patient/pt-6", &[], &[]).await;
     assert_eq!(read.status, StatusCode::OK);
@@ -2374,7 +3197,13 @@ async fn an_update_with_a_body_that_does_not_match_its_type_leaves_the_stored_on
 
 #[tokio::test]
 async fn a_store_that_cannot_answer_is_a_503_with_a_retry_hint() {
-    let app = Service::new(Arc::new(FailingStore(|| Error::Unavailable("the store is busy".to_owned()))), FhirVersion::R4, vec![]);
+    let app = Service::new(
+        Arc::new(FailingStore(|| {
+            Error::Unavailable("the store is busy".to_owned())
+        })),
+        FhirVersion::R4,
+        vec![],
+    );
     let reply = request(&app, "GET", "/Patient/waiting", &[], &[]).await;
     assert_eq!(reply.status, StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(header(&reply, "retry-after"), "2");

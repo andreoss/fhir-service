@@ -63,9 +63,18 @@ fn the_last_updated_parameter_compares_against_the_instant_the_store_stamped() {
 
 #[test]
 fn the_profile_parameter_matches_a_canonical_address_verbatim() {
-    assert!(matches("_profile", "http://example.org/StructureDefinition/vip"));
-    assert!(!matches("_profile", "http://example.org/StructureDefinition/other"));
-    assert!(!matches("_profile", "http://example.org/StructureDefinition"));
+    assert!(matches(
+        "_profile",
+        "http://example.org/StructureDefinition/vip"
+    ));
+    assert!(!matches(
+        "_profile",
+        "http://example.org/StructureDefinition/other"
+    ));
+    assert!(!matches(
+        "_profile",
+        "http://example.org/StructureDefinition"
+    ));
 }
 
 #[test]
@@ -89,6 +98,7 @@ fn the_common_parameters_are_the_ones_the_specification_gives_every_type() {
         ("_profile", ValueType::Uri),
         ("_tag", ValueType::Token),
         ("_security", ValueType::Token),
+        ("_text", ValueType::String),
     ];
     for (name, value_type) in published {
         let def = lookup(None, name).unwrap_or_else(|| panic!("{name}"));
@@ -99,6 +109,25 @@ fn the_common_parameters_are_the_ones_the_specification_gives_every_type() {
         );
     }
     assert_eq!(common().len(), published.len());
+    assert_eq!(
+        lookup(None, "_text").map(|def| def.target.clone()),
+        Some(Target::Path(vec!["text".to_owned()]))
+    );
+    let narrative = json!({
+        "resourceType": "Patient",
+        "id": "pt-n",
+        "text": {"status": "generated", "div": "<div><p>Fever and chills</p></div>"}
+    });
+    let id = ResourceId::parse("pt-n").unwrap();
+    let updated = FhirInstant::parse("2026-09-06T04:00:00Z").unwrap();
+    assert!(
+        filter("_text", "fever AND chills").matches(&id, &updated, &narrative),
+        "the narrative pools its words"
+    );
+    assert!(
+        !filter("_text", "rash").matches(&id, &updated, &narrative),
+        "only the narrative's words answer"
+    );
     assert!(matches!(
         lookup(None, "_id").map(|def| def.target.clone()),
         Some(Target::Id)

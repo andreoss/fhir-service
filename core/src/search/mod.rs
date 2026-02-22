@@ -1,4 +1,3 @@
-
 pub mod chain;
 pub mod compartment;
 pub mod grant;
@@ -8,6 +7,7 @@ pub mod modifier;
 pub mod parameter;
 pub mod path;
 pub mod registry;
+pub mod text;
 pub mod value;
 
 pub use chain::{Chain, ChainDirection, Criterion};
@@ -70,13 +70,27 @@ impl Filter {
                 .values
                 .iter()
                 .any(|value| self.indexed_hit(value, elements)),
-            _ => self.values.iter().any(|value| {
-                self.indexed_hit(value, elements) != value.is_negated()
-            }),
+            _ => self
+                .values
+                .iter()
+                .any(|value| self.indexed_hit(value, elements) != value.is_negated()),
         }
     }
 
     fn indexed_hit(&self, value: &SearchValue, elements: &[Value]) -> bool {
+        if self.name == "_text" && self.modifier == Modifier::None {
+            let document = elements
+                .iter()
+                .map(text::visible)
+                .collect::<Vec<String>>()
+                .join(" ");
+            return match value {
+                SearchValue::Text(raw) => {
+                    text::text_query(raw).is_ok_and(|query| query.matches(&document))
+                }
+                _ => false,
+            };
+        }
         elements
             .iter()
             .any(|element| self.modifier.accepts(value, element))
@@ -176,19 +190,36 @@ impl Filter {
             Target::LastUpdated => self
                 .modifier
                 .accepts(value, &Value::String(last_updated.as_str().to_owned())),
-            Target::Path(paths) => paths
-                .iter()
-                .flat_map(|path| select(body, path))
-                .any(|element| self.modifier.accepts(value, element)),
-            Target::Composite(def) => match value.components() {
-                Some((left, right)) => def
-                    .base
+            Target::Path(paths) => {
+                if self.name == "_text" && self.modifier == Modifier::None {
+                    let document = paths
+                        .iter()
+                        .flat_map(|path| select(body, path))
+                        .map(text::visible)
+                        .collect::<Vec<String>>()
+                        .join(" ");
+                    return match value {
+                        SearchValue::Text(raw) => {
+                            text::text_query(raw).is_ok_and(|query| query.matches(&document))
+                        }
+                        _ => false,
+                    };
+                }
+                paths
                     .iter()
                     .flat_map(|path| select(body, path))
-                    .any(|element| {
-                        component(&def.left, left, element)
-                            && component(&def.right, right, element)
-                    }),
+                    .any(|element| self.modifier.accepts(value, element))
+            }
+            Target::Composite(def) => match value.components() {
+                Some((left, right)) => {
+                    def.base
+                        .iter()
+                        .flat_map(|path| select(body, path))
+                        .any(|element| {
+                            component(&def.left, left, element)
+                                && component(&def.right, right, element)
+                        })
+                }
                 None => false,
             },
         }
@@ -328,7 +359,7 @@ fn component(sub: &SubDef, value: &SearchValue, element: &Value) -> bool {
 pub fn unsupported(version: FhirVersion) -> &'static [&'static str] {
     match version {
         FhirVersion::Stu3 | FhirVersion::R4 | FhirVersion::R4b | FhirVersion::R5 => {
-            &["_text", "_content", "_filter", "_query"]
+            &["_content", "_filter", "_query"]
         }
     }
 }
@@ -374,7 +405,11 @@ mod tests {
     fn a_composite_filter_needs_a_composite_value() {
         let def = lookup(Some("Observation".parse().unwrap()), "code-value-quantity").unwrap();
         let wrong = vec![SearchValue::parse(ValueType::Token, "x").unwrap()];
-        assert!(!filter(&def.name, def.target.clone(), wrong).matches(&id(), &updated(), &json!({})));
+        assert!(!filter(&def.name, def.target.clone(), wrong).matches(
+            &id(),
+            &updated(),
+            &json!({})
+        ));
     }
 
     fn indexed(name: &str, target: Target, modifier: Modifier, values: Vec<SearchValue>) -> Filter {
@@ -397,13 +432,25 @@ mod tests {
             (ValueType::String, "Ann", Modifier::Exact, json!("Ann")),
             (ValueType::String, "ann", Modifier::Exact, json!("Ann")),
             (ValueType::String, "nn", Modifier::Contains, json!("Ann")),
-            (ValueType::Date, "ne1980", Modifier::None, json!("1980-04-01")),
-            (ValueType::Date, "ne1990", Modifier::None, json!("1980-04-01")),
+            (
+                ValueType::Date,
+                "ne1980",
+                Modifier::None,
+                json!("1980-04-01"),
+            ),
+            (
+                ValueType::Date,
+                "ne1990",
+                Modifier::None,
+                json!("1980-04-01"),
+            ),
             (ValueType::Number, "0.4", Modifier::None, json!(0.42)),
         ];
         for (value_type, raw, modifier, element) in cases {
-            let values = vec![crate::search::modifier::value_of(modifier, *value_type, raw)
-                .expect("the value parses under the modifier")];
+            let values = vec![
+                crate::search::modifier::value_of(modifier, *value_type, raw)
+                    .expect("the value parses under the modifier"),
+            ];
             let target = Target::path(["held"]);
             let body = json!({"held": element});
             let held = indexed("held", target.clone(), modifier.clone(), values.clone());
@@ -428,12 +475,16 @@ mod tests {
         let present = vec![SearchValue::Missing(false)];
         let absent = vec![SearchValue::Missing(true)];
         let none: &[Value] = &[];
-        assert!(indexed("held", target.clone(), Modifier::Missing, absent.clone())
-            .matches_indexed(none));
+        assert!(
+            indexed("held", target.clone(), Modifier::Missing, absent.clone())
+                .matches_indexed(none)
+        );
         assert!(!indexed("held", target.clone(), Modifier::Missing, absent)
             .matches_indexed(&[json!("amber")]));
-        assert!(indexed("held", target.clone(), Modifier::Missing, present.clone())
-            .matches_indexed(&[json!("amber")]));
+        assert!(
+            indexed("held", target.clone(), Modifier::Missing, present.clone())
+                .matches_indexed(&[json!("amber")])
+        );
         assert!(!indexed("held", target, Modifier::Missing, present).matches_indexed(none));
     }
 
@@ -457,7 +508,12 @@ mod tests {
             SortValue::Text("1980-04-01".to_owned())
         );
         assert_eq!(
-            sort_value(&Target::path(["deceasedDateTime"]), &id(), &updated(), &body),
+            sort_value(
+                &Target::path(["deceasedDateTime"]),
+                &id(),
+                &updated(),
+                &body
+            ),
             SortValue::Missing
         );
     }
@@ -470,7 +526,10 @@ mod tests {
             assert!(SortValue::Missing > *held, "{held:?}");
             assert!(*held < SortValue::Missing, "{held:?}");
         }
-        assert_eq!(SortValue::Missing.cmp(&SortValue::Missing), std::cmp::Ordering::Equal);
+        assert_eq!(
+            SortValue::Missing.cmp(&SortValue::Missing),
+            std::cmp::Ordering::Equal
+        );
     }
 
     #[test]
@@ -536,12 +595,54 @@ mod tests {
     fn every_version_reports_the_parameters_it_defines_but_cannot_answer() {
         for version in FhirVersion::ALL {
             let held = unsupported(version);
-            for name in ["_text", "_content", "_filter", "_query"] {
+            for name in ["_content", "_filter", "_query"] {
                 assert!(held.contains(&name), "{version:?} {name}");
             }
-            for answered in ["_id", "_lastUpdated", "_profile", "_tag", "_security"] {
+            for answered in [
+                "_text",
+                "_id",
+                "_lastUpdated",
+                "_profile",
+                "_tag",
+                "_security",
+            ] {
                 assert!(!held.contains(&answered), "{version:?} {answered}");
             }
         }
+    }
+
+    #[test]
+    fn a_text_search_parameter_matches_the_words_of_the_narrative() {
+        let id = id();
+        let updated = updated();
+        let body = json!({
+            "resourceType": "Patient",
+            "id": "p-1",
+            "text": {"status": "generated", "div": "<div><p>fever and <b>chills</b></p></div>"}
+        });
+        let wanted = Filter::new(
+            "_text",
+            Target::path(["text"]),
+            vec![SearchValue::parse(ValueType::String, "chills OR sweats").unwrap()],
+        );
+        assert!(wanted.matches(&id, &updated, &body));
+        let absent = Filter::new(
+            "_text",
+            Target::path(["text"]),
+            vec![SearchValue::parse(ValueType::String, "rash").unwrap()],
+        );
+        assert!(!absent.matches(&id, &updated, &body));
+        let both = Filter::new(
+            "_text",
+            Target::path(["text"]),
+            vec![SearchValue::parse(ValueType::String, "fever AND chills").unwrap()],
+        );
+        assert!(both.matches(&id, &updated, &body));
+        let one = Filter::new(
+            "_text",
+            Target::path(["text"]),
+            vec![SearchValue::parse(ValueType::String, "fever AND rash").unwrap()],
+        );
+        assert!(!one.matches(&id, &updated, &body));
     }
 }

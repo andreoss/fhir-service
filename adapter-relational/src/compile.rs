@@ -1,10 +1,10 @@
 use crate::extract::{IDENTIFIER, MAIN, NARRATIVE, OF_TYPE, PLAIN, PRESENCE, WORDS};
 use crate::store::RelationalStore;
+use fhir_core::search::Comparator;
 use fhir_core::search::{
     Chain, ChainDirection, Compartment, Criterion, Filter, Grant, IndexKey, Modifier, SearchValue,
     Target, Token, TokenSystem, ValueType,
 };
-use fhir_core::search::Comparator;
 use fhir_core::{Error, InstantPeriod};
 
 const DAY: i64 = 86_400;
@@ -88,7 +88,14 @@ impl<'a> Compiler<'a> {
         format!("x{}", self.aliases)
     }
 
-    fn exists(&mut self, table: &str, outer: &str, param: &str, slot: &str, build: impl FnOnce(&mut Compiler<'a>, &str) -> String) -> String {
+    fn exists(
+        &mut self,
+        table: &str,
+        outer: &str,
+        param: &str,
+        slot: &str,
+        build: impl FnOnce(&mut Compiler<'a>, &str) -> String,
+    ) -> String {
         let inner = self.alias();
         let key = self.text(param);
         let slot = self.text(slot);
@@ -268,37 +275,48 @@ impl<'a> Compiler<'a> {
             }
         };
         let value = value.clone();
-        Ok(self.exists(table, outer, param, MAIN, move |compiler, alias| match &value {
-            SearchValue::Token(token) => compiler.token_condition(token, alias),
-            SearchValue::Text(text) => {
-                let bound = compiler.text(&text.to_lowercase());
-                format!("starts_with({alias}.folded, {bound})")
-            }
-            SearchValue::Number {
-                comparator,
-                value,
-                tolerance,
-            } => compiler.number_condition(*comparator, *value, *tolerance, &format!("{alias}.value")),
-            SearchValue::Date { comparator, period } => compiler.date_condition(
-                *comparator,
-                period,
-                &format!("({alias}.low_secs, {alias}.low_nanos)"),
-                &format!("({alias}.high_secs, {alias}.high_nanos)"),
-            ),
-            SearchValue::Quantity {
-                number,
-                system,
-                code,
-            } => compiler.quantity_condition(number, system, code.as_deref(), alias),
-            SearchValue::Reference(text) => compiler.reference_condition(text, alias),
-            SearchValue::Uri(text) => {
-                let bound = compiler.text(text);
-                format!("{alias}.value = {bound}")
-            }
-            SearchValue::OfType { .. } | SearchValue::Composite { .. } | SearchValue::Missing(_) => {
-                "false".to_owned()
-            }
-        }))
+        Ok(self.exists(
+            table,
+            outer,
+            param,
+            MAIN,
+            move |compiler, alias| match &value {
+                SearchValue::Token(token) => compiler.token_condition(token, alias),
+                SearchValue::Text(text) => {
+                    let bound = compiler.text(&text.to_lowercase());
+                    format!("starts_with({alias}.folded, {bound})")
+                }
+                SearchValue::Number {
+                    comparator,
+                    value,
+                    tolerance,
+                } => compiler.number_condition(
+                    *comparator,
+                    *value,
+                    *tolerance,
+                    &format!("{alias}.value"),
+                ),
+                SearchValue::Date { comparator, period } => compiler.date_condition(
+                    *comparator,
+                    period,
+                    &format!("({alias}.low_secs, {alias}.low_nanos)"),
+                    &format!("({alias}.high_secs, {alias}.high_nanos)"),
+                ),
+                SearchValue::Quantity {
+                    number,
+                    system,
+                    code,
+                } => compiler.quantity_condition(number, system, code.as_deref(), alias),
+                SearchValue::Reference(text) => compiler.reference_condition(text, alias),
+                SearchValue::Uri(text) => {
+                    let bound = compiler.text(text);
+                    format!("{alias}.value = {bound}")
+                }
+                SearchValue::OfType { .. }
+                | SearchValue::Composite { .. }
+                | SearchValue::Missing(_) => "false".to_owned(),
+            },
+        ))
     }
 
     fn of_type(&mut self, value: &SearchValue, param: &str, outer: &str) -> String {
@@ -316,19 +334,25 @@ impl<'a> Compiler<'a> {
         };
         let identifier = identifier.clone();
         let key = param.to_owned();
-        self.exists("index_text", outer, param, OF_TYPE, move |compiler, alias| {
-            let bound = compiler.text(&identifier);
-            let inner = compiler.alias();
-            let param = compiler.text(&key);
-            let slot = compiler.text(OF_TYPE);
-            let qualifier = compiler.token_condition(&token, &inner);
-            let table = compiler.store.table("index_token");
-            format!(
+        self.exists(
+            "index_text",
+            outer,
+            param,
+            OF_TYPE,
+            move |compiler, alias| {
+                let bound = compiler.text(&identifier);
+                let inner = compiler.alias();
+                let param = compiler.text(&key);
+                let slot = compiler.text(OF_TYPE);
+                let qualifier = compiler.token_condition(&token, &inner);
+                let table = compiler.store.table("index_token");
+                format!(
                 "{alias}.value = {bound} and exists (select 1 from {table} {inner} \
                  where {inner}.surrogate_id = {alias}.surrogate_id and {inner}.param = {param} \
                  and {inner}.slot = {slot} and {inner}.ordinal = {alias}.ordinal and ({qualifier}))"
             )
-        })
+            },
+        )
     }
 
     fn qualified(
@@ -338,40 +362,61 @@ impl<'a> Compiler<'a> {
         outer: &str,
     ) -> Result<String, Error> {
         let param = param_key(filter);
+        if filter.modifier == Modifier::None && param == "_text" {
+            return Ok(self.text_search(value, &param, outer));
+        }
         let text = wanted(value).map(str::to_owned);
         Ok(match &filter.modifier {
             Modifier::Exact => match text {
                 None => "false".to_owned(),
-                Some(text) => self.exists("index_text", outer, &param, PLAIN, move |compiler, alias| {
-                    let bound = compiler.text(&text);
-                    format!("{alias}.value = {bound}")
-                }),
+                Some(text) => self.exists(
+                    "index_text",
+                    outer,
+                    &param,
+                    PLAIN,
+                    move |compiler, alias| {
+                        let bound = compiler.text(&text);
+                        format!("{alias}.value = {bound}")
+                    },
+                ),
             },
             Modifier::Contains => match text {
                 None => "false".to_owned(),
-                Some(text) => self.exists("index_text", outer, &param, PLAIN, move |compiler, alias| {
-                    let bound = compiler.text(&text.to_lowercase());
-                    format!("position({bound} in {alias}.folded) > 0")
-                }),
+                Some(text) => self.exists(
+                    "index_text",
+                    outer,
+                    &param,
+                    PLAIN,
+                    move |compiler, alias| {
+                        let bound = compiler.text(&text.to_lowercase());
+                        format!("position({bound} in {alias}.folded) > 0")
+                    },
+                ),
             },
             Modifier::Text => match text {
                 None => "false".to_owned(),
-                Some(text) => {
-                    self.exists("index_text", outer, &param, NARRATIVE, move |compiler, alias| {
+                Some(text) => self.exists(
+                    "index_text",
+                    outer,
+                    &param,
+                    NARRATIVE,
+                    move |compiler, alias| {
                         let bound = compiler.text(&text.to_lowercase());
                         format!("position({bound} in {alias}.folded) > 0")
-                    })
-                }
+                    },
+                ),
             },
             Modifier::Below | Modifier::Above => {
                 let below = matches!(filter.modifier, Modifier::Below);
                 match text {
                     None => "false".to_owned(),
-                    Some(text) => {
-                        self.exists("index_text", outer, &param, WORDS, move |compiler, alias| {
-                            compiler.hierarchy_condition(&text, alias, below)
-                        })
-                    }
+                    Some(text) => self.exists(
+                        "index_text",
+                        outer,
+                        &param,
+                        WORDS,
+                        move |compiler, alias| compiler.hierarchy_condition(&text, alias, below),
+                    ),
                 }
             }
             Modifier::Type(kind) => {
@@ -383,16 +428,22 @@ impl<'a> Compiler<'a> {
                         outer,
                         &param,
                         MAIN,
-                        move |compiler, alias| compiler.typed_reference_condition(&text, &kind, alias),
+                        move |compiler, alias| {
+                            compiler.typed_reference_condition(&text, &kind, alias)
+                        },
                     ),
                 }
             }
             Modifier::Identifier => match value {
                 SearchValue::Token(token) => {
                     let token = token.clone();
-                    self.exists("index_token", outer, &param, IDENTIFIER, move |compiler, alias| {
-                        compiler.token_condition(&token, alias)
-                    })
+                    self.exists(
+                        "index_token",
+                        outer,
+                        &param,
+                        IDENTIFIER,
+                        move |compiler, alias| compiler.token_condition(&token, alias),
+                    )
                 }
                 _ => "false".to_owned(),
             },
@@ -402,6 +453,46 @@ impl<'a> Compiler<'a> {
                 self.declared(value_type_of(filter), value, &param, outer)?
             }
         })
+    }
+
+    fn text_search(&mut self, value: &SearchValue, param: &str, outer: &str) -> String {
+        let fhir_core::search::SearchValue::Text(raw) = value else {
+            return "false".to_owned();
+        };
+        let Ok(query) = fhir_core::search::text::text_query(raw) else {
+            return "false".to_owned();
+        };
+        let inner = self.alias();
+        let key = self.text(param);
+        let slot = self.text(crate::extract::NARRATIVE);
+        let condition = self.text_expression(&query.expr, &inner);
+        format!(
+            "exists (select 1 from {} {inner} where {inner}.surrogate_id = {outer}.surrogate_id \
+             and {inner}.param = {key} and {inner}.slot = {slot} and {condition})",
+            self.store.table("index_text")
+        )
+    }
+
+    fn text_expression(&mut self, expr: &fhir_core::search::text::Expr, inner: &str) -> String {
+        use fhir_core::search::text::Expr;
+        match expr {
+            Expr::Term(term) => {
+                let bound = self.text(term);
+                format!("strpos(' ' || {inner}.folded || ' ', ' ' || {bound} || ' ') > 0")
+            }
+            Expr::All(parts) => and_of(
+                parts
+                    .iter()
+                    .map(|part| self.text_expression(part, inner))
+                    .collect(),
+            ),
+            Expr::Any(parts) => or_of(
+                parts
+                    .iter()
+                    .map(|part| self.text_expression(part, inner))
+                    .collect(),
+            ),
+        }
     }
 
     fn scalar(&mut self, filter: &Filter, value: &SearchValue, column: &str) -> String {
@@ -526,7 +617,9 @@ impl<'a> Compiler<'a> {
                 let bound = self.text(text);
                 format!("{alias}.value = {bound}")
             }
-            SearchValue::OfType { .. } | SearchValue::Composite { .. } | SearchValue::Missing(_) => {
+            SearchValue::OfType { .. }
+            | SearchValue::Composite { .. }
+            | SearchValue::Missing(_) => {
                 let _ = value_type;
                 "false".to_owned()
             }
@@ -535,7 +628,9 @@ impl<'a> Compiler<'a> {
 
     fn presence(&mut self, filter: &Filter, outer: &str) -> String {
         let param = param_key(filter);
-        self.exists("index_text", outer, &param, PRESENCE, |_, _| "true".to_owned())
+        self.exists("index_text", outer, &param, PRESENCE, |_, _| {
+            "true".to_owned()
+        })
     }
 
     pub fn filter(&mut self, filter: &Filter, outer: &str) -> Result<String, Error> {
@@ -558,10 +653,12 @@ impl<'a> Compiler<'a> {
         let mut parts = Vec::new();
         for value in &filter.values {
             let hit = self.hit(filter, value, outer)?;
-            parts.push(match filter.modifier.is_exclusive() || !value.is_negated() {
-                true => hit,
-                false => format!("not ({hit})"),
-            });
+            parts.push(
+                match filter.modifier.is_exclusive() || !value.is_negated() {
+                    true => hit,
+                    false => format!("not ({hit})"),
+                },
+            );
         }
         let any = or_of(parts);
         Ok(match filter.modifier.is_exclusive() {
@@ -598,7 +695,11 @@ impl<'a> Compiler<'a> {
         let kinds = match chain.types.is_empty() {
             true => "true".to_owned(),
             false => {
-                let names = chain.types.iter().map(|kind| kind.as_str().to_owned()).collect();
+                let names = chain
+                    .types
+                    .iter()
+                    .map(|kind| kind.as_str().to_owned())
+                    .collect();
                 let bound = self.texts(names);
                 format!("{far}.resource_type = any({bound})")
             }
@@ -665,7 +766,11 @@ impl<'a> Compiler<'a> {
             parts.push(format!("({outer}.resource_type <> {kind} or ({narrowed}))"));
         }
         if !grant.types.is_empty() {
-            let names = grant.types.iter().map(|kind| kind.as_str().to_owned()).collect();
+            let names = grant
+                .types
+                .iter()
+                .map(|kind| kind.as_str().to_owned())
+                .collect();
             let bound = self.texts(names);
             parts.push(format!("{outer}.resource_type = any({bound})"));
         }
@@ -718,9 +823,9 @@ pub fn table_for(filter: &Filter) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fhir_store::Namespace;
     use fhir_core::search::{lookup, ParamDef, SearchValue};
     use fhir_core::ResourceType;
+    use fhir_store::Namespace;
     use std::sync::Arc;
 
     fn store() -> RelationalStore {
@@ -765,6 +870,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_text_search_looks_for_whole_words_in_the_narrative() {
+        let def = def("Patient", "_text");
+        let filter = Filter {
+            modifier: Modifier::None,
+            ..Filter::new(
+                "_text",
+                def.target.clone(),
+                vec![
+                    SearchValue::parse(ValueType::String, "(bone OR liver) AND metastases")
+                        .expect("a valid value"),
+                ],
+            )
+        };
+        let (text, binds) = sql(&filter);
+        assert!(text.contains("index_text"), "{text}");
+        assert!(text.contains("x1.param = $1"), "{text}");
+        assert!(text.contains("x1.slot = $2"), "{text}");
+        assert!(
+            text.contains("strpos(' ' || x1.folded || ' ', ' ' || $3 || ' ') > 0"),
+            "{text}"
+        );
+        assert!(text.contains(" or "), "{text}");
+        assert!(text.contains("and strpos(' '"), "{text}");
+        assert!(binds >= 3, "{binds}");
+    }
+
+    #[tokio::test]
     async fn a_code_without_a_system_places_no_bound_on_the_system() {
         let (text, _) = sql(&built("Observation", "code", Modifier::None, "c1"));
         assert!(!text.contains(".system = $"), "{text}");
@@ -792,7 +924,9 @@ mod tests {
 
     #[tokio::test]
     async fn every_comparator_of_a_span_reaches_the_statement() {
-        for raw in ["1980", "gt1980", "lt1980", "ge1980", "le1980", "sa1980", "eb1980", "ap1980"] {
+        for raw in [
+            "1980", "gt1980", "lt1980", "ge1980", "le1980", "sa1980", "eb1980", "ap1980",
+        ] {
             let (text, binds) = sql(&built("Patient", "birthdate", Modifier::None, raw));
             assert!(text.contains("index_date"), "{raw}: {text}");
             assert!(binds >= 4, "{raw}: {binds}");
@@ -872,7 +1006,12 @@ mod tests {
 
     #[tokio::test]
     async fn a_pointer_written_with_a_type_is_matched_whole() {
-        let (full, _) = sql(&built("Observation", "subject", Modifier::None, "Patient/p1"));
+        let (full, _) = sql(&built(
+            "Observation",
+            "subject",
+            Modifier::None,
+            "Patient/p1",
+        ));
         assert!(full.contains(".ref_full = $"), "{full}");
         assert!(!full.contains(".ref_id = $"), "{full}");
         let (bare, _) = sql(&built("Observation", "subject", Modifier::None, "p1"));
@@ -940,7 +1079,11 @@ mod tests {
         let mut compiler = Compiler::new(&store);
         let filter = Filter {
             values: vec![SearchValue::Missing(true)],
-            ..Filter::new("code", def("Observation", "code").target.clone(), Vec::new())
+            ..Filter::new(
+                "code",
+                def("Observation", "code").target.clone(),
+                Vec::new(),
+            )
         };
         let text = compiler.filter(&filter, "r").expect("the filter compiles");
         assert!(text.contains("false"), "{text}");

@@ -175,7 +175,13 @@ async fn every_advertised_interaction_answers_the_status_the_specification_names
         ("update", "PUT", "/Patient/pt-1", body, StatusCode::OK),
         ("patch", "PATCH", "/Patient/pt-1", patch, StatusCode::OK),
         ("search-type", "GET", "/Patient", b"", StatusCode::OK),
-        ("history-type", "GET", "/Patient/_history", b"", StatusCode::OK),
+        (
+            "history-type",
+            "GET",
+            "/Patient/_history",
+            b"",
+            StatusCode::OK,
+        ),
         (
             "history-instance",
             "GET",
@@ -197,7 +203,10 @@ async fn every_advertised_interaction_answers_the_status_the_specification_names
             "{code} is not advertised"
         );
         let (status, answered) = reply(&app, method, uri, sent).await;
-        assert_eq!(status, expected, "{code}: {method} {uri} answered {answered}");
+        assert_eq!(
+            status, expected,
+            "{code}: {method} {uri} answered {answered}"
+        );
     }
 }
 
@@ -286,7 +295,12 @@ async fn a_registered_parameter_reaches_the_statement() {
 
 #[tokio::test]
 async fn the_statement_reports_the_running_version_and_build() {
-    for version in [FhirVersion::Stu3, FhirVersion::R4, FhirVersion::R4b, FhirVersion::R5] {
+    for version in [
+        FhirVersion::Stu3,
+        FhirVersion::R4,
+        FhirVersion::R4b,
+        FhirVersion::R5,
+    ] {
         let app = service(version);
         let statement = statement(&app).await;
         assert_eq!(statement["resourceType"], "CapabilityStatement");
@@ -362,7 +376,10 @@ async fn a_definition_declares_the_levels_and_types_its_routes_serve() {
         .iter()
         .map(|item| item.as_str().unwrap().to_owned())
         .collect();
-    assert_eq!(scoped, BTreeSet::from(["Group".to_owned(), "Patient".to_owned()]));
+    assert_eq!(
+        scoped,
+        BTreeSet::from(["Group".to_owned(), "Patient".to_owned()])
+    );
     let everything = read(&app, "everything").await;
     assert_eq!(everything["instance"], Value::Bool(true));
     assert_eq!(everything["resource"][0], "Patient");
@@ -433,7 +450,10 @@ fn authorized() -> Service {
             "https://issuer.example.org/token",
         )
         .with_introspection("https://issuer.example.org/introspect")
-        .with_scopes(vec!["system/*.read".to_owned(), "system/*.write".to_owned()])
+        .with_scopes(vec![
+            "system/*.read".to_owned(),
+            "system/*.write".to_owned(),
+        ])
         .with_capabilities(vec!["client-confidential-symmetric".to_owned()]),
     )
 }
@@ -459,7 +479,10 @@ async fn discovery_reports_the_authorization_the_instance_runs_under() {
         document["authorization_endpoint"],
         "https://issuer.example.org/authorize"
     );
-    assert_eq!(document["token_endpoint"], "https://issuer.example.org/token");
+    assert_eq!(
+        document["token_endpoint"],
+        "https://issuer.example.org/token"
+    );
     assert_eq!(
         document["introspection_endpoint"],
         "https://issuer.example.org/introspect"
@@ -500,10 +523,7 @@ async fn discovery_publishes_the_fields_a_launch_needs_to_choose_a_flow() {
         !listed(&document, "code_challenge_methods_supported").contains(&"plain".to_owned()),
         "{body}"
     );
-    assert!(
-        !listed(&document, "scopes_supported").is_empty(),
-        "{body}"
-    );
+    assert!(!listed(&document, "scopes_supported").is_empty(), "{body}");
     assert!(!listed(&document, "capabilities").is_empty(), "{body}");
 }
 
@@ -514,10 +534,7 @@ async fn the_statement_carries_the_addresses_discovery_publishes() {
     let document: Value = serde_json::from_str(&body).unwrap();
     let statement = statement(&app).await;
     let security = &statement["rest"][0]["security"];
-    assert_eq!(
-        security["service"][0]["coding"][0]["code"],
-        "SMART-on-FHIR"
-    );
+    assert_eq!(security["service"][0]["coding"][0]["code"], "SMART-on-FHIR");
     let uris = security["extension"][0]["extension"].as_array().unwrap();
     let held = |name: &str| {
         uris.iter()
@@ -560,20 +577,43 @@ async fn a_parameter_a_version_does_not_publish_is_refused_by_it() {
         let (status, body) = reply(&old, "GET", uri, b"").await;
         assert_eq!(status, StatusCode::OK, "{uri} gave {body}");
     }
-    let (status, _) = reply(&old, "GET", "/DocumentReference?attester=Practitioner/pr-1", b"").await;
+    let (status, _) = reply(
+        &old,
+        "GET",
+        "/DocumentReference?attester=Practitioner/pr-1",
+        b"",
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 
     let current = service(FhirVersion::R4);
-    let (status, _) = reply(&current, "GET", "/Observation?encounter=Encounter/enc-1", b"").await;
+    let (status, _) = reply(
+        &current,
+        "GET",
+        "/Observation?encounter=Encounter/enc-1",
+        b"",
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     let (status, _) = reply(&current, "GET", "/Observation?context=Encounter/enc-1", b"").await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 
     let newest = service(FhirVersion::R5);
-    let (status, _) = reply(&newest, "GET", "/DocumentReference?attester=Practitioner/pr-1", b"").await;
+    let (status, _) = reply(
+        &newest,
+        "GET",
+        "/DocumentReference?attester=Practitioner/pr-1",
+        b"",
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
-    let (status, _) =
-        reply(&newest, "GET", "/DocumentReference?authenticator=Practitioner/pr-1", b"").await;
+    let (status, _) = reply(
+        &newest,
+        "GET",
+        "/DocumentReference?authenticator=Practitioner/pr-1",
+        b"",
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
@@ -617,17 +657,25 @@ async fn the_status_report_names_the_unsupported_parameters_of_the_version() {
     let current = unsupported(FhirVersion::R4).await;
     assert!(old.contains("_filter"));
     assert!(current.contains("_filter"));
-    assert!(old.contains("_text") && current.contains("_text"));
+    assert!(old.contains("_content") && current.contains("_content"));
+    assert!(!old.contains("_text") && !current.contains("_text"));
     for version in [FhirVersion::Stu3, FhirVersion::R4] {
         let app = service(version);
         let (status, _) = reply(&app, "GET", "/Patient?_filter=name%20eq%20a", b"").await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{version:?}");
+        let (status, body) = reply(&app, "GET", "/Patient?_text=fever", b"").await;
+        assert_eq!(status, StatusCode::OK, "{version:?} {body}");
     }
 }
 
 #[tokio::test]
 async fn versions_reports_the_running_build() {
-    for version in [FhirVersion::Stu3, FhirVersion::R4, FhirVersion::R4b, FhirVersion::R5] {
+    for version in [
+        FhirVersion::Stu3,
+        FhirVersion::R4,
+        FhirVersion::R4b,
+        FhirVersion::R5,
+    ] {
         let app = service(version);
         for method in ["GET", "POST"] {
             let (status, body) = reply(&app, method, "/$versions", b"").await;
@@ -659,8 +707,14 @@ async fn versions_reports_the_running_build() {
                     .map(|item| item["valueCode"].clone())
                     .unwrap_or(Value::Null)
             };
-            assert_eq!(named("default"), Value::String(version.release().to_owned()));
-            assert_eq!(named("build"), Value::String(env!("CARGO_PKG_VERSION").to_owned()));
+            assert_eq!(
+                named("default"),
+                Value::String(version.release().to_owned())
+            );
+            assert_eq!(
+                named("build"),
+                Value::String(env!("CARGO_PKG_VERSION").to_owned())
+            );
         }
     }
 }
@@ -708,10 +762,17 @@ async fn a_statement_lists_only_the_types_its_version_defines() {
 
 #[tokio::test]
 async fn the_statement_names_the_software_it_describes() {
-    for version in [FhirVersion::Stu3, FhirVersion::R4, FhirVersion::R4b, FhirVersion::R5] {
+    for version in [
+        FhirVersion::Stu3,
+        FhirVersion::R4,
+        FhirVersion::R4b,
+        FhirVersion::R5,
+    ] {
         let held = statement(&service(version)).await;
         assert!(
-            held["software"]["name"].as_str().is_some_and(|name| !name.is_empty()),
+            held["software"]["name"]
+                .as_str()
+                .is_some_and(|name| !name.is_empty()),
             "{version} names no software"
         );
         assert!(held["software"]["version"].as_str().is_some());
@@ -723,7 +784,10 @@ async fn a_statement_carries_only_the_elements_its_version_defines() {
     for version in [FhirVersion::Stu3, FhirVersion::R4, FhirVersion::R4b] {
         let held = statement(&service(version)).await;
         let first = &held["rest"][0]["resource"][0];
-        assert!(first["conditionalPatch"].is_null(), "{version} claims a later element");
+        assert!(
+            first["conditionalPatch"].is_null(),
+            "{version} claims a later element"
+        );
     }
     let held = statement(&service(FhirVersion::R5)).await;
     assert!(held["rest"][0]["resource"][0]["conditionalPatch"].is_boolean());

@@ -477,6 +477,24 @@ pub fn rows_of(envelope: &ResourceEnvelope, body: &Value, defs: &[Arc<ParamDef>]
             rows: &mut rows,
             param: def.url.clone().unwrap_or_else(|| def.name.clone()),
         };
+        if def.name == "_text" {
+            if let Target::Path(paths) = &def.target {
+                for element in paths.iter().flat_map(|path| select(body, path)) {
+                    let cleaned = fhir_core::search::text::visible(element);
+                    if cleaned.is_empty() {
+                        continue;
+                    }
+                    sink.rows.texts.push(TextRow {
+                        param: sink.param.clone(),
+                        slot: NARRATIVE.to_owned(),
+                        ordinal: 0,
+                        folded: cleaned.to_lowercase(),
+                        value: cleaned,
+                    });
+                }
+            }
+            continue;
+        }
         match &def.target {
             Target::Id | Target::LastUpdated => {}
             Target::Path(paths) => {
@@ -514,9 +532,11 @@ pub fn rows_of(envelope: &ResourceEnvelope, body: &Value, defs: &[Arc<ParamDef>]
                 param: def.name.clone(),
                 sort_text: match projected {
                     SortValue::Text(text) => Some(text.to_lowercase()),
-                    SortValue::Instant(key) => {
-                        Some(format!("{:020}.{:09}", key.seconds() + i64::pow(2, 40), key.nanos()))
-                    }
+                    SortValue::Instant(key) => Some(format!(
+                        "{:020}.{:09}",
+                        key.seconds() + i64::pow(2, 40),
+                        key.nanos()
+                    )),
                     SortValue::Missing => None,
                 },
             });
@@ -524,7 +544,6 @@ pub fn rows_of(envelope: &ResourceEnvelope, body: &Value, defs: &[Arc<ParamDef>]
     }
     rows
 }
-
 
 pub fn reference_of(envelope: &ResourceEnvelope) -> String {
     format!(
@@ -685,7 +704,10 @@ mod tests {
             .find(|row| row.slot == MAIN)
             .expect("an identifier");
         assert_eq!(token.code.chars().count(), 128);
-        assert_eq!(token.code_tail.as_ref().map(|tail| tail.chars().count()), Some(72));
+        assert_eq!(
+            token.code_tail.as_ref().map(|tail| tail.chars().count()),
+            Some(72)
+        );
     }
 
     #[test]
@@ -709,10 +731,38 @@ mod tests {
         assert!(rows_of(&envelope, &value, &defs("Patient", &["identifier"])).is_empty());
     }
 
+    const TEXT_OBSERVATION: &str = r#"{"resourceType":"Observation","id":"o2","meta":{"versionId":"1","lastUpdated":"2026-09-06T04:00:00Z"},"status":"final","text":{"status":"generated","div":"<div><p>The patient had a <b>fever</b> and chills</p></div>"}}"#;
+
+    #[test]
+    fn a_text_search_parameter_holds_the_words_of_the_narrative() {
+        let (envelope, body) = parsed(TEXT_OBSERVATION);
+        let rows = rows_of(&envelope, &body, &defs("Observation", &["_text"]));
+        let narrative = rows
+            .texts
+            .iter()
+            .find(|row| row.slot == NARRATIVE)
+            .expect("a narrative value");
+        assert_eq!(narrative.param, "_text");
+        assert_eq!(narrative.folded, "the patient had a fever and chills");
+        assert_eq!(narrative.ordinal, 0);
+    }
+
+    #[test]
+    fn a_resource_without_a_narrative_indexes_no_text() {
+        let (envelope, body) = parsed(OBSERVATION);
+        let rows = rows_of(&envelope, &body, &defs("Observation", &["_text"]));
+        assert!(rows.texts.is_empty());
+        assert_eq!(rows.len(), 0);
+    }
+
     #[test]
     fn a_composite_pairs_its_components_on_one_element() {
         let (envelope, body) = parsed(OBSERVATION);
-        let rows = rows_of(&envelope, &body, &defs("Observation", &["code-value-quantity"]));
+        let rows = rows_of(
+            &envelope,
+            &body,
+            &defs("Observation", &["code-value-quantity"]),
+        );
         let left = rows.tokens.iter().find(|row| row.slot == LEFT);
         let right = rows.quantities.iter().find(|row| row.slot == RIGHT);
         assert!(left.is_some(), "{:?}", rows.tokens);
@@ -738,7 +788,10 @@ mod tests {
         let mut found = Vec::new();
         tokens_of(&serde_json::json!(7), &mut found);
         tokens_of(&Value::Null, &mut found);
-        tokens_of(&serde_json::json!({"system": "urn:s", "value": "v1"}), &mut found);
+        tokens_of(
+            &serde_json::json!({"system": "urn:s", "value": "v1"}),
+            &mut found,
+        );
         assert_eq!(
             found,
             vec![

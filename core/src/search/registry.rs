@@ -30,7 +30,12 @@ impl Target {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        Target::Path(paths.into_iter().map(|path| path.as_ref().to_owned()).collect())
+        Target::Path(
+            paths
+                .into_iter()
+                .map(|path| path.as_ref().to_owned())
+                .collect(),
+        )
     }
 }
 
@@ -225,9 +230,22 @@ const COMMON: &[StaticDef] = &[
         since: FhirVersion::Stu3,
         until: None,
     },
+    StaticDef {
+        name: "_text",
+        value_type: ValueType::String,
+        target: StaticTarget::Path(&["text"]),
+        targets: &[],
+        sortable: false,
+        since: FhirVersion::Stu3,
+        until: None,
+    },
 ];
 
-const fn def(name: &'static str, value_type: ValueType, paths: &'static [&'static str]) -> StaticDef {
+const fn def(
+    name: &'static str,
+    value_type: ValueType,
+    paths: &'static [&'static str],
+) -> StaticDef {
     StaticDef {
         name,
         value_type,
@@ -320,7 +338,11 @@ const PATIENT: &[StaticDef] = &[
     def("death-date", ValueType::Date, &["deceasedDateTime"]),
     sorted("family", ValueType::String, &["name.family"]),
     sorted("gender", ValueType::Token, &["gender"]),
-    refers("general-practitioner", &["generalPractitioner"], &["Practitioner", "Organization"]),
+    refers(
+        "general-practitioner",
+        &["generalPractitioner"],
+        &["Practitioner", "Organization"],
+    ),
     def("given", ValueType::String, &["name.given"]),
     def("identifier", ValueType::Token, &["identifier"]),
     refers("link", &["link.other"], &["Patient", "RelatedPerson"]),
@@ -351,8 +373,16 @@ const OBSERVATION: &[StaticDef] = &[
         since: FhirVersion::Stu3,
         until: None,
     },
-    def("component-value-quantity", ValueType::Quantity, &["component.valueQuantity"]),
-    sorted("date", ValueType::Date, &["effectiveDateTime", "effectivePeriod"]),
+    def(
+        "component-value-quantity",
+        ValueType::Quantity,
+        &["component.valueQuantity"],
+    ),
+    sorted(
+        "date",
+        ValueType::Date,
+        &["effectiveDateTime", "effectivePeriod"],
+    ),
     refers_in(
         "context",
         &["context"],
@@ -431,9 +461,17 @@ const LIST: &[StaticDef] = &[
     def("identifier", ValueType::Token, &["identifier"]),
     refers("item", &["entry.item"], &[]),
     refers("patient", &["subject"], &["Patient"]),
-    refers("source", &["source"], &["Practitioner", "Device", "Patient"]),
+    refers(
+        "source",
+        &["source"],
+        &["Practitioner", "Device", "Patient"],
+    ),
     sorted("status", ValueType::Token, &["status"]),
-    refers("subject", &["subject"], &["Patient", "Group", "Device", "Location"]),
+    refers(
+        "subject",
+        &["subject"],
+        &["Patient", "Group", "Device", "Location"],
+    ),
     sorted("title", ValueType::String, &["title"]),
 ];
 
@@ -463,7 +501,11 @@ const RISK_ASSESSMENT: &[StaticDef] = &[
     def("identifier", ValueType::Token, &["identifier"]),
     refers("patient", &["subject"], &["Patient"]),
     refers("performer", &["performer"], &["Practitioner", "Device"]),
-    def("probability", ValueType::Number, &["prediction.probabilityDecimal"]),
+    def(
+        "probability",
+        ValueType::Number,
+        &["prediction.probabilityDecimal"],
+    ),
     refers("subject", &["subject"], &["Patient", "Group"]),
 ];
 
@@ -485,7 +527,13 @@ const DOCUMENT_REFERENCE: &[StaticDef] = &[
     refers(
         "author",
         &["author"],
-        &["Practitioner", "Organization", "Device", "Patient", "RelatedPerson"],
+        &[
+            "Practitioner",
+            "Organization",
+            "Device",
+            "Patient",
+            "RelatedPerson",
+        ],
     ),
     def("identifier", ValueType::Token, &["identifier"]),
     sorted("date", ValueType::Date, &["date"]),
@@ -507,7 +555,11 @@ const DOCUMENT_REFERENCE: &[StaticDef] = &[
         Some(FhirVersion::R4b),
     ),
     refers("patient", &["subject"], &["Patient"]),
-    refers("subject", &["subject"], &["Patient", "Group", "Practitioner", "Device"]),
+    refers(
+        "subject",
+        &["subject"],
+        &["Patient", "Group", "Practitioner", "Device"],
+    ),
 ];
 
 const VALUE_SET: &[StaticDef] = &[
@@ -645,8 +697,7 @@ pub fn references(resource_type: ResourceType) -> Vec<Arc<ParamDef>> {
     definitions()
         .iter()
         .filter(|held| {
-            held.kind == Some(resource_type.as_str())
-                && held.def.value_type == ValueType::Reference
+            held.kind == Some(resource_type.as_str()) && held.def.value_type == ValueType::Reference
         })
         .map(|held| Arc::clone(&held.def))
         .collect()
@@ -735,7 +786,10 @@ impl Registry {
     }
 
     pub fn version(&self) -> u64 {
-        self.inner.read().map(|inner| inner.version).unwrap_or_default()
+        self.inner
+            .read()
+            .map(|inner| inner.version)
+            .unwrap_or_default()
     }
 
     pub fn lookup(&self, resource_type: Option<ResourceType>, name: &str) -> Option<Arc<ParamDef>> {
@@ -841,8 +895,7 @@ impl Registry {
 
     fn custom(&self, resource_type: Option<ResourceType>, name: &str) -> Option<RegisteredParam> {
         self.entries().into_iter().find(|held| {
-            held.def.name == name
-                && resource_type.is_some_and(|wanted| held.base.contains(&wanted))
+            held.def.name == name && resource_type.is_some_and(|wanted| held.base.contains(&wanted))
         })
     }
 }
@@ -874,15 +927,16 @@ mod tests {
     #[test]
     fn a_parameter_is_visible_in_the_versions_that_publish_it_and_no_other() {
         let published: &[(&str, &str, &[FhirVersion])] = &[
-            (
-                "Observation",
-                "context",
-                &[FhirVersion::Stu3],
-            ),
+            ("Observation", "context", &[FhirVersion::Stu3]),
             (
                 "Observation",
                 "encounter",
-                &[FhirVersion::Stu3, FhirVersion::R4, FhirVersion::R4b, FhirVersion::R5],
+                &[
+                    FhirVersion::Stu3,
+                    FhirVersion::R4,
+                    FhirVersion::R4b,
+                    FhirVersion::R5,
+                ],
             ),
             (
                 "DocumentReference",
@@ -899,7 +953,12 @@ mod tests {
             (
                 "Patient",
                 "link",
-                &[FhirVersion::Stu3, FhirVersion::R4, FhirVersion::R4b, FhirVersion::R5],
+                &[
+                    FhirVersion::Stu3,
+                    FhirVersion::R4,
+                    FhirVersion::R4b,
+                    FhirVersion::R5,
+                ],
             ),
         ];
         for (resource_type, name, versions) in published {
@@ -940,23 +999,53 @@ mod tests {
             ("Patient", "family", ValueType::String, &["name.family"]),
             ("Patient", "gender", ValueType::Token, &["gender"]),
             ("Patient", "link", ValueType::Reference, &["link.other"]),
-            ("Patient", "organization", ValueType::Reference, &["managingOrganization"]),
+            (
+                "Patient",
+                "organization",
+                ValueType::Reference,
+                &["managingOrganization"],
+            ),
             ("Observation", "code", ValueType::Token, &["code"]),
             ("Observation", "device", ValueType::Reference, &["device"]),
-            ("Observation", "performer", ValueType::Reference, &["performer"]),
+            (
+                "Observation",
+                "performer",
+                ValueType::Reference,
+                &["performer"],
+            ),
             ("Observation", "subject", ValueType::Reference, &["subject"]),
-            ("Observation", "value-quantity", ValueType::Quantity, &["valueQuantity"]),
-            ("Observation", "value-string", ValueType::String, &["valueString"]),
+            (
+                "Observation",
+                "value-quantity",
+                ValueType::Quantity,
+                &["valueQuantity"],
+            ),
+            (
+                "Observation",
+                "value-string",
+                ValueType::String,
+                &["valueString"],
+            ),
             ("Encounter", "status", ValueType::Token, &["status"]),
             ("List", "source", ValueType::Reference, &["source"]),
-            ("RiskAssessment", "performer", ValueType::Reference, &["performer"]),
+            (
+                "RiskAssessment",
+                "performer",
+                ValueType::Reference,
+                &["performer"],
+            ),
             (
                 "RiskAssessment",
                 "probability",
                 ValueType::Number,
                 &["prediction.probabilityDecimal"],
             ),
-            ("RelatedPerson", "patient", ValueType::Reference, &["patient"]),
+            (
+                "RelatedPerson",
+                "patient",
+                ValueType::Reference,
+                &["patient"],
+            ),
             ("ValueSet", "url", ValueType::Uri, &["url"]),
         ];
         for (resource_type, name, value_type, paths) in published {
@@ -986,7 +1075,9 @@ mod tests {
             .all(|def| def.value_type == ValueType::Reference));
         for name in ["general-practitioner", "link", "organization"] {
             assert!(
-                references(kind("Patient")).iter().any(|def| def.name == name),
+                references(kind("Patient"))
+                    .iter()
+                    .any(|def| def.name == name),
                 "{name}"
             );
         }
@@ -994,7 +1085,14 @@ mod tests {
 
     #[test]
     fn a_common_parameter_applies_to_every_type_and_to_none() {
-        let published = ["_id", "_lastUpdated", "_profile", "_tag", "_security"];
+        let published = [
+            "_id",
+            "_lastUpdated",
+            "_profile",
+            "_tag",
+            "_security",
+            "_text",
+        ];
         let held: Vec<String> = common().iter().map(|def| def.name.clone()).collect();
         for name in published {
             assert!(held.contains(&name.to_owned()), "{name}");
@@ -1003,7 +1101,14 @@ mod tests {
         }
         assert!(lookup(None, "name").is_none());
         assert!(lookup(None, "_nonesuch").is_none());
-        for name in ["_count", "_sort", "_elements", "_summary", "_total", "_include"] {
+        for name in [
+            "_count",
+            "_sort",
+            "_elements",
+            "_summary",
+            "_total",
+            "_include",
+        ] {
             assert!(lookup(None, name).is_none(), "{name}");
         }
     }
@@ -1025,8 +1130,14 @@ mod tests {
             left,
             &SearchValue::parse(ValueType::Token, "http://loinc.org|8867-4").unwrap()
         );
-        assert_eq!(right, &SearchValue::parse(ValueType::Quantity, "72.5").unwrap());
-        assert!(matches!(def.value("8867-4").unwrap_err(), Error::InvalidParameter(_)));
+        assert_eq!(
+            right,
+            &SearchValue::parse(ValueType::Quantity, "72.5").unwrap()
+        );
+        assert!(matches!(
+            def.value("8867-4").unwrap_err(),
+            Error::InvalidParameter(_)
+        ));
         assert!(def.paths().is_empty());
     }
 
@@ -1073,14 +1184,18 @@ mod tests {
     #[test]
     fn a_custom_parameter_answers_only_once_it_is_searchable() {
         let registry = Registry::new();
-        registry.register(custom("risk-band", "Patient", ParamStatus::Supported)).unwrap();
+        registry
+            .register(custom("risk-band", "Patient", ParamStatus::Supported))
+            .unwrap();
         let patient = Some(kind("Patient"));
         assert!(registry.lookup(patient, "risk-band").is_some());
         assert!(matches!(
             registry.searchable(patient, "risk-band").unwrap_err(),
             Error::UnsupportedParameter(_)
         ));
-        registry.register(custom("risk-band", "Patient", ParamStatus::Searchable)).unwrap();
+        registry
+            .register(custom("risk-band", "Patient", ParamStatus::Searchable))
+            .unwrap();
         assert!(registry.searchable(patient, "risk-band").unwrap().is_some());
         assert_eq!(registry.entries().len(), 1);
         assert_eq!(registry.version(), 2);
@@ -1090,18 +1205,27 @@ mod tests {
     #[test]
     fn a_custom_parameter_never_shadows_a_built_in_one() {
         let registry = Registry::new();
-        let error = registry.register(custom("family", "Patient", ParamStatus::Searchable)).unwrap_err();
+        let error = registry
+            .register(custom("family", "Patient", ParamStatus::Searchable))
+            .unwrap_err();
         assert!(matches!(error, Error::Duplicate(_)));
-        registry.register(custom("risk-band", "Patient", ParamStatus::Searchable)).unwrap();
+        registry
+            .register(custom("risk-band", "Patient", ParamStatus::Searchable))
+            .unwrap();
         let mut other = custom("risk-band", "Patient", ParamStatus::Searchable);
         other.url = "urn:p:other".to_owned();
-        assert!(matches!(registry.register(other).unwrap_err(), Error::Duplicate(_)));
+        assert!(matches!(
+            registry.register(other).unwrap_err(),
+            Error::Duplicate(_)
+        ));
     }
 
     #[test]
     fn definitions_are_removed_and_replaced_wholesale() {
         let registry = Registry::new();
-        registry.register(custom("risk-band", "Patient", ParamStatus::Searchable)).unwrap();
+        registry
+            .register(custom("risk-band", "Patient", ParamStatus::Searchable))
+            .unwrap();
         assert!(registry.entry("urn:p:risk-band").is_some());
         assert!(registry.remove("urn:p:risk-band"));
         assert!(!registry.remove("urn:p:risk-band"));
