@@ -13,7 +13,10 @@ const AUTHORIZED: [(&str, &str); 5] = [
         "launch-standalone,client-public,sso-openid-connect,permission-v2",
     ),
     ("FHIR_AUTH_ISSUER", "https://issuer.example.org"),
-    ("FHIR_AUTH_AUTHORIZE", "https://issuer.example.org/authorize"),
+    (
+        "FHIR_AUTH_AUTHORIZE",
+        "https://issuer.example.org/authorize",
+    ),
     ("FHIR_AUTH_TOKEN", "https://issuer.example.org/token"),
     ("FHIR_AUTH_SCOPES", "system/*.read,system/*.write"),
 ];
@@ -77,10 +80,16 @@ fn digest(version: &str, statement: &Value, discovery: &Value) -> String {
     out.push_str(&format!("= Conformance record {version}\n\n"));
     out.push_str(&format!("version: {numbered}\n"));
     out.push_str(&format!("resource types: {}\n", types.len()));
-    out.push_str(&format!("system interactions: {}\n", interactions.join(", ")));
+    out.push_str(&format!(
+        "system interactions: {}\n",
+        interactions.join(", ")
+    ));
     out.push_str(&format!("common search parameters: {}\n", params.len()));
     out.push_str(&format!("operations: {}\n", operations.join(", ")));
-    out.push_str(&format!("smart capabilities: {}\n", capabilities.join(", ")));
+    out.push_str(&format!(
+        "smart capabilities: {}\n",
+        capabilities.join(", ")
+    ));
     out.push_str(&format!(
         "token endpoint: {}\n",
         discovery
@@ -156,7 +165,12 @@ fn severities(report: &Value, wanted: &[&str]) -> Vec<String> {
                 .as_str()
                 .is_some_and(|held| wanted.contains(&held))
         })
-        .map(|issue| issue["details"]["text"].as_str().unwrap_or_default().to_owned())
+        .map(|issue| {
+            issue["details"]["text"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned()
+        })
         .collect()
 }
 
@@ -182,10 +196,10 @@ fn the_report_taken_with_a_terminology_server_carries_no_error() {
     }
 }
 
-fn bulk_events(version: &str) -> Vec<Value> {
+fn bulk_events(dir: &str, version: &str) -> Vec<Value> {
     let path = folder()
         .join("external")
-        .join("bulk")
+        .join(dir)
         .join(format!("{}.ndjson", version.to_ascii_lowercase()));
     let text = std::fs::read_to_string(&path)
         .unwrap_or_else(|_| panic!("{version} has no bulk export report from outside"));
@@ -194,8 +208,8 @@ fn bulk_events(version: &str) -> Vec<Value> {
         .collect()
 }
 
-fn bulk_events_named(version: &str, event: &str) -> Vec<Value> {
-    bulk_events(version)
+fn bulk_events_named(dir: &str, version: &str, event: &str) -> Vec<Value> {
+    bulk_events(dir, version)
         .into_iter()
         .filter(|row| row["eventId"] == event)
         .collect()
@@ -208,7 +222,7 @@ fn bulk_figure(row: &Value, name: &str) -> u64 {
 #[test]
 fn the_bulk_export_the_published_client_drove_carries_no_error() {
     for version in VERSIONS {
-        let kickoff = bulk_events_named(version, "kickoff");
+        let kickoff = bulk_events_named("bulk", version, "kickoff");
         assert_eq!(kickoff.len(), 1, "{version} was kicked off {kickoff:?}");
         let url = kickoff[0]["eventDetail"]["exportUrl"]
             .as_str()
@@ -219,17 +233,17 @@ fn the_bulk_export_the_published_client_drove_carries_no_error() {
             "{version} kickoff failed: {}",
             kickoff[0]["eventDetail"]["errorBody"]
         );
-        let pages = bulk_events_named(version, "status_page_complete");
+        let pages = bulk_events_named("bulk", version, "status_page_complete");
         assert!(!pages.is_empty(), "{version} reported no manifest page");
         for page in &pages {
             assert_eq!(bulk_figure(page, "errorFileCount"), 0, "{version}: {page}");
         }
-        let downloaded: u64 = bulk_events_named(version, "download_complete")
+        let downloaded: u64 = bulk_events_named("bulk", version, "download_complete")
             .iter()
             .map(|row| bulk_figure(row, "resourceCount"))
             .sum();
         assert!(downloaded > 0, "{version} downloaded no resource");
-        let complete = bulk_events_named(version, "export_complete");
+        let complete = bulk_events_named("bulk", version, "export_complete");
         assert_eq!(complete.len(), 1, "{version} never completed: {complete:?}");
         assert!(
             bulk_figure(&complete[0], "resources") == downloaded,
@@ -237,6 +251,40 @@ fn the_bulk_export_the_published_client_drove_carries_no_error() {
             bulk_figure(&complete[0], "resources")
         );
     }
+}
+
+#[test]
+fn the_bulk_export_with_an_associated_preset_carried_the_preset_and_exported_provenance() {
+    let version = "r4";
+    let kickoff = bulk_events_named("bulk-associated", version, "kickoff");
+    assert_eq!(kickoff.len(), 1, "{version} was kicked off {kickoff:?}");
+    let url = kickoff[0]["eventDetail"]["exportUrl"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        url.contains("includeAssociatedData=LatestProvenanceResources"),
+        "{version} did not carry the preset: {url}"
+    );
+    let provenance = bulk_events_named("bulk-associated", version, "download_complete")
+        .into_iter()
+        .find(|row| {
+            row["eventDetail"]["fileUrl"]
+                .as_str()
+                .unwrap_or_default()
+                .ends_with("Provenance.ndjson")
+        })
+        .expect("{version} downloaded no provenance file");
+    assert_eq!(bulk_figure(&provenance, "resourceCount"), 1, "{version}");
+    let pages = bulk_events_named("bulk-associated", version, "status_page_complete");
+    for page in &pages {
+        assert_eq!(bulk_figure(page, "errorFileCount"), 0, "{version}: {page}");
+    }
+    let complete = bulk_events_named("bulk-associated", version, "export_complete");
+    assert_eq!(complete.len(), 1, "{version} never completed");
+    assert!(
+        bulk_figure(&complete[0], "resources") > 0,
+        "{version} exported nothing"
+    );
 }
 
 #[test]
@@ -323,7 +371,11 @@ const SCRIPT_NAMES: [&str; 5] = [
 ];
 
 fn script_name(report: &Value) -> String {
-    text(report.get("testScript").and_then(|held| held.get("reference")))
+    text(
+        report
+            .get("testScript")
+            .and_then(|held| held.get("reference")),
+    )
 }
 
 fn text(held: Option<&Value>) -> String {
@@ -397,7 +449,11 @@ fn the_published_test_scripts_a_running_instance_answered() {
             .map(str::to_owned)
             .collect();
         named.sort();
-        let mut ran: Vec<String> = reports.iter().filter_map(script_id).map(str::to_owned).collect();
+        let mut ran: Vec<String> = reports
+            .iter()
+            .filter_map(script_id)
+            .map(str::to_owned)
+            .collect();
         ran.sort();
         for name in SCRIPT_NAMES {
             assert!(
