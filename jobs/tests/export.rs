@@ -1,12 +1,20 @@
 use fhir_adapter_memory::{MemoryBulkStore, MemoryJobStore, MemoryStore};
 use fhir_core::FhirInstant;
-use fhir_jobs::{ExportJob, Orchestrator, Worker};
+use fhir_jobs::{ExportJob, ExportRequest, Orchestrator, Worker};
 use fhir_store::{
     BulkStore, JobId, JobKind, JobRecord, JobRequest, JobState, JobStore, ResourceStore, StepTicker,
 };
 use fhir_store_contract::fixture::{observation, patient};
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
+
+fn provenance(id: &str, recorded: &str, target: &str) -> fhir_core::ResourceEnvelope {
+    fhir_store_contract::fixture::envelope(
+        "Provenance",
+        id,
+        &format!(r#""recorded":"{recorded}","target":[{{"reference":"{target}"}}]"#),
+    )
+}
 
 fn job(raw: &str) -> JobId {
     JobId::parse(raw).expect("test job id is valid")
@@ -111,7 +119,10 @@ async fn an_export_reads_a_fixed_point_and_carries_every_resource_once() {
 
     at(&hand, "2026-09-06T06:00:00.000Z");
     store.create(patient("p2", "Rivers", true)).await.unwrap();
-    store.update(patient("p1", "Fields", true), None).await.unwrap();
+    store
+        .update(patient("p1", "Fields", true), None)
+        .await
+        .unwrap();
 
     let record = ran(
         Arc::clone(&store),
@@ -332,7 +343,10 @@ fn config(id: &str, redacted: &[&str]) -> fhir_core::ResourceEnvelope {
 async fn an_anonymised_export_redacts_what_its_configuration_names() {
     let store = Arc::new(MemoryStore::default());
     store.create(patient("p1", "Stone", true)).await.unwrap();
-    store.create(config("anon-1", &["Patient.name", "Patient.birthDate"])).await.unwrap();
+    store
+        .create(config("anon-1", &["Patient.name", "Patient.birthDate"]))
+        .await
+        .unwrap();
     let sink = Arc::new(MemoryBulkStore::new());
 
     let record = ran(
@@ -361,8 +375,14 @@ async fn an_anonymised_export_redacts_what_its_configuration_names() {
 async fn a_configuration_that_moved_on_stops_the_export() {
     let store = Arc::new(MemoryStore::default());
     store.create(patient("p1", "Stone", true)).await.unwrap();
-    store.create(config("anon-1", &["Patient.name"])).await.unwrap();
-    store.update(config("anon-1", &["Patient.birthDate"]), None).await.unwrap();
+    store
+        .create(config("anon-1", &["Patient.name"]))
+        .await
+        .unwrap();
+    store
+        .update(config("anon-1", &["Patient.birthDate"]), None)
+        .await
+        .unwrap();
     let sink = Arc::new(MemoryBulkStore::new());
 
     let stale = ran(
@@ -653,7 +673,13 @@ async fn a_container_carries_the_failure_file_beside_the_rows() {
         .unwrap()
         .contains("p9"));
     assert_eq!(
-        shaped(&sink.read(&job("c4"), "nightly/Patient.ndjson").await.unwrap()).len(),
+        shaped(
+            &sink
+                .read(&job("c4"), "nightly/Patient.ndjson")
+                .await
+                .unwrap()
+        )
+        .len(),
         1
     );
 }
@@ -722,4 +748,143 @@ async fn a_redacted_element_is_gone_from_the_row_and_a_nested_one_leaves_its_par
         "a nested redaction must carry no key at all"
     );
     assert!(row.contains_key("birthDate"), "nothing else is removed");
+}
+
+#[tokio::test]
+async fn an_unasked_associated_preset_is_refused_and_a_asked_one_is_carried() {
+    let now = FhirInstant::parse("2026-09-06T05:00:00Z").unwrap();
+    let refused = ExportRequest::parse(
+        r#"{"scope":"system","includeAssociatedData":["_history"]}"#,
+        &now,
+    );
+    let message = refused.unwrap_err().to_string();
+    assert!(message.contains("_history"), "{message}");
+
+    let denied = ExportRequest::parse(
+        r#"{"scope":"system","includeAssociatedData":["_myCustomPreset"]}"#,
+        &now,
+    );
+    let message = denied.unwrap_err().to_string();
+    assert!(message.contains("_myCustomPreset"), "{message}");
+
+    let carried = ExportRequest::parse(
+        r#"{"scope":"system","includeAssociatedData":["LatestProvenanceResources","RelevantProvenanceResources"]}"#,
+        &now,
+    )
+    .unwrap();
+    assert!(carried.associated.latest);
+    assert!(carried.associated.relevant);
+
+    let none = ExportRequest::parse(r#"{"scope":"system"}"#, &now).unwrap();
+    assert!(!none.associated.requested());
+}
+
+#[tokio::test]
+async fn relevant_preset_exports_the_provenance_that_targets_exported_resources() {
+    let store = Arc::new(MemoryStore::default());
+    store.create(patient("p1", "Stone", true)).await.unwrap();
+    store
+        .create(observation("o1", "code-1", 3.0, "Patient/p1"))
+        .await
+        .unwrap();
+    store
+        .create(provenance("pr1", "2026-09-06T04:01:00Z", "Patient/p1"))
+        .await
+        .unwrap();
+    store
+        .create(provenance("pr2", "2026-09-06T04:02:00Z", "Observation/o1"))
+        .await
+        .unwrap();
+    let sink = Arc::new(MemoryBulkStore::new());
+
+    let record = ran(
+        Arc::clone(&store),
+        Arc::clone(&sink),
+        job("a1"),
+        r#"{"scope":"system","_type":["Patient"],"includeAssociatedData":["RelevantProvenanceResources"]}"#,
+    )
+    .await;
+
+    assert_eq!(record.state, JobState::Completed);
+    let names: Vec<String> = sink
+        .list(&job("a1"))
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|file| file.name)
+        .collect();
+    assert_eq!(names, vec!["Patient.ndjson", "Provenance.ndjson"]);
+    let provs = rows(&sink.read(&job("a1"), "Provenance.ndjson").await.unwrap());
+    assert_eq!(provs.len(), 1);
+    assert_eq!(provs[0]["id"], "pr1");
+    assert_eq!(provs[0]["target"][0]["reference"], "Patient/p1");
+}
+
+#[tokio::test]
+async fn latest_preset_exports_only_the_most_recent_provenance_per_target() {
+    let store = Arc::new(MemoryStore::default());
+    store.create(patient("p1", "Stone", true)).await.unwrap();
+    store.create(patient("p2", "Rivers", true)).await.unwrap();
+    store
+        .create(provenance("pr-old", "2026-09-06T04:01:00Z", "Patient/p1"))
+        .await
+        .unwrap();
+    store
+        .create(provenance("pr-new", "2026-09-06T04:03:00Z", "Patient/p1"))
+        .await
+        .unwrap();
+    store
+        .create(provenance("pr-other", "2026-09-06T04:04:00Z", "Patient/p2"))
+        .await
+        .unwrap();
+    let sink = Arc::new(MemoryBulkStore::new());
+
+    let record = ran(
+        Arc::clone(&store),
+        Arc::clone(&sink),
+        job("a2"),
+        r#"{"scope":"system","_type":["Patient"],"includeAssociatedData":["LatestProvenanceResources"]}"#,
+    )
+    .await;
+
+    assert_eq!(record.state, JobState::Completed);
+    let provs = rows(&sink.read(&job("a2"), "Provenance.ndjson").await.unwrap());
+    let ids: Vec<&str> = provs
+        .iter()
+        .map(|row| row["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, vec!["pr-new", "pr-other"]);
+}
+
+#[tokio::test]
+async fn a_preset_that_associates_nothing_writes_no_provenance_file() {
+    let store = Arc::new(MemoryStore::default());
+    store.create(patient("p1", "Stone", true)).await.unwrap();
+    store
+        .create(provenance(
+            "pr1",
+            "2026-09-06T04:01:00Z",
+            "Organization/org1",
+        ))
+        .await
+        .unwrap();
+    let sink = Arc::new(MemoryBulkStore::new());
+
+    let record = ran(
+        Arc::clone(&store),
+        Arc::clone(&sink),
+        job("a3"),
+        r#"{"scope":"system","_type":["Patient"],"includeAssociatedData":["RelevantProvenanceResources"]}"#,
+    )
+    .await;
+
+    assert_eq!(record.state, JobState::Completed);
+    let names: Vec<String> = sink
+        .list(&job("a3"))
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|file| file.name)
+        .collect();
+    assert_eq!(names, vec!["Patient.ndjson"]);
 }

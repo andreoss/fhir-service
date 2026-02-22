@@ -3,10 +3,10 @@ use axum::extract::{Path, RawQuery, State};
 use axum::http::header::{self, HeaderMap, HeaderValue};
 use axum::http::StatusCode;
 use axum::response::Response;
-use fhir_core::{IssueCode, OperationOutcome};
-use fhir_core::Error;
 use fhir_core::security::scope::DataAction;
 use fhir_core::security::Access;
+use fhir_core::Error;
+use fhir_core::{IssueCode, OperationOutcome};
 use fhir_store::{JobId, JobKind, JobRecord, JobRequest, JobState, JobStore};
 use serde_json::Value;
 use std::sync::Arc;
@@ -22,7 +22,7 @@ const NDJSON: &str = "application/fhir+ndjson";
 
 const OUTCOME: &str = "OperationOutcome";
 
-const LISTED: [&str; 2] = ["_type", "_typeFilter"];
+const LISTED: [&str; 3] = ["_type", "_typeFilter", "includeAssociatedData"];
 
 pub(crate) const DELETE_PARAMS: [&str; 7] = [
     "_type",
@@ -42,7 +42,7 @@ pub(crate) const REINDEX_PARAMS: [&str; 3] = ["_type", "_url", "_resource"];
 
 const REINDEX_LISTED: [&str; 3] = ["_type", "_url", "_resource"];
 
-pub(crate) const ACCEPTED_PARAMS: [&str; 9] = [
+pub(crate) const ACCEPTED_PARAMS: [&str; 10] = [
     "_type",
     "_typeFilter",
     "_since",
@@ -52,6 +52,7 @@ pub(crate) const ACCEPTED_PARAMS: [&str; 9] = [
     "_anonymizationConfig",
     "_anonymizationConfigEtag",
     "_anonymizationConfigCollectionReference",
+    "includeAssociatedData",
 ];
 
 pub const JOBS: &str = "/_jobs";
@@ -288,14 +289,7 @@ pub async fn submit_resource_reindex(
     body: axum::body::Bytes,
 ) -> Response {
     let reference = format!("{resource_type}/{id}");
-    submit_indexing(
-        &state,
-        Some(&reference),
-        &headers,
-        query.as_deref(),
-        &body,
-    )
-    .await
+    submit_indexing(&state, Some(&reference), &headers, query.as_deref(), &body).await
 }
 
 fn indexing(reference: Option<&str>, raw: Option<&str>, body: &[u8]) -> Result<String, Error> {
@@ -327,10 +321,11 @@ pub async fn poll(
     headers: HeaderMap,
     Path(id_text): Path<String>,
 ) -> Response {
-    let access = match crate::handlers::allowed(&state, &headers, DataAction::Read, None, None).await {
-        Ok(access) => access,
-        Err(error) => return AppError::from(error).into_response_now(),
-    };
+    let access =
+        match crate::handlers::allowed(&state, &headers, DataAction::Read, None, None).await {
+            Ok(access) => access,
+            Err(error) => return AppError::from(error).into_response_now(),
+        };
     let Some(jobs) = queue(&state) else {
         return unsupported();
     };
@@ -373,7 +368,9 @@ pub async fn poll(
             response
         }
         JobState::Failed => AppError::from(Error::Internal(
-            record.outcome.unwrap_or_else(|| "the job failed".to_owned()),
+            record
+                .outcome
+                .unwrap_or_else(|| "the job failed".to_owned()),
         ))
         .into_response_now(),
         JobState::Cancelled => AppError::from(Error::NotFound).into_response_now(),
@@ -385,10 +382,11 @@ pub async fn cancel(
     headers: HeaderMap,
     Path(id_text): Path<String>,
 ) -> Response {
-    let access = match crate::handlers::allowed(&state, &headers, DataAction::Read, None, None).await {
-        Ok(access) => access,
-        Err(error) => return AppError::from(error).into_response_now(),
-    };
+    let access =
+        match crate::handlers::allowed(&state, &headers, DataAction::Read, None, None).await {
+            Ok(access) => access,
+            Err(error) => return AppError::from(error).into_response_now(),
+        };
     let Some(jobs) = queue(&state) else {
         return unsupported();
     };
@@ -396,7 +394,11 @@ pub async fn cancel(
         Ok(id) => id,
         Err(_) => return AppError::from(Error::NotFound).into_response_now(),
     };
-    match jobs.fetch(&id).await.and_then(|record| owns(&access, &record)) {
+    match jobs
+        .fetch(&id)
+        .await
+        .and_then(|record| owns(&access, &record))
+    {
         Ok(()) => {}
         Err(error) => return AppError::from(error).into_response_now(),
     }
@@ -415,10 +417,11 @@ pub async fn output(
     headers: HeaderMap,
     Path((id_text, name)): Path<(String, String)>,
 ) -> Response {
-    let access = match crate::handlers::allowed(&state, &headers, DataAction::Read, None, None).await {
-        Ok(access) => access,
-        Err(error) => return AppError::from(error).into_response_now(),
-    };
+    let access =
+        match crate::handlers::allowed(&state, &headers, DataAction::Read, None, None).await {
+            Ok(access) => access,
+            Err(error) => return AppError::from(error).into_response_now(),
+        };
     let Some(sink) = sink(&state) else {
         return unsupported();
     };
@@ -429,7 +432,10 @@ pub async fn output(
     if access.secured {
         let owned = match queue(&state) {
             None => Err(Error::NotFound),
-            Some(jobs) => jobs.fetch(&id).await.and_then(|record| owns(&access, &record)),
+            Some(jobs) => jobs
+                .fetch(&id)
+                .await
+                .and_then(|record| owns(&access, &record)),
         };
         if let Err(error) = owned {
             return AppError::from(error).into_response_now();
@@ -473,6 +479,22 @@ fn merged(
         }
         if name == "_outputFormat" {
             fhir_store::output_format(&value)?;
+        }
+        if name == "includeAssociatedData" {
+            for part in value
+                .split(',')
+                .map(str::trim)
+                .filter(|part| !part.is_empty())
+            {
+                if !matches!(
+                    part,
+                    "LatestProvenanceResources" | "RelevantProvenanceResources"
+                ) {
+                    return Err(Error::UnsupportedParameter(format!(
+                        "includeAssociatedData {part:?} is not carried"
+                    )));
+                }
+            }
         }
         match listed.contains(&name.as_str()) {
             true => {
@@ -537,11 +559,7 @@ fn supplied(body: &[u8]) -> Result<Value, Error> {
     }
 }
 
-fn patching(
-    resource_type: Option<&str>,
-    raw: Option<&str>,
-    body: &[u8],
-) -> Result<String, Error> {
+fn patching(resource_type: Option<&str>, raw: Option<&str>, body: &[u8]) -> Result<String, Error> {
     let held = supplied(body)?;
     let describes = matches!(&held, Value::Object(map) if map.contains_key("patch"));
     let mut carried = match describes {

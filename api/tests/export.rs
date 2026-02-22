@@ -35,9 +35,13 @@ fn harness() -> Harness {
         name: "memory-store",
         check: Arc::new(|| Box::pin(async { Ok(()) })),
     }];
-    let app = Service::new(Arc::clone(&store) as Arc<dyn ResourceStore>, FhirVersion::R4, dependencies)
-        .with_jobs(Arc::clone(&jobs) as Arc<dyn JobStore>)
-        .with_outputs(Arc::clone(&sink) as Arc<dyn BulkStore>);
+    let app = Service::new(
+        Arc::clone(&store) as Arc<dyn ResourceStore>,
+        FhirVersion::R4,
+        dependencies,
+    )
+    .with_jobs(Arc::clone(&jobs) as Arc<dyn JobStore>)
+    .with_outputs(Arc::clone(&sink) as Arc<dyn BulkStore>);
     Harness {
         app,
         jobs,
@@ -58,7 +62,12 @@ async fn request(app: &Service, method: &str, uri: &str, body: &[u8]) -> Reply {
     let headers = response
         .headers()
         .iter()
-        .map(|(name, value)| (name.to_string(), value.to_str().unwrap_or_default().to_owned()))
+        .map(|(name, value)| {
+            (
+                name.to_string(),
+                value.to_str().unwrap_or_default().to_owned(),
+            )
+        })
         .collect();
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     Reply {
@@ -79,7 +88,10 @@ fn header<'a>(reply: &'a Reply, name: &str) -> &'a str {
 
 fn submitted(reply: &Reply) -> JobId {
     let location = header(reply, "content-location");
-    let tail = location.rsplit('/').next().expect("a location ends in an id");
+    let tail = location
+        .rsplit('/')
+        .next()
+        .expect("a location ends in an id");
     JobId::parse(tail).expect("the announced id is valid")
 }
 
@@ -98,12 +110,26 @@ async fn work(held: &Harness) {
 }
 
 async fn seeded(held: &Harness) {
-    held.store.create(patient("p1", "Stone", true)).await.unwrap();
-    held.store.create(patient("p2", "Rivers", true)).await.unwrap();
+    held.store
+        .create(patient("p1", "Stone", true))
+        .await
+        .unwrap();
+    held.store
+        .create(patient("p2", "Rivers", true))
+        .await
+        .unwrap();
     held.store
         .create(observation("o1", "code-1", 3.0, "Patient/p1"))
         .await
         .unwrap();
+}
+
+fn provenance(id: &str, target: &str) -> fhir_core::ResourceEnvelope {
+    fhir_store_contract::fixture::envelope(
+        "Provenance",
+        id,
+        &format!(r#""recorded":"2026-09-06T04:01:00Z","target":[{{"reference":"{target}"}}]"#),
+    )
 }
 
 #[tokio::test]
@@ -121,7 +147,9 @@ async fn a_system_export_reports_its_files_and_serves_them() {
     let manifest: Value = serde_json::from_str(&done.body).unwrap();
     assert_eq!(manifest["state"], "completed");
     assert_eq!(manifest["requiresAccessToken"], false);
-    let files = manifest["output"].as_array().expect("a manifest lists files");
+    let files = manifest["output"]
+        .as_array()
+        .expect("a manifest lists files");
     assert_eq!(files.len(), 2);
     let patients = files
         .iter()
@@ -304,10 +332,130 @@ async fn a_finished_export_details_the_request_and_itemises_what_it_missed() {
     let reported = request(
         &held.app,
         "GET",
-        errors[0]["url"].as_str().unwrap().trim_start_matches("http://localhost"),
+        errors[0]["url"]
+            .as_str()
+            .unwrap()
+            .trim_start_matches("http://localhost"),
         b"",
     )
     .await;
     assert_eq!(reported.status, StatusCode::OK);
     assert!(reported.body.contains("Patient/p9"), "{}", reported.body);
+}
+
+#[tokio::test]
+async fn an_associated_preset_that_is_carried_is_accepted_and_one_that_is_not_is_refused() {
+    let held = harness();
+    seeded(&held).await;
+
+    let carried = request(
+        &held.app,
+        "GET",
+        "/$export?includeAssociatedData=LatestProvenanceResources",
+        b"",
+    )
+    .await;
+    assert_eq!(carried.status, StatusCode::ACCEPTED);
+
+    let both = request(
+        &held.app,
+        "GET",
+        "/$export?includeAssociatedData=RelevantProvenanceResources,LatestProvenanceResources",
+        b"",
+    )
+    .await;
+    assert_eq!(both.status, StatusCode::ACCEPTED);
+
+    let refused = request(
+        &held.app,
+        "GET",
+        "/$export?includeAssociatedData=_history",
+        b"",
+    )
+    .await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST);
+    assert!(refused.body.contains("_history"), "{}", refused.body);
+    assert!(
+        refused.body.contains("OperationOutcome"),
+        "{}",
+        refused.body
+    );
+
+    let denied = request(
+        &held.app,
+        "GET",
+        "/$export?includeAssociatedData=_myCustomPreset",
+        b"",
+    )
+    .await;
+    assert_eq!(denied.status, StatusCode::BAD_REQUEST);
+    assert!(denied.body.contains("_myCustomPreset"), "{}", denied.body);
+}
+
+#[tokio::test]
+async fn an_associated_preset_reaches_the_submitted_description() {
+    let held = harness();
+    seeded(&held).await;
+
+    let accepted = request(
+        &held.app,
+        "GET",
+        "/$export?includeAssociatedData=RelevantProvenanceResources",
+        b"",
+    )
+    .await;
+    assert_eq!(accepted.status, StatusCode::ACCEPTED);
+    let id = submitted(&accepted);
+    let held_job = held.jobs.fetch(&id).await.unwrap();
+    let payload: Value = serde_json::from_str(held_job.payload.as_deref().unwrap()).unwrap();
+    assert_eq!(
+        payload["includeAssociatedData"],
+        Value::Array(vec![Value::String(
+            "RelevantProvenanceResources".to_owned()
+        )])
+    );
+}
+
+#[tokio::test]
+async fn a_preset_export_answers_the_manifest_with_the_provenance_files() {
+    let held = harness();
+    seeded(&held).await;
+    held.store
+        .create(provenance("pr1", "Patient/p1"))
+        .await
+        .unwrap();
+
+    let accepted = request(
+        &held.app,
+        "GET",
+        "/$export?includeAssociatedData=RelevantProvenanceResources",
+        b"",
+    )
+    .await;
+    assert_eq!(accepted.status, StatusCode::ACCEPTED);
+    let id = submitted(&accepted);
+    work(&held).await;
+
+    let done = request(&held.app, "GET", &format!("/_jobs/{id}"), b"").await;
+    assert_eq!(done.status, StatusCode::OK);
+    let manifest: Value = serde_json::from_str(&done.body).unwrap();
+    assert_eq!(manifest["state"], "completed");
+    let files = manifest["output"]
+        .as_array()
+        .expect("a manifest lists files");
+    let provenance = files
+        .iter()
+        .find(|file| file["type"] == "Provenance")
+        .expect("the provenance is listed");
+    assert_eq!(provenance["count"], 1);
+    let url = provenance["url"].as_str().unwrap();
+    let file = request(
+        &held.app,
+        "GET",
+        url.trim_start_matches("http://localhost"),
+        b"",
+    )
+    .await;
+    assert_eq!(file.status, StatusCode::OK);
+    assert!(file.body.contains("Patient/p1"), "{}", file.body);
 }

@@ -2,16 +2,22 @@ use crate::handler::{JobContext, JobHandler, Unit, UnitOutcome};
 use crate::{payload, report};
 use async_trait::async_trait;
 use fhir_core::search::{Compartment, Filter};
-use fhir_core::{Error, FhirInstant, ResourceEnvelope, ResourceId, ResourceType};
+use fhir_core::{Error, FhirInstant, InstantKey, ResourceEnvelope, ResourceId, ResourceType};
 use fhir_store::{
     system_clock, BulkStore, Clock, HistoryOrder, HistoryQuery, HistoryScope, JobKind, Output,
     ResourceStore, SearchQuery,
 };
 use serde_json::{Map, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 const ROOT: &str = "Patient";
+
+const PROVENANCE: &str = "Provenance";
+
+const LATEST: &str = "LatestProvenanceResources";
+
+const RELEVANT: &str = "RelevantProvenanceResources";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExportScope {
@@ -26,6 +32,45 @@ pub struct TypeFilter {
     pub filters: Vec<Filter>,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AssociatedData {
+    pub latest: bool,
+    pub relevant: bool,
+}
+
+impl AssociatedData {
+    pub fn parse(names: &[String]) -> Result<AssociatedData, Error> {
+        let mut held = AssociatedData::default();
+        for name in names {
+            match name.as_str() {
+                LATEST => held.latest = true,
+                RELEVANT => held.relevant = true,
+                other => {
+                    return Err(Error::UnsupportedParameter(format!(
+                        "includeAssociatedData {other:?} is not carried"
+                    )))
+                }
+            }
+        }
+        Ok(held)
+    }
+
+    pub fn requested(&self) -> bool {
+        self.latest || self.relevant
+    }
+
+    fn to_value(self) -> Value {
+        let mut held = Vec::new();
+        if self.latest {
+            held.push(LATEST.to_owned());
+        }
+        if self.relevant {
+            held.push(RELEVANT.to_owned());
+        }
+        Value::Array(held.into_iter().map(Value::String).collect())
+    }
+}
+
 fn narrowing(text: &str) -> Result<TypeFilter, Error> {
     let (head, query) = text.split_once('?').unwrap_or((text, ""));
     let resource_type = head.trim().parse::<ResourceType>()?;
@@ -35,13 +80,10 @@ fn narrowing(text: &str) -> Result<TypeFilter, Error> {
             Error::InvalidParameter(format!("_typeFilter {pair:?} carries no value"))
         })?;
         if name.contains(':') || name.contains('.') {
-            return Err(Error::UnsupportedParameter(format!(
-                "_typeFilter {name:?}"
-            )));
+            return Err(Error::UnsupportedParameter(format!("_typeFilter {name:?}")));
         }
-        let def = fhir_core::search::lookup(Some(resource_type), name).ok_or_else(|| {
-            Error::UnsupportedParameter(format!("_typeFilter {name:?}"))
-        })?;
+        let def = fhir_core::search::lookup(Some(resource_type), name)
+            .ok_or_else(|| Error::UnsupportedParameter(format!("_typeFilter {name:?}")))?;
         let values = raw
             .split(',')
             .filter(|part| !part.is_empty())
@@ -54,7 +96,6 @@ fn narrowing(text: &str) -> Result<TypeFilter, Error> {
         filters,
     })
 }
-
 
 #[derive(Debug, Clone)]
 pub struct Anonymization {
@@ -137,10 +178,13 @@ pub struct ExportRequest {
     pub till: FhirInstant,
     pub container: String,
     pub anonymization: Option<Anonymization>,
+    pub associated: AssociatedData,
+    pub exporting: Vec<ResourceType>,
 }
 
 fn format_of(payload: &Value) -> Result<String, Error> {
-    match payload::text(payload, "_outputFormat").or_else(|| payload::text(payload, "outputFormat")) {
+    match payload::text(payload, "_outputFormat").or_else(|| payload::text(payload, "outputFormat"))
+    {
         None => Ok(fhir_store::NDJSON.to_owned()),
         Some(found) => fhir_store::output_format(&found),
     }
@@ -167,24 +211,26 @@ fn scope_of(payload: &Value) -> Result<ExportScope, Error> {
 
 impl ExportRequest {
     pub fn parse(payload: &str, fallback: &FhirInstant) -> Result<ExportRequest, Error> {
-        let payload: Value = serde_json::from_str(payload)
-            .map_err(|error| Error::InvalidJson(error.to_string()))?;
+        let payload: Value =
+            serde_json::from_str(payload).map_err(|error| Error::InvalidJson(error.to_string()))?;
         let _ = format_of(&payload)?;
         let mut names = payload::listed(&payload, "_type");
         if names.is_empty() {
             names = payload::listed(&payload, "types");
         }
-        let till = match payload::text(&payload, "_till").or_else(|| payload::text(&payload, "till")) {
-            Some(found) => FhirInstant::parse(&found)?,
-            None => fallback.clone(),
-        };
+        let till =
+            match payload::text(&payload, "_till").or_else(|| payload::text(&payload, "till")) {
+                Some(found) => FhirInstant::parse(&found)?,
+                None => fallback.clone(),
+            };
         let container = payload::text(&payload, "_container")
             .or_else(|| payload::text(&payload, "container"))
             .unwrap_or_default();
-        let since = match payload::text(&payload, "_since").or_else(|| payload::text(&payload, "since")) {
-            Some(found) => Some(FhirInstant::parse(&found)?),
-            None => None,
-        };
+        let since =
+            match payload::text(&payload, "_since").or_else(|| payload::text(&payload, "since")) {
+                Some(found) => Some(FhirInstant::parse(&found)?),
+                None => None,
+            };
         let narrowings = payload::listed(&payload, "_typeFilter");
         let filters = narrowings
             .iter()
@@ -199,10 +245,12 @@ impl ExportRequest {
             till,
             container,
             anonymization: anonymization(&payload)?,
+            associated: AssociatedData::parse(&payload::listed(&payload, "includeAssociatedData"))?,
+            exporting: payload::resource_types(&payload::listed(&payload, "_exporting"))?,
         })
     }
 
-    fn to_value(&self, resource_type: &ResourceType) -> Value {
+    fn to_value(&self, resource_type: &ResourceType, exporting: &[ResourceType]) -> Value {
         let (scope, id) = match &self.scope {
             ExportScope::System => ("system", None),
             ExportScope::Patient(id) => ("patient", id.as_ref().map(|id| id.as_str().to_owned())),
@@ -217,6 +265,21 @@ impl ExportRequest {
             "_type".to_owned(),
             Value::Array(vec![Value::String(resource_type.as_str().to_owned())]),
         );
+        if resource_type.as_str() == PROVENANCE && self.associated.requested() {
+            carried.insert(
+                "_exporting".to_owned(),
+                Value::Array(
+                    exporting
+                        .iter()
+                        .map(|kind| Value::String(kind.as_str().to_owned()))
+                        .collect(),
+                ),
+            );
+            carried.insert(
+                "includeAssociatedData".to_owned(),
+                self.associated.to_value(),
+            );
+        }
         carried.insert(
             "_till".to_owned(),
             Value::String(self.till.as_str().to_owned()),
@@ -392,6 +455,92 @@ fn gathered(roots: &[ResourceId], resource_type: ResourceType, body: &Value) -> 
     })
 }
 
+fn selected(
+    request: &ExportRequest,
+    resource_type: ResourceType,
+    entry: &ResourceEnvelope,
+    body: &Value,
+    roots: Option<&[ResourceId]>,
+) -> bool {
+    !roots.is_some_and(|roots| !gathered(roots, resource_type, body))
+        && !request
+            .since
+            .as_ref()
+            .is_some_and(|since| entry.last_updated().key() < since.key())
+        && narrowed(request, resource_type, entry, body)
+}
+
+fn targets_of(body: &Value) -> BTreeSet<(String, String)> {
+    let mut held = BTreeSet::new();
+    for pointer in fhir_core::search::select(body, "target")
+        .iter()
+        .flat_map(|element| fhir_core::search::pointers(element))
+    {
+        let mut segments = pointer.split('/').collect::<Vec<&str>>();
+        let id = segments.pop().unwrap_or_default();
+        let resource_type = segments.pop().unwrap_or_default();
+        if !id.is_empty() && !resource_type.is_empty() {
+            held.insert((resource_type.to_owned(), id.to_owned()));
+        }
+    }
+    held
+}
+
+async fn exported_ids(
+    store: &dyn ResourceStore,
+    request: &ExportRequest,
+    roots: Option<&[ResourceId]>,
+    exporting: &[ResourceType],
+) -> Result<HashMap<String, BTreeSet<String>>, Error> {
+    let mut held = HashMap::new();
+    for resource_type in exporting {
+        let key = resource_type.as_str().to_owned();
+        let mut ids = BTreeSet::new();
+        for entry in snapshot(store, *resource_type, &request.till).await? {
+            if let Ok(parsed) = body_of(&entry) {
+                if selected(request, *resource_type, &entry, &parsed, roots) {
+                    ids.insert(entry.id().as_str().to_owned());
+                }
+            }
+        }
+        held.insert(key, ids);
+    }
+    Ok(held)
+}
+
+fn latest_only(entries: Vec<ResourceEnvelope>) -> Vec<ResourceEnvelope> {
+    let mut winners: BTreeMap<(String, String), ResourceEnvelope> = BTreeMap::new();
+    for entry in entries {
+        let Ok(body) = body_of(&entry) else {
+            continue;
+        };
+        let targets = targets_of(&body);
+        for target in targets {
+            let previous = winners.get(&target);
+            let wins = match previous {
+                Some(found) => latest_key(found) <= latest_key(&entry),
+                None => true,
+            };
+            if wins {
+                winners.insert(target, entry.clone());
+            }
+        }
+    }
+    winners.into_values().collect()
+}
+
+fn latest_key(entry: &ResourceEnvelope) -> InstantKey {
+    body_of(entry)
+        .ok()
+        .and_then(|body| {
+            body.get("recorded")
+                .and_then(|recorded| recorded.as_str())
+                .and_then(|recorded| FhirInstant::parse(recorded).ok())
+        })
+        .unwrap_or_else(|| entry.last_updated().clone())
+        .key()
+}
+
 pub struct ExportJob {
     store: Arc<dyn ResourceStore>,
     sink: Arc<dyn BulkStore>,
@@ -419,6 +568,10 @@ impl ExportJob {
         if !matches!(request.scope, ExportScope::System) {
             let gathered = gathered_types();
             types.retain(|found| gathered.contains(&found.as_str()));
+        }
+        if request.associated.requested() && !types.iter().any(|found| found.as_str() == PROVENANCE)
+        {
+            types.push(PROVENANCE.parse()?);
         }
         Ok(types)
     }
@@ -454,10 +607,63 @@ impl ExportJob {
             ExportScope::System => Ok(None),
             ExportScope::Patient(None) => Ok(None),
             ExportScope::Patient(Some(id)) => Ok(Some(vec![id.clone()])),
-            ExportScope::Group(id) => Ok(Some(
-                members(self.store.as_ref(), id, &request.till).await?,
-            )),
+            ExportScope::Group(id) => {
+                Ok(Some(members(self.store.as_ref(), id, &request.till).await?))
+            }
         }
+    }
+
+    async fn associated(
+        &self,
+        job: &JobContext,
+        request: &ExportRequest,
+        roots: Option<&[ResourceId]>,
+    ) -> Result<UnitOutcome, Error> {
+        let exporting = match request.exporting.is_empty() {
+            false => &request.exporting,
+            true => &request.types,
+        };
+        let exported = exported_ids(self.store.as_ref(), request, roots, exporting).await?;
+        let mut held: Vec<ResourceEnvelope> = Vec::new();
+        for entry in snapshot(self.store.as_ref(), PROVENANCE.parse()?, &request.till).await? {
+            let parsed = match body_of(&entry) {
+                Ok(parsed) => parsed,
+                Err(_) => continue,
+            };
+            let targeted = targets_of(&parsed).into_iter().any(|(resource_type, id)| {
+                exported
+                    .get(&resource_type)
+                    .is_some_and(|ids| ids.contains(&id))
+            });
+            if !targeted {
+                continue;
+            }
+            held.push(entry);
+        }
+        if request.associated.latest && !request.associated.relevant {
+            held = latest_only(held);
+        }
+        let mut body = Vec::new();
+        for entry in &held {
+            if let Ok(parsed) = body_of(entry) {
+                body.extend_from_slice(&serde_json::to_vec(&parsed).unwrap_or_default());
+                body.push(b'\n');
+            }
+        }
+        let outcome = UnitOutcome {
+            handled: held.len() as u64,
+            ..Default::default()
+        };
+        if outcome.handled > 0 {
+            let resource_type = PROVENANCE.parse()?;
+            let output = Output::new(
+                request.file(&resource_type),
+                resource_type.as_str(),
+                outcome.handled,
+            );
+            self.sink.write(&job.id, &output, &body).await?;
+        }
+        Ok(outcome)
     }
 }
 
@@ -470,14 +676,13 @@ impl JobHandler for ExportJob {
     async fn plan(&self, job: &JobContext) -> Result<Vec<Unit>, Error> {
         let request = ExportRequest::parse(&job.payload, &(self.clock)())?;
         let _ = self.rules(&request).await?;
-        Ok(self
-            .planned(&request)
-            .await?
-            .into_iter()
+        let exporting = self.planned(&request).await?;
+        Ok(exporting
+            .iter()
             .map(|resource_type| {
                 Unit::new(
                     resource_type.as_str().to_owned(),
-                    request.to_value(&resource_type).to_string(),
+                    request.to_value(resource_type, &exporting).to_string(),
                 )
             })
             .collect())
@@ -487,6 +692,9 @@ impl JobHandler for ExportJob {
         let request = ExportRequest::parse(&unit.detail, &(self.clock)())?;
         let resource_type = unit.label.parse::<ResourceType>()?;
         let roots = self.roots(&request).await?;
+        if resource_type.as_str() == PROVENANCE && request.associated.requested() {
+            return self.associated(job, &request, roots.as_deref()).await;
+        }
         let rules = self.rules(&request).await?;
         let mut body = Vec::new();
         let mut outcome = UnitOutcome::default();
@@ -496,26 +704,15 @@ impl JobHandler for ExportJob {
             let parsed = match body_of(&entry) {
                 Ok(parsed) => parsed,
                 Err(error) => {
-                    outcome
-                        .failures
-                        .push(format!("{}/{}: {error}", resource_type.as_str(), entry.id().as_str()));
+                    outcome.failures.push(format!(
+                        "{}/{}: {error}",
+                        resource_type.as_str(),
+                        entry.id().as_str()
+                    ));
                     continue;
                 }
             };
-            if roots
-                .as_ref()
-                .is_some_and(|roots| !gathered(roots, resource_type, &parsed))
-            {
-                continue;
-            }
-            if request
-                .since
-                .as_ref()
-                .is_some_and(|since| entry.last_updated().key() < since.key())
-            {
-                continue;
-            }
-            if !narrowed(&request, resource_type, &entry, &parsed) {
+            if !selected(&request, resource_type, &entry, &parsed, roots.as_deref()) {
                 continue;
             }
             let mut parsed = parsed;
