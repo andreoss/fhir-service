@@ -251,8 +251,8 @@ fn the_report_from_outside_names_every_version_and_carries_no_error() {
     }
 }
 
-fn script_reports() -> Vec<Value> {
-    let held = folder().join("external").join("scripts").join("r4");
+fn script_reports(version: &str) -> Vec<Value> {
+    let held = folder().join("external").join("scripts").join(version);
     let mut reports: Vec<Value> = Vec::new();
     for entry in std::fs::read_dir(&held).expect("the published suite kept its reports") {
         let path = entry.expect("a kept report is readable").path();
@@ -312,16 +312,58 @@ fn script_failures(report: &Value, name: &str) -> Vec<String> {
     held
 }
 
+const SCRIPT_VERSIONS: [&str; 4] = ["stu3", "r4", "r4b", "r5"];
+
 const SCRIPT_NAMES: [&str; 5] = [
-    "testscript-example-general",
+    "testscript-example",
     "testscript-example-history",
     "testscript-example-readtest",
     "testscript-example-search",
     "testscript-example-update",
 ];
 
-const SCRIPT_FAILURES: [&str; 6] = [
-    "testscript-example-general: Response Code: Expected Response Code equals [200], but found [201].",
+fn script_name(report: &Value) -> String {
+    text(report.get("testScript").and_then(|held| held.get("reference")))
+}
+
+fn text(held: Option<&Value>) -> String {
+    held.and_then(Value::as_str).unwrap_or_default().to_owned()
+}
+
+fn folded(held: &str) -> String {
+    held.chars()
+        .filter(|held| held.is_ascii_alphanumeric())
+        .map(|held| held.to_ascii_lowercase())
+        .collect()
+}
+
+fn script_id(report: &Value) -> Option<&'static str> {
+    let held = folded(&script_name(report));
+    SCRIPT_NAMES
+        .iter()
+        .copied()
+        .find(|name| held.ends_with(&folded(name)))
+}
+
+fn recorded_failures(version: &str) -> &'static [&'static str] {
+    match version {
+        "stu3" => &SCRIPT_FAILURES_STU3,
+        "r4" => &SCRIPT_FAILURES_R4,
+        "r4b" => &SCRIPT_FAILURES_R4B,
+        _ => &SCRIPT_FAILURES_R5,
+    }
+}
+
+const SCRIPT_FAILURES_STU3: [&str; 5] = [
+    "testscript-example-history: Response Code: Expected Response Code equals [200], but found [400].",
+    "testscript-example-readtest: Content-Type: Expected Content-Type equals [xml], but found [application/fhir+json].",
+    "testscript-example-readtest: Response: Expected Response equals [bad], but found [notFound].",
+    "testscript-example-search: Navigation Links: Expected all navigation links, but did not receive.",
+    "testscript-example-update: Response: Expected Response equals [okay], but found [bad].",
+];
+
+const SCRIPT_FAILURES_R4: [&str; 6] = [
+    "testscript-example: Response Code: Expected Response Code equals [200], but found [201].",
     "testscript-example-history: Response Code: Expected Response Code equals [200], but found [400].",
     "testscript-example-readtest: Content-Type: Expected Content-Type equals [application/fhir+xml], but found [application/fhir+json].",
     "testscript-example-readtest: Response: Expected Response equals [bad], but found [notFound].",
@@ -329,40 +371,62 @@ const SCRIPT_FAILURES: [&str; 6] = [
     "testscript-example-update: Response: Expected Response equals [okay], but found [bad].",
 ];
 
+const SCRIPT_FAILURES_R4B: [&str; 5] = [
+    "testscript-example-history: Response Code: Expected Response Code equals [200], but found [400].",
+    "testscript-example-readtest: Content-Type: Expected Content-Type equals [xml], but found [application/fhir+json].",
+    "testscript-example-readtest: Response: Expected Response equals [bad], but found [notFound].",
+    "testscript-example-search: Navigation Links: Expected all navigation links, but did not receive.",
+    "testscript-example-update: Response: Expected Response equals [okay], but found [bad].",
+];
+
+const SCRIPT_FAILURES_R5: [&str; 5] = [
+    "testscript-example-history: Response Code: Expected Response Code equals [200], but found [400].",
+    "testscript-example-readtest: Content-Type: Expected Content-Type equals [xml], but found [application/fhir+json].",
+    "testscript-example-readtest: Response: Expected Response equals [badRequest], but found [notFound].",
+    "testscript-example-search: Navigation Links: Expected all navigation links, but did not receive.",
+    "testscript-example-update: Response: Expected Response equals [okay], but found [bad].",
+];
+
 #[test]
 fn the_published_test_scripts_a_running_instance_answered() {
-    let reports = script_reports();
-    let mut named: Vec<String> = reports
-        .iter()
-        .filter_map(|report| report.get("name").and_then(Value::as_str))
-        .map(str::to_owned)
-        .collect();
-    named.sort();
-    for name in SCRIPT_NAMES {
-        assert!(
-            named.iter().any(|held| held.ends_with(name)),
-            "the suite never ran {name}: {named:?}"
+    for version in SCRIPT_VERSIONS {
+        let reports = script_reports(version);
+        let mut named: Vec<String> = reports
+            .iter()
+            .filter_map(|report| report.get("name").and_then(Value::as_str))
+            .map(str::to_owned)
+            .collect();
+        named.sort();
+        let mut ran: Vec<String> = reports.iter().filter_map(script_id).map(str::to_owned).collect();
+        ran.sort();
+        for name in SCRIPT_NAMES {
+            assert!(
+                ran.iter().any(|held| held == name),
+                "{version}: the suite never ran {name}: {ran:?}"
+            );
+        }
+        let kept = reports.len();
+        assert_eq!(
+            kept,
+            SCRIPT_NAMES.len(),
+            "{version}: the suite kept {kept} report(s): {named:?}"
+        );
+        let mut found: Vec<String> = reports
+            .iter()
+            .flat_map(|report| {
+                let name = script_id(report).unwrap_or_default();
+                script_failures(report, name)
+            })
+            .collect();
+        found.sort();
+        let mut known: Vec<String> = recorded_failures(version)
+            .iter()
+            .map(|line| line.to_string())
+            .collect();
+        known.sort();
+        assert_eq!(
+            found, known,
+            "{version}: the suite judged the instance differently"
         );
     }
-    let kept = reports.len();
-    assert_eq!(
-        kept,
-        SCRIPT_NAMES.len(),
-        "the suite kept {kept} report(s): {named:?}"
-    );
-    let mut found: Vec<String> = reports
-        .iter()
-        .flat_map(|report| {
-            let name = report
-                .get("name")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .trim_start_matches("TestReport for ");
-            script_failures(report, name)
-        })
-        .collect();
-    found.sort();
-    let mut known: Vec<String> = SCRIPT_FAILURES.iter().map(|line| line.to_string()).collect();
-    known.sort();
-    assert_eq!(found, known, "the suite judged the instance differently");
 }
