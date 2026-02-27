@@ -1,10 +1,9 @@
-
 pub mod bulk;
 pub mod fixture;
 pub mod job;
 pub mod search;
 
-use fhir_core::Error;
+use fhir_core::{Error, FhirVersion, ResourceEnvelope};
 use fhir_store::{HistoryOrder, HistoryQuery, HistoryScope, ResourceStore};
 
 use fixture::{id, observation, patient, version};
@@ -26,7 +25,10 @@ pub async fn lifecycle(store: &dyn ResourceStore) {
     assert_eq!(read.last_updated(), created.last_updated());
 
     let duplicate = store.create(patient("a1", "Stone", false)).await;
-    assert!(matches!(duplicate, Err(Error::Duplicate(_))), "{duplicate:?}");
+    assert!(
+        matches!(duplicate, Err(Error::Duplicate(_))),
+        "{duplicate:?}"
+    );
 
     assert_not_found(store.read(&id("nobody")).await);
     assert_not_found(store.vread(&id("nobody"), &version("1")).await);
@@ -35,7 +37,10 @@ pub async fn lifecycle(store: &dyn ResourceStore) {
 pub async fn versioning(store: &dyn ResourceStore) {
     store.create(patient("b1", "Stone", true)).await.unwrap();
 
-    let updated = store.update(patient("b1", "Stone", false), None).await.unwrap();
+    let updated = store
+        .update(patient("b1", "Stone", false), None)
+        .await
+        .unwrap();
     assert_eq!(updated.version_id().as_str(), "2");
 
     let first = store.vread(&id("b1"), &version("1")).await.unwrap();
@@ -44,7 +49,10 @@ pub async fn versioning(store: &dyn ResourceStore) {
     assert_eq!(second.raw(), updated.raw());
     assert_not_found(store.vread(&id("b1"), &version("3")).await);
 
-    let repeated = store.update(patient("b1", "Stone", false), None).await.unwrap();
+    let repeated = store
+        .update(patient("b1", "Stone", false), None)
+        .await
+        .unwrap();
     assert_eq!(repeated.version_id().as_str(), "2");
 
     let expected = store
@@ -53,32 +61,50 @@ pub async fn versioning(store: &dyn ResourceStore) {
         .unwrap();
     assert_eq!(expected.version_id().as_str(), "3");
 
-    let stale = store.update(patient("b1", "Fields", true), Some(&version("1"))).await;
+    let stale = store
+        .update(patient("b1", "Fields", true), Some(&version("1")))
+        .await;
     assert!(matches!(stale, Err(Error::VersionConflict)), "{stale:?}");
-    assert_eq!(store.read(&id("b1")).await.unwrap().version_id().as_str(), "3");
+    assert_eq!(
+        store.read(&id("b1")).await.unwrap().version_id().as_str(),
+        "3"
+    );
 
     assert_not_found(store.update(patient("absent", "Stone", true), None).await);
 }
 
 pub async fn removal(store: &dyn ResourceStore) {
     store.create(patient("c1", "Stone", true)).await.unwrap();
-    store.update(patient("c1", "Rivers", true), None).await.unwrap();
+    store
+        .update(patient("c1", "Rivers", true), None)
+        .await
+        .unwrap();
 
     let marker = store.delete(&id("c1")).await.unwrap();
     assert!(marker.is_deleted());
     assert_eq!(marker.version_id().as_str(), "3");
     assert!(store.read(&id("c1")).await.unwrap().is_deleted());
-    assert!(!store.vread(&id("c1"), &version("1")).await.unwrap().is_deleted());
+    assert!(!store
+        .vread(&id("c1"), &version("1"))
+        .await
+        .unwrap()
+        .is_deleted());
 
     let again = store.delete(&id("c1")).await;
     assert!(matches!(again, Err(Error::Deleted)), "{again:?}");
 
-    let restored = store.update(patient("c1", "Stone", true), None).await.unwrap();
+    let restored = store
+        .update(patient("c1", "Stone", true), None)
+        .await
+        .unwrap();
     assert_eq!(restored.version_id().as_str(), "4");
     assert!(!restored.is_deleted());
 
     assert_eq!(store.purge_history(&id("c1")).await.unwrap(), 3);
-    assert_eq!(store.read(&id("c1")).await.unwrap().version_id().as_str(), "4");
+    assert_eq!(
+        store.read(&id("c1")).await.unwrap().version_id().as_str(),
+        "4"
+    );
     assert_not_found(store.vread(&id("c1"), &version("1")).await);
 
     store.hard_delete(&id("c1")).await.unwrap();
@@ -89,15 +115,28 @@ pub async fn removal(store: &dyn ResourceStore) {
 
 pub async fn record(store: &dyn ResourceStore) {
     store.create(patient("d1", "Stone", true)).await.unwrap();
-    store.update(patient("d1", "Rivers", true), None).await.unwrap();
+    store
+        .update(patient("d1", "Rivers", true), None)
+        .await
+        .unwrap();
     store.delete(&id("d1")).await.unwrap();
-    store.create(observation("d2", "code-1", 3.0, "Patient/d1")).await.unwrap();
+    store
+        .create(observation("d2", "code-1", 3.0, "Patient/d1"))
+        .await
+        .unwrap();
 
     let instance = HistoryScope::Instance("Patient".parse().unwrap(), id("d1"));
-    let newest = store.history(&instance, &HistoryQuery::default()).await.unwrap();
+    let newest = store
+        .history(&instance, &HistoryQuery::default())
+        .await
+        .unwrap();
     assert_eq!(newest.total, 3);
     assert_eq!(newest.offset, 0);
-    let versions: Vec<&str> = newest.entries.iter().map(|entry| entry.version_id().as_str()).collect();
+    let versions: Vec<&str> = newest
+        .entries
+        .iter()
+        .map(|entry| entry.version_id().as_str())
+        .collect();
     assert_eq!(versions, vec!["3", "2", "1"]);
     assert!(newest.entries[0].is_deleted());
 
@@ -106,7 +145,11 @@ pub async fn record(store: &dyn ResourceStore) {
         ..HistoryQuery::default()
     };
     let earliest = store.history(&instance, &oldest).await.unwrap();
-    let versions: Vec<&str> = earliest.entries.iter().map(|entry| entry.version_id().as_str()).collect();
+    let versions: Vec<&str> = earliest
+        .entries
+        .iter()
+        .map(|entry| entry.version_id().as_str())
+        .collect();
     assert_eq!(versions, vec!["1", "2", "3"]);
 
     let paged = HistoryQuery {
@@ -121,10 +164,27 @@ pub async fn record(store: &dyn ResourceStore) {
     assert_eq!(page.entries[0].version_id().as_str(), "2");
 
     let by_type = HistoryScope::Type("Patient".parse().unwrap());
-    assert_eq!(store.history(&by_type, &HistoryQuery::default()).await.unwrap().total, 3);
+    assert_eq!(
+        store
+            .history(&by_type, &HistoryQuery::default())
+            .await
+            .unwrap()
+            .total,
+        3
+    );
     let other = HistoryScope::Type("Observation".parse().unwrap());
-    assert_eq!(store.history(&other, &HistoryQuery::default()).await.unwrap().total, 1);
-    let all = store.history(&HistoryScope::System, &HistoryQuery::default()).await.unwrap();
+    assert_eq!(
+        store
+            .history(&other, &HistoryQuery::default())
+            .await
+            .unwrap()
+            .total,
+        1
+    );
+    let all = store
+        .history(&HistoryScope::System, &HistoryQuery::default())
+        .await
+        .unwrap();
     assert_eq!(all.total, 4);
 
     let future = HistoryQuery {
@@ -139,6 +199,65 @@ pub async fn record(store: &dyn ResourceStore) {
     assert_not_found(store.history(&mistyped, &HistoryQuery::default()).await);
 }
 
+pub async fn restore(store: &dyn ResourceStore) {
+    fn restored(id: &str, version: &str, body: &str) -> ResourceEnvelope {
+        let bytes = format!(
+            r#"{{"resourceType":"Patient","id":"{id}","meta":{{"versionId":"{version}","lastUpdated":"2026-09-06T04:00:00.000Z"}},{body}}}"#
+        )
+        .into_bytes();
+        ResourceEnvelope::parse(FhirVersion::R4, &bytes).expect("a restored body is valid")
+    }
+
+    let id = fixture::id("m1");
+    let first = restored("m1", "3", r#""active":true,"name":[{"family":"Mig"}]"#);
+    let second = restored("m1", "5", r#""active":true,"name":[{"family":"Rivers"}]"#);
+
+    assert!(store.restore_version(first.clone()).await.unwrap());
+    assert!(!store.restore_version(first.clone()).await.unwrap());
+
+    let read = store.read(&id).await.unwrap();
+    assert_eq!(read.version_id().as_str(), "3");
+    assert!(read.content_eq(&first));
+    assert_eq!(read.last_updated().as_str(), "2026-09-06T04:00:00.000Z");
+
+    assert!(store.restore_version(second.clone()).await.unwrap());
+    assert!(!store.restore_version(second.clone()).await.unwrap());
+    let read = store.read(&id).await.unwrap();
+    assert_eq!(read.version_id().as_str(), "5");
+    assert!(read.content_eq(&second));
+
+    let third = store.vread(&id, &fixture::version("3")).await.unwrap();
+    assert!(third.content_eq(&first));
+    assert_eq!(third.last_updated().as_str(), "2026-09-06T04:00:00.000Z");
+
+    let conflict = restored("m1", "5", r#""active":false,"name":[{"family":"Rivers"}]"#);
+    assert!(matches!(
+        store.restore_version(conflict).await,
+        Err(Error::Duplicate(_))
+    ));
+
+    let marker = ResourceEnvelope::deleted_marker(
+        FhirVersion::R4,
+        "Patient".parse().unwrap(),
+        id.clone(),
+        fixture::version("7"),
+        fixture::instant("2026-09-06T04:00:00.000Z"),
+    );
+    assert!(store.restore_version(marker.clone()).await.unwrap());
+    assert!(!store.restore_version(marker).await.unwrap());
+    let read = store.read(&id).await.unwrap();
+    assert!(read.is_deleted());
+    assert_eq!(read.version_id().as_str(), "7");
+
+    let all = store
+        .history(&HistoryScope::System, &HistoryQuery::default())
+        .await
+        .unwrap();
+    assert_eq!(all.total, 3);
+
+    store.hard_delete(&id).await.unwrap();
+}
+
 pub async fn readiness(store: &dyn ResourceStore) {
     store.health().await.expect("a fresh store is healthy");
 }
@@ -148,7 +267,10 @@ pub async fn atomicity(store: &dyn ResourceStore) {
     let scoped = scope.store();
     scoped.create(patient("f1", "Stone", true)).await.unwrap();
     scoped.create(patient("f2", "Rivers", true)).await.unwrap();
-    assert_eq!(scoped.read(&id("f1")).await.unwrap().version_id().as_str(), "1");
+    assert_eq!(
+        scoped.read(&id("f1")).await.unwrap().version_id().as_str(),
+        "1"
+    );
     scope.rollback().await.unwrap();
     assert_not_found(store.read(&id("f1")).await);
     assert_not_found(store.read(&id("f2")).await);
@@ -156,9 +278,15 @@ pub async fn atomicity(store: &dyn ResourceStore) {
     let scope = store.begin().await.unwrap();
     let scoped = scope.store();
     scoped.create(patient("f3", "Stone", true)).await.unwrap();
-    scoped.update(patient("f3", "Rivers", true), None).await.unwrap();
+    scoped
+        .update(patient("f3", "Rivers", true), None)
+        .await
+        .unwrap();
     scope.commit().await.unwrap();
-    assert_eq!(store.read(&id("f3")).await.unwrap().version_id().as_str(), "2");
+    assert_eq!(
+        store.read(&id("f3")).await.unwrap().version_id().as_str(),
+        "2"
+    );
 
     let scope = store.begin().await.unwrap();
     let scoped = scope.store();
@@ -168,7 +296,10 @@ pub async fn atomicity(store: &dyn ResourceStore) {
     assert!(!store.read(&id("f3")).await.unwrap().is_deleted());
     assert_eq!(
         store
-            .history(&HistoryScope::Instance("Patient".parse().unwrap(), id("f3")), &HistoryQuery::default())
+            .history(
+                &HistoryScope::Instance("Patient".parse().unwrap(), id("f3")),
+                &HistoryQuery::default()
+            )
             .await
             .unwrap()
             .total,
@@ -189,5 +320,10 @@ pub async fn scoped_search(store: &dyn ResourceStore) {
     let inside = scoped.search(&by_name("Stone")).await.unwrap();
     assert_eq!(inside.entries.len(), 1);
     scope.rollback().await.unwrap();
-    assert!(store.search(&by_name("Stone")).await.unwrap().entries.is_empty());
+    assert!(store
+        .search(&by_name("Stone"))
+        .await
+        .unwrap()
+        .entries
+        .is_empty());
 }

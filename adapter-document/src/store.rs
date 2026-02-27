@@ -195,9 +195,7 @@ impl DocumentStore {
             IndexModel::builder()
                 .keys(doc! {"reference.param": 1, "reference.pointer": 1})
                 .build(),
-            IndexModel::builder()
-                .keys(doc! {"updated_key": 1})
-                .build(),
+            IndexModel::builder().keys(doc! {"updated_key": 1}).build(),
         ];
         let made = models.len();
         self.resources()
@@ -374,11 +372,10 @@ impl DocumentStore {
             }),
             Source::Client => {
                 let policy = self.policy;
-                let mut session =
-                    retried(&policy, "opening a session", || async {
-                        self.client.start_session().await
-                    })
-                    .await?;
+                let mut session = retried(&policy, "opening a session", || async {
+                    self.client.start_session().await
+                })
+                .await?;
                 session
                     .start_transaction()
                     .await
@@ -465,6 +462,24 @@ impl DocumentStore {
             .session(&mut *session)
             .await
             .map_err(|error| faulted("reading the current version", error))?;
+        found.as_ref().map(Record::of).transpose()
+    }
+
+    async fn version_in(
+        &self,
+        session: &mut ClientSession,
+        id: &ResourceId,
+        version: &VersionId,
+    ) -> Result<Option<Record>, Error> {
+        let found = self
+            .resources()
+            .find_one(doc! {
+                "resource_id": id.as_str(),
+                "version_number": version_number(version)?,
+            })
+            .session(&mut *session)
+            .await
+            .map_err(|error| faulted("reading a version", error))?;
         found.as_ref().map(Record::of).transpose()
     }
 
@@ -654,6 +669,32 @@ impl ResourceStore for DocumentStore {
         self.append(session, Some(&current), &stored).await?;
         work.done().await?;
         Ok(stored)
+    }
+
+    async fn restore_version(&self, envelope: ResourceEnvelope) -> Result<bool, Error> {
+        let mut work = self.writing().await?;
+        let session = work.session()?;
+        if let Some(held) = self
+            .version_in(session, envelope.id(), envelope.version_id())
+            .await?
+        {
+            let same = held.last_updated == *envelope.last_updated()
+                && held.deleted == envelope.is_deleted()
+                && held.envelope()?.content_eq(&envelope);
+            if same {
+                return Ok(false);
+            }
+            return Err(Error::Duplicate(format!(
+                "version {} of {:?} is restored twice with a different body",
+                envelope.version_id().as_str(),
+                envelope.id().as_str()
+            )));
+        }
+        let current = self.current_in(session, envelope.id()).await?;
+        let session = work.session()?;
+        self.append(session, current.as_ref(), &envelope).await?;
+        work.done().await?;
+        Ok(true)
     }
 
     async fn search(&self, query: &SearchQuery) -> Result<SearchPage, Error> {

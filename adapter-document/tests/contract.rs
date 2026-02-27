@@ -17,6 +17,7 @@ group!(lifecycle, fhir_store_contract::lifecycle);
 group!(versioning, fhir_store_contract::versioning);
 group!(removal, fhir_store_contract::removal);
 group!(record, fhir_store_contract::record);
+group!(restore, fhir_store_contract::restore);
 group!(readiness, fhir_store_contract::readiness);
 
 group!(selection, fhir_store_contract::search::selection);

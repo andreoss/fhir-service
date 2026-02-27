@@ -1,11 +1,17 @@
 use fhir_adapter_memory::MemoryStore;
-use fhir_core::{Error, FhirInstant, FhirVersion, InstantPeriod, ResourceEnvelope, ResourceId, VersionId};
 use fhir_core::search::{lookup, Filter};
-use fhir_store::{HistoryOrder, HistoryPage, HistoryQuery, HistoryScope, ResourceStore, SearchQuery};
+use fhir_core::{
+    Error, FhirInstant, FhirVersion, InstantPeriod, ResourceEnvelope, ResourceId, VersionId,
+};
+use fhir_store::{
+    HistoryOrder, HistoryPage, HistoryQuery, HistoryScope, ResourceStore, SearchQuery,
+};
 use std::sync::Arc;
 
 fn store() -> MemoryStore {
-    MemoryStore::with_clock(Arc::new(|| FhirInstant::parse("2026-09-06T04:00:00.000Z").unwrap()))
+    MemoryStore::with_clock(Arc::new(|| {
+        FhirInstant::parse("2026-09-06T04:00:00.000Z").unwrap()
+    }))
 }
 
 fn envelope(version: FhirVersion, id: &str, active: bool) -> ResourceEnvelope {
@@ -85,8 +91,14 @@ async fn create_read_round_trip_over_every_version() {
 #[tokio::test]
 async fn create_rejects_duplicate_id() {
     let store = store();
-    store.create(envelope(FhirVersion::R4, "pt-1", true)).await.unwrap();
-    let error = store.create(envelope(FhirVersion::R4, "pt-1", false)).await.unwrap_err();
+    store
+        .create(envelope(FhirVersion::R4, "pt-1", true))
+        .await
+        .unwrap();
+    let error = store
+        .create(envelope(FhirVersion::R4, "pt-1", false))
+        .await
+        .unwrap_err();
     assert!(matches!(error, Error::Duplicate(_)));
     assert_eq!(error.http_status(), 409);
 }
@@ -102,8 +114,17 @@ async fn read_unknown_id_rejected() {
 #[tokio::test]
 async fn vread_returns_every_historical_version() {
     let store = store();
-    store.create(envelope(FhirVersion::R4, "pt-2", true)).await.unwrap();
-    let updated = store.update(envelope(FhirVersion::R4, "pt-2", false), Some(&version("1"))).await.unwrap();
+    store
+        .create(envelope(FhirVersion::R4, "pt-2", true))
+        .await
+        .unwrap();
+    let updated = store
+        .update(
+            envelope(FhirVersion::R4, "pt-2", false),
+            Some(&version("1")),
+        )
+        .await
+        .unwrap();
     assert_eq!(updated.version_id().as_str(), "2");
 
     let v1 = store.vread(&id("pt-2"), &version("1")).await.unwrap();
@@ -113,7 +134,9 @@ async fn vread_returns_every_historical_version() {
 
     let v2 = store.vread(&id("pt-2"), &version("2")).await.unwrap();
     assert_eq!(v2.version_id().as_str(), "2");
-    assert!(std::str::from_utf8(v2.raw()).unwrap().contains("\"active\":false"));
+    assert!(std::str::from_utf8(v2.raw())
+        .unwrap()
+        .contains("\"active\":false"));
 
     let current = store.read(&id("pt-2")).await.unwrap();
     assert_eq!(current.version_id().as_str(), "2");
@@ -122,7 +145,10 @@ async fn vread_returns_every_historical_version() {
 #[tokio::test]
 async fn vread_unknown_id_and_version_rejected() {
     let store = store();
-    store.create(envelope(FhirVersion::R4, "pt-3", true)).await.unwrap();
+    store
+        .create(envelope(FhirVersion::R4, "pt-3", true))
+        .await
+        .unwrap();
 
     let missing_id = store.vread(&id("nobody"), &version("1")).await.unwrap_err();
     assert!(matches!(missing_id, Error::NotFound));
@@ -135,8 +161,17 @@ async fn vread_unknown_id_and_version_rejected() {
 #[tokio::test]
 async fn update_with_expected_version_creates_new_version() {
     let store = store();
-    store.create(envelope(FhirVersion::R4, "pt-4", true)).await.unwrap();
-    let updated = store.update(envelope(FhirVersion::R4, "pt-4", false), Some(&version("1"))).await.unwrap();
+    store
+        .create(envelope(FhirVersion::R4, "pt-4", true))
+        .await
+        .unwrap();
+    let updated = store
+        .update(
+            envelope(FhirVersion::R4, "pt-4", false),
+            Some(&version("1")),
+        )
+        .await
+        .unwrap();
     assert_eq!(updated.version_id().as_str(), "2");
     let current = store.read(&id("pt-4")).await.unwrap();
     assert_eq!(current.version_id().as_str(), "2");
@@ -145,9 +180,24 @@ async fn update_with_expected_version_creates_new_version() {
 #[tokio::test]
 async fn stale_expected_version_conflicts() {
     let store = store();
-    store.create(envelope(FhirVersion::R4, "pt-5", true)).await.unwrap();
-    store.update(envelope(FhirVersion::R4, "pt-5", false), Some(&version("1"))).await.unwrap();
-    let error = store.update(envelope(FhirVersion::R4, "pt-5", false), Some(&version("1"))).await.unwrap_err();
+    store
+        .create(envelope(FhirVersion::R4, "pt-5", true))
+        .await
+        .unwrap();
+    store
+        .update(
+            envelope(FhirVersion::R4, "pt-5", false),
+            Some(&version("1")),
+        )
+        .await
+        .unwrap();
+    let error = store
+        .update(
+            envelope(FhirVersion::R4, "pt-5", false),
+            Some(&version("1")),
+        )
+        .await
+        .unwrap_err();
     assert!(matches!(error, Error::VersionConflict));
     assert_eq!(error.http_status(), 409);
 }
@@ -155,13 +205,22 @@ async fn stale_expected_version_conflicts() {
 #[tokio::test]
 async fn noop_update_creates_no_version() {
     let store = store();
-    store.create(envelope(FhirVersion::R4, "pt-6", true)).await.unwrap();
+    store
+        .create(envelope(FhirVersion::R4, "pt-6", true))
+        .await
+        .unwrap();
     let current = store.read(&id("pt-6")).await.unwrap();
 
-    let first = store.update(current.clone(), Some(current.version_id())).await.unwrap();
+    let first = store
+        .update(current.clone(), Some(current.version_id()))
+        .await
+        .unwrap();
     assert_eq!(first.version_id().as_str(), "1");
 
-    let second = store.update(envelope(FhirVersion::R4, "pt-6", true), None).await.unwrap();
+    let second = store
+        .update(envelope(FhirVersion::R4, "pt-6", true), None)
+        .await
+        .unwrap();
     assert_eq!(second.version_id().as_str(), "1");
     assert_eq!(second.raw(), current.raw());
 
@@ -172,15 +231,24 @@ async fn noop_update_creates_no_version() {
 #[tokio::test]
 async fn update_without_expected_version_changes_content() {
     let store = store();
-    store.create(envelope(FhirVersion::R4, "pt-7", true)).await.unwrap();
-    let updated = store.update(envelope(FhirVersion::R4, "pt-7", false), None).await.unwrap();
+    store
+        .create(envelope(FhirVersion::R4, "pt-7", true))
+        .await
+        .unwrap();
+    let updated = store
+        .update(envelope(FhirVersion::R4, "pt-7", false), None)
+        .await
+        .unwrap();
     assert_eq!(updated.version_id().as_str(), "2");
 }
 
 #[tokio::test]
 async fn update_unknown_id_rejected() {
     let store = store();
-    let error = store.update(envelope(FhirVersion::R4, "nobody", true), None).await.unwrap_err();
+    let error = store
+        .update(envelope(FhirVersion::R4, "nobody", true), None)
+        .await
+        .unwrap_err();
     assert!(matches!(error, Error::NotFound));
     assert_eq!(error.http_status(), 404);
 }
@@ -188,40 +256,106 @@ async fn update_unknown_id_rejected() {
 #[tokio::test]
 async fn concurrent_updates_with_same_expected_version_one_conflicts() {
     let store = Arc::new(store());
-    store.create(envelope(FhirVersion::R4, "pt-8", true)).await.unwrap();
+    store
+        .create(envelope(FhirVersion::R4, "pt-8", true))
+        .await
+        .unwrap();
 
     let first = Arc::clone(&store);
     let second = Arc::clone(&store);
     let winner = tokio::spawn(async move {
-        first.update(envelope(FhirVersion::R4, "pt-8", false), Some(&version("1"))).await
+        first
+            .update(
+                envelope(FhirVersion::R4, "pt-8", false),
+                Some(&version("1")),
+            )
+            .await
     });
     let loser = tokio::spawn(async move {
-        second.update(envelope(FhirVersion::R4, "pt-8", false), Some(&version("1"))).await
+        second
+            .update(
+                envelope(FhirVersion::R4, "pt-8", false),
+                Some(&version("1")),
+            )
+            .await
     });
     let (winner, loser) = tokio::join!(winner, loser);
 
-    let outcomes = [winner.unwrap().err().map(|_| ()), loser.unwrap().err().map(|_| ())];
-    assert_eq!(outcomes.iter().filter(|o| o.is_none()).count(), 1, "one update must succeed");
-    assert_eq!(outcomes.iter().filter(|o| o.is_some()).count(), 1, "one update must conflict");
+    let outcomes = [
+        winner.unwrap().err().map(|_| ()),
+        loser.unwrap().err().map(|_| ()),
+    ];
+    assert_eq!(
+        outcomes.iter().filter(|o| o.is_none()).count(),
+        1,
+        "one update must succeed"
+    );
+    assert_eq!(
+        outcomes.iter().filter(|o| o.is_some()).count(),
+        1,
+        "one update must conflict"
+    );
 }
 
 #[tokio::test]
 async fn history_reaches_final_state_after_update_chain() {
     let store = store();
-    store.create(envelope(FhirVersion::R4, "pt-9", true)).await.unwrap();
-    store.update(envelope(FhirVersion::R4, "pt-9", false), Some(&version("1"))).await.unwrap();
-    let v3 = store.update(envelope(FhirVersion::R4, "pt-9", true), Some(&version("2"))).await.unwrap();
+    store
+        .create(envelope(FhirVersion::R4, "pt-9", true))
+        .await
+        .unwrap();
+    store
+        .update(
+            envelope(FhirVersion::R4, "pt-9", false),
+            Some(&version("1")),
+        )
+        .await
+        .unwrap();
+    let v3 = store
+        .update(envelope(FhirVersion::R4, "pt-9", true), Some(&version("2")))
+        .await
+        .unwrap();
     assert_eq!(v3.version_id().as_str(), "3");
-    assert_eq!(store.vread(&id("pt-9"), &version("3")).await.unwrap().version_id().as_str(), "3");
-    assert_eq!(store.vread(&id("pt-9"), &version("2")).await.unwrap().version_id().as_str(), "2");
-    assert_eq!(store.vread(&id("pt-9"), &version("1")).await.unwrap().version_id().as_str(), "1");
+    assert_eq!(
+        store
+            .vread(&id("pt-9"), &version("3"))
+            .await
+            .unwrap()
+            .version_id()
+            .as_str(),
+        "3"
+    );
+    assert_eq!(
+        store
+            .vread(&id("pt-9"), &version("2"))
+            .await
+            .unwrap()
+            .version_id()
+            .as_str(),
+        "2"
+    );
+    assert_eq!(
+        store
+            .vread(&id("pt-9"), &version("1"))
+            .await
+            .unwrap()
+            .version_id()
+            .as_str(),
+        "1"
+    );
 }
 
 #[tokio::test]
 async fn search_without_parameters_returns_every_current_resource() {
     let store = store();
-    store.create(envelope(FhirVersion::R4, "pt-1", true)).await.unwrap();
-    store.create(envelope(FhirVersion::R4, "pt-2", false)).await.unwrap();
+    store
+        .create(envelope(FhirVersion::R4, "pt-1", true))
+        .await
+        .unwrap();
+    store
+        .create(envelope(FhirVersion::R4, "pt-2", false))
+        .await
+        .unwrap();
     let page = store.search(&SearchQuery::default()).await.unwrap();
     assert_eq!(page.entries.len(), 2);
     assert_eq!(page.total, Some(2));
@@ -231,8 +365,14 @@ async fn search_without_parameters_returns_every_current_resource() {
 #[tokio::test]
 async fn search_matches_a_registered_parameter() {
     let store = store();
-    store.create(envelope(FhirVersion::R4, "pt-1", true)).await.unwrap();
-    store.create(envelope(FhirVersion::R4, "pt-2", false)).await.unwrap();
+    store
+        .create(envelope(FhirVersion::R4, "pt-1", true))
+        .await
+        .unwrap();
+    store
+        .create(envelope(FhirVersion::R4, "pt-2", false))
+        .await
+        .unwrap();
     let page = store.search(&query(&[("active", "true")])).await.unwrap();
     assert_eq!(page.entries.len(), 1);
     assert_eq!(page.entries[0].id().as_str(), "pt-1");
@@ -241,8 +381,14 @@ async fn search_matches_a_registered_parameter() {
 #[tokio::test]
 async fn search_matches_the_resource_id() {
     let store = store();
-    store.create(envelope(FhirVersion::R4, "pt-1", true)).await.unwrap();
-    store.create(envelope(FhirVersion::R4, "pt-2", true)).await.unwrap();
+    store
+        .create(envelope(FhirVersion::R4, "pt-1", true))
+        .await
+        .unwrap();
+    store
+        .create(envelope(FhirVersion::R4, "pt-2", true))
+        .await
+        .unwrap();
     let page = store.search(&query(&[("_id", "pt-2")])).await.unwrap();
     assert_eq!(page.entries.len(), 1);
     assert_eq!(page.entries[0].id().as_str(), "pt-2");
@@ -251,7 +397,10 @@ async fn search_matches_the_resource_id() {
 #[tokio::test]
 async fn search_restricted_to_a_type_ignores_other_types() {
     let store = store();
-    store.create(envelope(FhirVersion::R4, "pt-1", true)).await.unwrap();
+    store
+        .create(envelope(FhirVersion::R4, "pt-1", true))
+        .await
+        .unwrap();
     store.create(observation("ob-1")).await.unwrap();
     let patients = store
         .search(&SearchQuery::of_type("Patient".parse().unwrap()))
@@ -264,24 +413,57 @@ async fn search_restricted_to_a_type_ignores_other_types() {
 #[tokio::test]
 async fn search_reports_no_match_for_an_absent_element() {
     let store = store();
-    store.create(envelope(FhirVersion::R4, "pt-1", true)).await.unwrap();
-    assert!(store.search(&query(&[("gender", "female")])).await.unwrap().entries.is_empty());
+    store
+        .create(envelope(FhirVersion::R4, "pt-1", true))
+        .await
+        .unwrap();
+    assert!(store
+        .search(&query(&[("gender", "female")]))
+        .await
+        .unwrap()
+        .entries
+        .is_empty());
 }
 
 #[tokio::test]
 async fn search_sees_the_current_version_only() {
     let store = store();
-    store.create(envelope(FhirVersion::R4, "pt-1", true)).await.unwrap();
-    store.update(envelope(FhirVersion::R4, "pt-1", false), None).await.unwrap();
-    assert!(store.search(&query(&[("active", "true")])).await.unwrap().entries.is_empty());
-    assert_eq!(store.search(&query(&[("active", "false")])).await.unwrap().entries.len(), 1);
+    store
+        .create(envelope(FhirVersion::R4, "pt-1", true))
+        .await
+        .unwrap();
+    store
+        .update(envelope(FhirVersion::R4, "pt-1", false), None)
+        .await
+        .unwrap();
+    assert!(store
+        .search(&query(&[("active", "true")]))
+        .await
+        .unwrap()
+        .entries
+        .is_empty());
+    assert_eq!(
+        store
+            .search(&query(&[("active", "false")]))
+            .await
+            .unwrap()
+            .entries
+            .len(),
+        1
+    );
 }
 
 #[tokio::test]
 async fn search_filters_are_conjunctive() {
     let store = store();
-    store.create(envelope(FhirVersion::R4, "pt-1", true)).await.unwrap();
-    store.create(envelope(FhirVersion::R4, "pt-2", true)).await.unwrap();
+    store
+        .create(envelope(FhirVersion::R4, "pt-1", true))
+        .await
+        .unwrap();
+    store
+        .create(envelope(FhirVersion::R4, "pt-2", true))
+        .await
+        .unwrap();
     let both = query(&[("active", "true"), ("_id", "pt-2")]);
     assert_eq!(store.search(&both).await.unwrap().entries.len(), 1);
     let neither = query(&[("active", "false"), ("_id", "pt-2")]);
@@ -291,8 +473,14 @@ async fn search_filters_are_conjunctive() {
 #[tokio::test]
 async fn search_selects_the_members_of_a_list() {
     let store = store();
-    store.create(envelope(FhirVersion::R4, "pt-1", true)).await.unwrap();
-    store.create(envelope(FhirVersion::R4, "pt-2", true)).await.unwrap();
+    store
+        .create(envelope(FhirVersion::R4, "pt-1", true))
+        .await
+        .unwrap();
+    store
+        .create(envelope(FhirVersion::R4, "pt-2", true))
+        .await
+        .unwrap();
     store.create(list("ls-1", &["Patient/pt-2"])).await.unwrap();
     let mut selection = SearchQuery::of_type("Patient".parse().unwrap());
     selection.list = Some(id("ls-1"));
@@ -307,7 +495,10 @@ async fn search_selects_the_members_of_a_list() {
 #[tokio::test]
 async fn a_deleted_list_selects_nothing() {
     let store = store();
-    store.create(envelope(FhirVersion::R4, "pt-1", true)).await.unwrap();
+    store
+        .create(envelope(FhirVersion::R4, "pt-1", true))
+        .await
+        .unwrap();
     store.create(list("ls-2", &["Patient/pt-1"])).await.unwrap();
     store.delete(&id("ls-2")).await.unwrap();
     let mut selection = SearchQuery::of_type("Patient".parse().unwrap());
@@ -318,7 +509,10 @@ async fn a_deleted_list_selects_nothing() {
 #[tokio::test]
 async fn delete_appends_a_marker_version() {
     let store = store();
-    store.create(envelope(FhirVersion::R4, "pt-d1", true)).await.unwrap();
+    store
+        .create(envelope(FhirVersion::R4, "pt-d1", true))
+        .await
+        .unwrap();
     let marker = store.delete(&id("pt-d1")).await.unwrap();
     assert!(marker.is_deleted());
     assert_eq!(marker.version_id().as_str(), "2");
@@ -329,7 +523,10 @@ async fn delete_appends_a_marker_version() {
 #[tokio::test]
 async fn delete_leaves_earlier_versions_readable() {
     let store = store();
-    store.create(envelope(FhirVersion::R4, "pt-d2", true)).await.unwrap();
+    store
+        .create(envelope(FhirVersion::R4, "pt-d2", true))
+        .await
+        .unwrap();
     store.delete(&id("pt-d2")).await.unwrap();
     let first = store.vread(&id("pt-d2"), &version("1")).await.unwrap();
     assert!(!first.is_deleted());
@@ -339,68 +536,131 @@ async fn delete_leaves_earlier_versions_readable() {
 #[tokio::test]
 async fn delete_of_an_unknown_id_is_not_found() {
     let store = store();
-    assert_eq!(store.delete(&id("pt-none")).await.unwrap_err(), Error::NotFound);
+    assert_eq!(
+        store.delete(&id("pt-none")).await.unwrap_err(),
+        Error::NotFound
+    );
 }
 
 #[tokio::test]
 async fn deleting_twice_reports_the_resource_as_deleted() {
     let store = store();
-    store.create(envelope(FhirVersion::R4, "pt-d3", true)).await.unwrap();
+    store
+        .create(envelope(FhirVersion::R4, "pt-d3", true))
+        .await
+        .unwrap();
     store.delete(&id("pt-d3")).await.unwrap();
-    assert_eq!(store.delete(&id("pt-d3")).await.unwrap_err(), Error::Deleted);
+    assert_eq!(
+        store.delete(&id("pt-d3")).await.unwrap_err(),
+        Error::Deleted
+    );
 }
 
 #[tokio::test]
 async fn a_deleted_resource_is_invisible_to_search() {
     let store = store();
-    store.create(envelope(FhirVersion::R4, "pt-d4", true)).await.unwrap();
+    store
+        .create(envelope(FhirVersion::R4, "pt-d4", true))
+        .await
+        .unwrap();
     store.delete(&id("pt-d4")).await.unwrap();
-    assert!(store.search(&SearchQuery::default()).await.unwrap().entries.is_empty());
+    assert!(store
+        .search(&SearchQuery::default())
+        .await
+        .unwrap()
+        .entries
+        .is_empty());
 }
 
 #[tokio::test]
 async fn updating_a_deleted_resource_restores_it() {
     let store = store();
-    store.create(envelope(FhirVersion::R4, "pt-d5", true)).await.unwrap();
+    store
+        .create(envelope(FhirVersion::R4, "pt-d5", true))
+        .await
+        .unwrap();
     store.delete(&id("pt-d5")).await.unwrap();
-    let restored = store.update(envelope(FhirVersion::R4, "pt-d5", true), None).await.unwrap();
+    let restored = store
+        .update(envelope(FhirVersion::R4, "pt-d5", true), None)
+        .await
+        .unwrap();
     assert!(!restored.is_deleted());
     assert_eq!(restored.version_id().as_str(), "3");
-    assert_eq!(store.search(&SearchQuery::default()).await.unwrap().entries.len(), 1);
+    assert_eq!(
+        store
+            .search(&SearchQuery::default())
+            .await
+            .unwrap()
+            .entries
+            .len(),
+        1
+    );
 }
 
 #[tokio::test]
 async fn hard_delete_removes_every_version() {
     let store = store();
-    store.create(envelope(FhirVersion::R4, "pt-d6", true)).await.unwrap();
-    store.update(envelope(FhirVersion::R4, "pt-d6", false), None).await.unwrap();
+    store
+        .create(envelope(FhirVersion::R4, "pt-d6", true))
+        .await
+        .unwrap();
+    store
+        .update(envelope(FhirVersion::R4, "pt-d6", false), None)
+        .await
+        .unwrap();
     store.hard_delete(&id("pt-d6")).await.unwrap();
     assert_eq!(store.read(&id("pt-d6")).await.unwrap_err(), Error::NotFound);
-    assert_eq!(store.vread(&id("pt-d6"), &version("1")).await.unwrap_err(), Error::NotFound);
+    assert_eq!(
+        store.vread(&id("pt-d6"), &version("1")).await.unwrap_err(),
+        Error::NotFound
+    );
 }
 
 #[tokio::test]
 async fn hard_delete_of_an_unknown_id_is_not_found() {
     let store = store();
-    assert_eq!(store.hard_delete(&id("pt-none")).await.unwrap_err(), Error::NotFound);
+    assert_eq!(
+        store.hard_delete(&id("pt-none")).await.unwrap_err(),
+        Error::NotFound
+    );
 }
 
 #[tokio::test]
 async fn purge_history_keeps_the_current_version_only() {
     let store = store();
-    store.create(envelope(FhirVersion::R4, "pt-d7", true)).await.unwrap();
-    store.update(envelope(FhirVersion::R4, "pt-d7", false), None).await.unwrap();
+    store
+        .create(envelope(FhirVersion::R4, "pt-d7", true))
+        .await
+        .unwrap();
+    store
+        .update(envelope(FhirVersion::R4, "pt-d7", false), None)
+        .await
+        .unwrap();
     let purged = store.purge_history(&id("pt-d7")).await.unwrap();
     assert_eq!(purged, 1);
-    assert_eq!(store.read(&id("pt-d7")).await.unwrap().version_id().as_str(), "2");
-    assert_eq!(store.vread(&id("pt-d7"), &version("1")).await.unwrap_err(), Error::NotFound);
+    assert_eq!(
+        store
+            .read(&id("pt-d7"))
+            .await
+            .unwrap()
+            .version_id()
+            .as_str(),
+        "2"
+    );
+    assert_eq!(
+        store.vread(&id("pt-d7"), &version("1")).await.unwrap_err(),
+        Error::NotFound
+    );
     assert_eq!(store.purge_history(&id("pt-d7")).await.unwrap(), 0);
 }
 
 #[tokio::test]
 async fn purge_history_of_an_unknown_id_is_not_found() {
     let store = store();
-    assert_eq!(store.purge_history(&id("pt-none")).await.unwrap_err(), Error::NotFound);
+    assert_eq!(
+        store.purge_history(&id("pt-none")).await.unwrap_err(),
+        Error::NotFound
+    );
 }
 
 fn ticking_store() -> MemoryStore {
@@ -411,7 +671,6 @@ fn ticking_store() -> MemoryStore {
     }))
 }
 
-
 fn versions(page: &HistoryPage) -> Vec<String> {
     page.entries
         .iter()
@@ -421,8 +680,14 @@ fn versions(page: &HistoryPage) -> Vec<String> {
 
 async fn seeded() -> MemoryStore {
     let store = ticking_store();
-    store.create(envelope(FhirVersion::R4, "pt-h1", true)).await.unwrap();
-    store.update(envelope(FhirVersion::R4, "pt-h1", false), None).await.unwrap();
+    store
+        .create(envelope(FhirVersion::R4, "pt-h1", true))
+        .await
+        .unwrap();
+    store
+        .update(envelope(FhirVersion::R4, "pt-h1", false), None)
+        .await
+        .unwrap();
     store.delete(&id("pt-h1")).await.unwrap();
     store.create(observation("ob-h1")).await.unwrap();
     store
@@ -432,7 +697,10 @@ async fn seeded() -> MemoryStore {
 async fn instance_history_is_newest_first_and_keeps_the_delete_marker() {
     let store = seeded().await;
     let scope = HistoryScope::Instance("Patient".parse().unwrap(), id("pt-h1"));
-    let page = store.history(&scope, &HistoryQuery::default()).await.unwrap();
+    let page = store
+        .history(&scope, &HistoryQuery::default())
+        .await
+        .unwrap();
     assert_eq!(versions(&page), ["pt-h1/3", "pt-h1/2", "pt-h1/1"]);
     assert_eq!(page.total, 3);
     assert!(page.entries[0].is_deleted());
@@ -442,7 +710,10 @@ async fn instance_history_is_newest_first_and_keeps_the_delete_marker() {
 async fn oldest_first_reverses_the_order() {
     let store = seeded().await;
     let scope = HistoryScope::Instance("Patient".parse().unwrap(), id("pt-h1"));
-    let query = HistoryQuery { order: HistoryOrder::Oldest, ..HistoryQuery::default() };
+    let query = HistoryQuery {
+        order: HistoryOrder::Oldest,
+        ..HistoryQuery::default()
+    };
     let page = store.history(&scope, &query).await.unwrap();
     assert_eq!(versions(&page), ["pt-h1/1", "pt-h1/2", "pt-h1/3"]);
 }
@@ -451,16 +722,28 @@ async fn oldest_first_reverses_the_order() {
 async fn type_scope_covers_one_type_and_system_scope_covers_all() {
     let store = seeded().await;
     let typed = store
-        .history(&HistoryScope::Type("Patient".parse().unwrap()), &HistoryQuery::default())
+        .history(
+            &HistoryScope::Type("Patient".parse().unwrap()),
+            &HistoryQuery::default(),
+        )
         .await
         .unwrap();
     assert_eq!(typed.total, 3);
-    assert!(typed.entries.iter().all(|entry| entry.id().as_str() == "pt-h1"));
-    let system = store.history(&HistoryScope::System, &HistoryQuery::default()).await.unwrap();
+    assert!(typed
+        .entries
+        .iter()
+        .all(|entry| entry.id().as_str() == "pt-h1"));
+    let system = store
+        .history(&HistoryScope::System, &HistoryQuery::default())
+        .await
+        .unwrap();
     assert_eq!(system.total, 4);
     assert_eq!(versions(&system)[0], "ob-h1/1");
     let empty = store
-        .history(&HistoryScope::Type("Encounter".parse().unwrap()), &HistoryQuery::default())
+        .history(
+            &HistoryScope::Type("Encounter".parse().unwrap()),
+            &HistoryQuery::default(),
+        )
         .await
         .unwrap();
     assert_eq!(empty.total, 0);
@@ -474,48 +757,81 @@ async fn time_filters_select_versions_by_write_time() {
         since: Some(InstantPeriod::parse("2026-09-06T04:00:02Z").unwrap()),
         ..HistoryQuery::default()
     };
-    assert_eq!(versions(&store.history(&HistoryScope::System, &since).await.unwrap()), ["ob-h1/1", "pt-h1/3"]);
+    assert_eq!(
+        versions(&store.history(&HistoryScope::System, &since).await.unwrap()),
+        ["ob-h1/1", "pt-h1/3"]
+    );
 
     let before = HistoryQuery {
         before: Some(InstantPeriod::parse("2026-09-06T04:00:01Z").unwrap()),
         ..HistoryQuery::default()
     };
-    assert_eq!(versions(&store.history(&HistoryScope::System, &before).await.unwrap()), ["pt-h1/1"]);
+    assert_eq!(
+        versions(&store.history(&HistoryScope::System, &before).await.unwrap()),
+        ["pt-h1/1"]
+    );
 
     let at = HistoryQuery {
         at: Some(InstantPeriod::parse("2026-09-06T04:00:01Z").unwrap()),
         ..HistoryQuery::default()
     };
-    assert_eq!(versions(&store.history(&HistoryScope::System, &at).await.unwrap()), ["pt-h1/2"]);
+    assert_eq!(
+        versions(&store.history(&HistoryScope::System, &at).await.unwrap()),
+        ["pt-h1/2"]
+    );
 
     let day = HistoryQuery {
         at: Some(InstantPeriod::parse("2026-09-06").unwrap()),
         ..HistoryQuery::default()
     };
-    assert_eq!(store.history(&HistoryScope::System, &day).await.unwrap().total, 4);
+    assert_eq!(
+        store
+            .history(&HistoryScope::System, &day)
+            .await
+            .unwrap()
+            .total,
+        4
+    );
 }
 
 #[tokio::test]
 async fn paging_reports_the_total_beyond_the_page() {
     let store = seeded().await;
-    let first = HistoryQuery { count: 2, ..HistoryQuery::default() };
+    let first = HistoryQuery {
+        count: 2,
+        ..HistoryQuery::default()
+    };
     let page = store.history(&HistoryScope::System, &first).await.unwrap();
     assert_eq!(versions(&page), ["ob-h1/1", "pt-h1/3"]);
     assert_eq!(page.total, 4);
     assert_eq!(page.offset, 0);
 
-    let second = HistoryQuery { count: 2, offset: 2, ..HistoryQuery::default() };
+    let second = HistoryQuery {
+        count: 2,
+        offset: 2,
+        ..HistoryQuery::default()
+    };
     let page = store.history(&HistoryScope::System, &second).await.unwrap();
     assert_eq!(versions(&page), ["pt-h1/2", "pt-h1/1"]);
     assert_eq!(page.total, 4);
     assert_eq!(page.offset, 2);
 
-    let past_end = HistoryQuery { count: 2, offset: 9, ..HistoryQuery::default() };
-    let page = store.history(&HistoryScope::System, &past_end).await.unwrap();
+    let past_end = HistoryQuery {
+        count: 2,
+        offset: 9,
+        ..HistoryQuery::default()
+    };
+    let page = store
+        .history(&HistoryScope::System, &past_end)
+        .await
+        .unwrap();
     assert!(page.entries.is_empty());
     assert_eq!(page.total, 4);
 
-    let none = HistoryQuery { count: 0, ..HistoryQuery::default() };
+    let none = HistoryQuery {
+        count: 0,
+        ..HistoryQuery::default()
+    };
     let page = store.history(&HistoryScope::System, &none).await.unwrap();
     assert!(page.entries.is_empty());
     assert_eq!(page.total, 4);
@@ -525,9 +841,15 @@ async fn paging_reports_the_total_beyond_the_page() {
 async fn instance_history_of_an_unknown_id_is_not_found() {
     let store = seeded().await;
     let scope = HistoryScope::Instance("Patient".parse().unwrap(), id("pt-none"));
-    assert_eq!(store.history(&scope, &HistoryQuery::default()).await, Err(Error::NotFound));
+    assert_eq!(
+        store.history(&scope, &HistoryQuery::default()).await,
+        Err(Error::NotFound)
+    );
     let mismatch = HistoryScope::Instance("Observation".parse().unwrap(), id("pt-h1"));
-    assert_eq!(store.history(&mismatch, &HistoryQuery::default()).await, Err(Error::NotFound));
+    assert_eq!(
+        store.history(&mismatch, &HistoryQuery::default()).await,
+        Err(Error::NotFound)
+    );
 }
 
 fn value_set(id: &str, url: &str, codes: &[&str]) -> ResourceEnvelope {
@@ -571,7 +893,10 @@ fn coded_query(modifier: fhir_core::search::Modifier, url: &str) -> SearchQuery 
 #[tokio::test]
 async fn a_code_set_membership_filter_is_expanded_by_the_store() {
     let store = store();
-    store.create(value_set("vs-1", "http://x/vs", &["a", "b"])).await.unwrap();
+    store
+        .create(value_set("vs-1", "http://x/vs", &["a", "b"]))
+        .await
+        .unwrap();
     store.create(coded_observation("ob-1", "a")).await.unwrap();
     store.create(coded_observation("ob-2", "z")).await.unwrap();
     let inside = store
@@ -581,7 +906,10 @@ async fn a_code_set_membership_filter_is_expanded_by_the_store() {
     assert_eq!(inside.entries.len(), 1);
     assert_eq!(inside.entries[0].id().as_str(), "ob-1");
     let outside = store
-        .search(&coded_query(fhir_core::search::Modifier::NotIn, "http://x/vs"))
+        .search(&coded_query(
+            fhir_core::search::Modifier::NotIn,
+            "http://x/vs",
+        ))
         .await
         .unwrap();
     assert_eq!(outside.entries.len(), 1);
@@ -593,7 +921,10 @@ async fn an_unknown_code_set_is_an_invalid_parameter() {
     let store = store();
     store.create(coded_observation("ob-1", "a")).await.unwrap();
     let error = store
-        .search(&coded_query(fhir_core::search::Modifier::In, "http://x/none"))
+        .search(&coded_query(
+            fhir_core::search::Modifier::In,
+            "http://x/none",
+        ))
         .await
         .unwrap_err();
     assert!(matches!(error, Error::InvalidParameter(_)));
@@ -602,7 +933,10 @@ async fn an_unknown_code_set_is_an_invalid_parameter() {
 fn by_id(values: &[&str]) -> SearchQuery {
     let resource_type: fhir_core::ResourceType = "Patient".parse().unwrap();
     let def = lookup(Some(resource_type), "_id").unwrap();
-    let values = values.iter().map(|value| def.value(value).unwrap()).collect();
+    let values = values
+        .iter()
+        .map(|value| def.value(value).unwrap())
+        .collect();
     SearchQuery {
         types: vec![resource_type],
         filters: vec![Filter::new("_id", def.target.clone(), values)],
@@ -614,7 +948,10 @@ fn by_id(values: &[&str]) -> SearchQuery {
 async fn a_repeated_query_reuses_one_cached_plan() {
     let store = store();
     for name in ["pt-p1", "pt-p2"] {
-        store.create(envelope(FhirVersion::R4, name, true)).await.unwrap();
+        store
+            .create(envelope(FhirVersion::R4, name, true))
+            .await
+            .unwrap();
     }
     let query = by_id(&["pt-p1"]);
     for _ in 0..3 {
@@ -633,10 +970,21 @@ async fn a_plan_that_regresses_is_disabled_and_results_stay_right() {
     let mut names = Vec::new();
     for index in 0..40 {
         let name = format!("pt-q{index}");
-        store.create(envelope(FhirVersion::R4, &name, true)).await.unwrap();
+        store
+            .create(envelope(FhirVersion::R4, &name, true))
+            .await
+            .unwrap();
         names.push(name);
     }
-    assert_eq!(store.search(&by_id(&["pt-q0"])).await.unwrap().entries.len(), 1);
+    assert_eq!(
+        store
+            .search(&by_id(&["pt-q0"]))
+            .await
+            .unwrap()
+            .entries
+            .len(),
+        1
+    );
     let wide: Vec<&str> = names.iter().map(String::as_str).collect();
     assert_eq!(store.search(&by_id(&wide)).await.unwrap().entries.len(), 40);
     assert!(store.plans()[0].disabled);
@@ -648,7 +996,10 @@ async fn a_plan_that_regresses_is_disabled_and_results_stay_right() {
 #[tokio::test]
 async fn a_repeated_filter_is_simplified_away() {
     let store = store();
-    store.create(envelope(FhirVersion::R4, "pt-s9", true)).await.unwrap();
+    store
+        .create(envelope(FhirVersion::R4, "pt-s9", true))
+        .await
+        .unwrap();
     let one = by_id(&["pt-s9"]);
     let mut twice = one.clone();
     twice.filters.push(twice.filters[0].clone());
@@ -663,6 +1014,7 @@ async fn the_shared_contract_holds_over_this_adapter() {
     fhir_store_contract::versioning(&store()).await;
     fhir_store_contract::removal(&store()).await;
     fhir_store_contract::record(&store()).await;
+    fhir_store_contract::restore(&store()).await;
     fhir_store_contract::readiness(&store()).await;
     fhir_store_contract::atomicity(&store()).await;
     fhir_store_contract::scoped_search(&store()).await;

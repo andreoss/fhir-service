@@ -3,10 +3,10 @@ use fhir_core::search::ParameterSpec;
 use fhir_core::{Error, ResourceEnvelope, ResourceId, VersionId};
 
 use crate::history::{HistoryPage, HistoryQuery, HistoryScope};
+use crate::parameter::IndexReport;
 use crate::scope::StoreScope;
-use std::sync::Arc;
-use crate::parameter::{IndexReport};
 use crate::search::{SearchPage, SearchQuery};
+use std::sync::Arc;
 
 pub type SearchParam = (String, String);
 
@@ -33,6 +33,12 @@ pub trait ResourceStore: Send + Sync {
     async fn hard_delete(&self, id: &ResourceId) -> Result<(), Error>;
 
     async fn purge_history(&self, id: &ResourceId) -> Result<usize, Error>;
+
+    async fn restore_version(&self, _envelope: ResourceEnvelope) -> Result<bool, Error> {
+        Err(Error::UnsupportedParameter(
+            "this store cannot restore versions".to_owned(),
+        ))
+    }
 
     async fn history(
         &self,
@@ -172,8 +178,12 @@ mod tests {
     async fn a_store_without_an_index_says_so_rather_than_pretending() {
         let store = Bare;
         let id = ResourceId::parse("one").expect("a valid id");
-        assert!(unsupported(store.index_parameter(&spec()).await.unwrap_err()));
-        assert!(unsupported(store.drop_parameter("urn:p:a").await.unwrap_err()));
+        assert!(unsupported(
+            store.index_parameter(&spec()).await.unwrap_err()
+        ));
+        assert!(unsupported(
+            store.drop_parameter("urn:p:a").await.unwrap_err()
+        ));
         assert!(unsupported(store.reindex(&[spec()]).await.unwrap_err()));
         assert!(unsupported(
             store.reindex_resource(&[spec()], &id).await.unwrap_err()
@@ -185,7 +195,10 @@ mod tests {
     #[tokio::test]
     async fn a_store_without_an_atomic_scope_says_so_rather_than_pretending() {
         let store = Bare;
-        assert!(matches!(store.begin().await.err(), Some(Error::Internal(_))));
+        assert!(matches!(
+            store.begin().await.err(),
+            Some(Error::Internal(_))
+        ));
         assert!(store.health().await.is_ok());
     }
 }

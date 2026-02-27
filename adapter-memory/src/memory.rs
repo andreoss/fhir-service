@@ -6,10 +6,9 @@ use fhir_core::search::{
 use fhir_core::search::{IndexKey, ParameterSpec, SearchValue};
 use fhir_core::{Error, ResourceEnvelope, ResourceId, VersionId};
 use fhir_store::{
-    system_clock, Clock,
-    HistoryOrder, HistoryPage, HistoryQuery, HistoryScope, IndexFailure, IndexReport, Plan,
-    PlanCache, PlanKey, PlanStat,
-    ResourceStore, SearchPage, SearchQuery, SortDirection, SortKey, StoreScope, TotalMode,
+    system_clock, Clock, HistoryOrder, HistoryPage, HistoryQuery, HistoryScope, IndexFailure,
+    IndexReport, Plan, PlanCache, PlanKey, PlanStat, ResourceStore, SearchPage, SearchQuery,
+    SortDirection, SortKey, StoreScope, TotalMode,
 };
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -23,7 +22,11 @@ fn body_of(envelope: &ResourceEnvelope) -> Result<Value, Error> {
 }
 
 fn reference_of(envelope: &ResourceEnvelope) -> String {
-    format!("{}/{}", envelope.resource_type().as_str(), envelope.id().as_str())
+    format!(
+        "{}/{}",
+        envelope.resource_type().as_str(),
+        envelope.id().as_str()
+    )
 }
 
 fn list_members(guard: &StoreMap, id: &ResourceId) -> Result<HashSet<String>, Error> {
@@ -42,7 +45,9 @@ fn list_members(guard: &StoreMap, id: &ResourceId) -> Result<HashSet<String>, Er
 
 fn code_set(guard: &StoreMap, url: &str) -> Result<Vec<fhir_core::SearchValue>, Error> {
     for versions in guard.values() {
-        let Some(current) = versions.last() else { continue };
+        let Some(current) = versions.last() else {
+            continue;
+        };
         if current.is_deleted() || current.resource_type().as_str() != "ValueSet" {
             continue;
         }
@@ -51,7 +56,9 @@ fn code_set(guard: &StoreMap, url: &str) -> Result<Vec<fhir_core::SearchValue>, 
             return Ok(fhir_core::search::code_set(&body));
         }
     }
-    Err(Error::InvalidParameter(format!("code set {url:?} is unknown")))
+    Err(Error::InvalidParameter(format!(
+        "code set {url:?} is unknown"
+    )))
 }
 
 fn expanded(guard: &StoreMap, filter: &Filter) -> Result<Filter, Error> {
@@ -121,7 +128,9 @@ fn resolve(
     let inner = resolve(guard, &chain.next, grant)?;
     let mut refs = HashSet::new();
     for versions in guard.values() {
-        let Some(current) = versions.last() else { continue };
+        let Some(current) = versions.last() else {
+            continue;
+        };
         if current.is_deleted() {
             continue;
         }
@@ -155,9 +164,7 @@ fn resolve(
 
 fn holds(resolved: &Resolved, envelope: &ResourceEnvelope, body: &Value) -> bool {
     match resolved {
-        Resolved::Direct(filter) => {
-            filter.matches(envelope.id(), envelope.last_updated(), body)
-        }
+        Resolved::Direct(filter) => filter.matches(envelope.id(), envelope.last_updated(), body),
         Resolved::Forward { target, refs } => at(target, body)
             .iter()
             .any(|text| refs.contains(&normalized(text))),
@@ -167,11 +174,7 @@ fn holds(resolved: &Resolved, envelope: &ResourceEnvelope, body: &Value) -> bool
     }
 }
 
-fn in_compartment(
-    compartment: &Compartment,
-    envelope: &ResourceEnvelope,
-    body: &Value,
-) -> bool {
+fn in_compartment(compartment: &Compartment, envelope: &ResourceEnvelope, body: &Value) -> bool {
     fhir_core::search::compartment::contains(compartment, envelope.resource_type(), body)
 }
 
@@ -241,8 +244,13 @@ fn pulled_in(
                         }
                         let body = body_of(envelope)?;
                         for text in linked(rule, &body) {
-                            let Some(target) = stored(guard, &text) else { continue };
-                            if rule.target.is_some_and(|kind| kind != target.resource_type()) {
+                            let Some(target) = stored(guard, &text) else {
+                                continue;
+                            };
+                            if rule
+                                .target
+                                .is_some_and(|kind| kind != target.resource_type())
+                            {
                                 continue;
                             }
                             if !admitted(grant, target, &body_of(target)?) {
@@ -257,12 +265,17 @@ fn pulled_in(
                 IncludeDirection::Reverse => {
                     let mut wanted = HashSet::new();
                     for envelope in &frontier {
-                        if rule.target.is_none_or(|kind| kind == envelope.resource_type()) {
+                        if rule
+                            .target
+                            .is_none_or(|kind| kind == envelope.resource_type())
+                        {
                             record(&mut wanted, &reference_of(envelope));
                         }
                     }
                     for versions in guard.values() {
-                        let Some(current) = versions.last() else { continue };
+                        let Some(current) = versions.last() else {
+                            continue;
+                        };
                         if current.is_deleted() || !rule.covers(current.resource_type()) {
                             continue;
                         }
@@ -290,8 +303,18 @@ fn pulled_in(
 fn order(matches: &mut [(ResourceEnvelope, Value)], keys: &[SortKey]) {
     matches.sort_by(|left, right| {
         for key in keys {
-            let a = fhir_core::search::sort_value(&key.target, left.0.id(), left.0.last_updated(), &left.1);
-            let b = fhir_core::search::sort_value(&key.target, right.0.id(), right.0.last_updated(), &right.1);
+            let a = fhir_core::search::sort_value(
+                &key.target,
+                left.0.id(),
+                left.0.last_updated(),
+                &left.1,
+            );
+            let b = fhir_core::search::sort_value(
+                &key.target,
+                right.0.id(),
+                right.0.last_updated(),
+                &right.1,
+            );
             let ordering = match key.direction {
                 SortDirection::Ascending => a.cmp(&b),
                 SortDirection::Descending => b.cmp(&a),
@@ -301,7 +324,6 @@ fn order(matches: &mut [(ResourceEnvelope, Value)], keys: &[SortKey]) {
             }
         }
         left.0.id().as_str().cmp(right.0.id().as_str())
-
     });
 }
 
@@ -444,7 +466,11 @@ impl Default for MemoryStore {
 }
 
 fn version_number(envelope: &ResourceEnvelope) -> u64 {
-    envelope.version_id().as_str().parse::<u64>().unwrap_or_default()
+    envelope
+        .version_id()
+        .as_str()
+        .parse::<u64>()
+        .unwrap_or_default()
 }
 
 fn next_version(current: &VersionId) -> Result<VersionId, Error> {
@@ -457,6 +483,14 @@ fn next_version(current: &VersionId) -> Result<VersionId, Error> {
     VersionId::parse(&next.to_string())
 }
 
+fn repeated(envelope: &ResourceEnvelope) -> Error {
+    Error::Duplicate(format!(
+        "version {} of {:?} is restored twice with a different body",
+        envelope.version_id().as_str(),
+        envelope.id().as_str()
+    ))
+}
+
 #[async_trait]
 impl ResourceStore for MemoryStore {
     async fn create(&self, envelope: ResourceEnvelope) -> Result<ResourceEnvelope, Error> {
@@ -466,7 +500,10 @@ impl ResourceStore for MemoryStore {
             .write()
             .map_err(|_| Error::Internal("store lock poisoned".to_owned()))?;
         if guard.contains_key(envelope.id()) {
-            return Err(Error::Duplicate(format!("id {:?} already exists", envelope.id().as_str())));
+            return Err(Error::Duplicate(format!(
+                "id {:?} already exists",
+                envelope.id().as_str()
+            )));
         }
         let first: VersionId = "1".parse()?;
         let stored = envelope.stored_with(first, (self.clock)())?;
@@ -539,7 +576,9 @@ impl ResourceStore for MemoryStore {
         let mut matches: Vec<(ResourceEnvelope, Value)> = Vec::new();
         for versions in candidates {
             examined += 1;
-            let Some(current) = versions.last() else { continue };
+            let Some(current) = versions.last() else {
+                continue;
+            };
             if current.is_deleted() {
                 continue;
             }
@@ -630,7 +669,9 @@ impl ResourceStore for MemoryStore {
                 report: IndexReport::empty(&spec.url),
             };
             for versions in guard.values() {
-                let Some(current) = versions.last() else { continue };
+                let Some(current) = versions.last() else {
+                    continue;
+                };
                 if current.is_deleted() || !spec.base.contains(&current.resource_type()) {
                     continue;
                 }
@@ -721,10 +762,12 @@ impl ResourceStore for MemoryStore {
             .indexes
             .write()
             .map_err(|_| Error::Internal("index lock poisoned".to_owned()))?;
-        indexes.entry(spec.url.clone()).or_insert_with(|| ParamIndex {
-            entries: HashMap::new(),
-            report: IndexReport::empty(&spec.url),
-        });
+        indexes
+            .entry(spec.url.clone())
+            .or_insert_with(|| ParamIndex {
+                entries: HashMap::new(),
+                report: IndexReport::empty(&spec.url),
+            });
         Ok(())
     }
 
@@ -740,10 +783,17 @@ impl ResourceStore for MemoryStore {
         let mut matches: Vec<ResourceEnvelope> = match scope {
             HistoryScope::Instance(resource_type, id) => {
                 let versions = guard.get(id).ok_or(Error::NotFound)?;
-                if versions.first().is_none_or(|first| first.resource_type() != *resource_type) {
+                if versions
+                    .first()
+                    .is_none_or(|first| first.resource_type() != *resource_type)
+                {
                     return Err(Error::NotFound);
                 }
-                versions.iter().filter(|entry| query.keeps(entry)).cloned().collect()
+                versions
+                    .iter()
+                    .filter(|entry| query.keeps(entry))
+                    .cloned()
+                    .collect()
             }
             HistoryScope::Type(resource_type) => guard
                 .values()
@@ -769,7 +819,11 @@ impl ResourceStore for MemoryStore {
             matches.reverse();
         }
         let total = matches.len();
-        let entries = matches.into_iter().skip(query.offset).take(query.count).collect();
+        let entries = matches
+            .into_iter()
+            .skip(query.offset)
+            .take(query.count)
+            .collect();
         Ok(HistoryPage {
             entries,
             total,
@@ -842,6 +896,33 @@ impl ResourceStore for MemoryStore {
         let stored = envelope.stored_with(next_version(current.version_id())?, (self.clock)())?;
         versions.push(stored.clone());
         Ok(stored)
+    }
+
+    async fn restore_version(&self, envelope: ResourceEnvelope) -> Result<bool, Error> {
+        let _hold = self.hold().await;
+        let mut guard = self
+            .inner
+            .write()
+            .map_err(|_| Error::Internal("store lock poisoned".to_owned()))?;
+        if let Some(versions) = guard.get(envelope.id()) {
+            if let Some(held) = versions
+                .iter()
+                .find(|version| version.version_id() == envelope.version_id())
+            {
+                let same = held.is_deleted() == envelope.is_deleted()
+                    && held.last_updated() == envelope.last_updated()
+                    && held.content_eq(&envelope);
+                if same {
+                    return Ok(false);
+                }
+                return Err(repeated(&envelope));
+            }
+        }
+        guard
+            .entry(envelope.id().clone())
+            .or_default()
+            .push(envelope);
+        Ok(true)
     }
 
     async fn delete(&self, id: &ResourceId) -> Result<ResourceEnvelope, Error> {

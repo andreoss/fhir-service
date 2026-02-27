@@ -2,11 +2,12 @@ use crate::compile::Bind;
 use crate::extract::{rows_of, Rows};
 use crate::fault::{self, Policy};
 use crate::migration::Migrator;
-use fhir_store::Namespace;
 use crate::row::{envelope_of, Record, COLUMNS};
+use crate::throttle::{Admission, Throttle};
 use async_trait::async_trait;
 use fhir_core::search::{for_type, ParamDef, ParameterSpec};
 use fhir_core::{Error, ResourceEnvelope, ResourceId, VersionId};
+use fhir_store::Namespace;
 use fhir_store::{
     system_clock, Clock, HistoryOrder, HistoryPage, HistoryQuery, HistoryScope, IndexReport,
     PlanCache, PlanStat, ResourceStore, SearchPage, SearchQuery, StoreScope,
@@ -14,10 +15,9 @@ use fhir_store::{
 use serde_json::Value;
 use sqlx::postgres::PgRow;
 use sqlx::{PgConnection, PgPool, Postgres, Row, Transaction};
-use tokio::sync::{Mutex, OwnedMutexGuard};
 use std::collections::HashMap;
-use crate::throttle::{Admission, Throttle};
 use std::sync::{Arc, RwLock};
+use tokio::sync::{Mutex, OwnedMutexGuard};
 
 const POOL_SIZE: u32 = 16;
 const PROBE: std::time::Duration = std::time::Duration::from_secs(2);
@@ -61,6 +61,14 @@ fn version_number(version: &VersionId) -> Result<i64, Error> {
 fn next_version(current: &VersionId) -> Result<VersionId, Error> {
     let number = version_number(current)?;
     VersionId::parse(&(number + 1).to_string())
+}
+
+fn repeated(envelope: &ResourceEnvelope) -> Error {
+    Error::Duplicate(format!(
+        "version {} of {:?} is restored twice with a different body",
+        envelope.version_id().as_str(),
+        envelope.id().as_str()
+    ))
 }
 
 type Current = Record;
@@ -307,7 +315,10 @@ impl RelationalStore {
     }
 
     pub(crate) async fn forget_record(&self, url: &str) -> Result<(), Error> {
-        let statement = format!("delete from {} where url = $1", self.table("parameter_index"));
+        let statement = format!(
+            "delete from {} where url = $1",
+            self.table("parameter_index")
+        );
         let binds = [Bind::Text(url.to_owned())];
         self.ran(&statement, &binds, "dropping an index state")
             .await?;
@@ -456,6 +467,25 @@ impl RelationalStore {
         found.map(|row| Record::of(&row)).transpose()
     }
 
+    async fn version_in(
+        &self,
+        transaction: &mut PgConnection,
+        id: &ResourceId,
+        version: &VersionId,
+    ) -> Result<Option<Record>, Error> {
+        let statement = format!(
+            "select {COLUMNS} from {} where resource_id = $1 and version_number = $2",
+            self.table("resource")
+        );
+        let found = sqlx::query(&statement)
+            .bind(id.as_str())
+            .bind(version_number(version)?)
+            .fetch_optional(&mut *transaction)
+            .await
+            .map_err(|error| faulted("reading a version", error))?;
+        found.map(|row| Record::of(&row)).transpose()
+    }
+
     async fn clear_index(
         &self,
         transaction: &mut PgConnection,
@@ -508,11 +538,14 @@ impl RelationalStore {
             .bind(key.seconds())
             .bind(key.nanos() as i32)
             .bind(envelope.is_deleted())
-            .bind(packed).bind(encoding.as_str())
+            .bind(packed)
+            .bind(encoding.as_str())
             .fetch_one(&mut *transaction)
             .await
             .map_err(|error| faulted("writing a version", error))?;
-        let surrogate: i64 = row.try_get("surrogate_id").map_err(|error| faulted("writing a version", error))?;
+        let surrogate: i64 = row
+            .try_get("surrogate_id")
+            .map_err(|error| faulted("writing a version", error))?;
         if !envelope.is_deleted() {
             let body = body_of(envelope)?;
             let rows = rows_of(envelope, &body, &self.defs(envelope));
@@ -537,12 +570,42 @@ impl RelationalStore {
             );
             sqlx::query(&statement)
                 .bind(surrogate)
-                .bind(rows.tokens.iter().map(|row| row.param.clone()).collect::<Vec<String>>())
-                .bind(rows.tokens.iter().map(|row| row.slot.clone()).collect::<Vec<String>>())
-                .bind(rows.tokens.iter().map(|row| row.ordinal).collect::<Vec<i32>>())
-                .bind(rows.tokens.iter().map(|row| row.system.clone()).collect::<Vec<Option<String>>>())
-                .bind(rows.tokens.iter().map(|row| row.code.clone()).collect::<Vec<String>>())
-                .bind(rows.tokens.iter().map(|row| row.code_tail.clone()).collect::<Vec<Option<String>>>())
+                .bind(
+                    rows.tokens
+                        .iter()
+                        .map(|row| row.param.clone())
+                        .collect::<Vec<String>>(),
+                )
+                .bind(
+                    rows.tokens
+                        .iter()
+                        .map(|row| row.slot.clone())
+                        .collect::<Vec<String>>(),
+                )
+                .bind(
+                    rows.tokens
+                        .iter()
+                        .map(|row| row.ordinal)
+                        .collect::<Vec<i32>>(),
+                )
+                .bind(
+                    rows.tokens
+                        .iter()
+                        .map(|row| row.system.clone())
+                        .collect::<Vec<Option<String>>>(),
+                )
+                .bind(
+                    rows.tokens
+                        .iter()
+                        .map(|row| row.code.clone())
+                        .collect::<Vec<String>>(),
+                )
+                .bind(
+                    rows.tokens
+                        .iter()
+                        .map(|row| row.code_tail.clone())
+                        .collect::<Vec<Option<String>>>(),
+                )
                 .execute(&mut *transaction)
                 .await
                 .map_err(|error| faulted("indexing coded values", error))?;
@@ -557,11 +620,36 @@ impl RelationalStore {
             );
             sqlx::query(&statement)
                 .bind(surrogate)
-                .bind(rows.texts.iter().map(|row| row.param.clone()).collect::<Vec<String>>())
-                .bind(rows.texts.iter().map(|row| row.slot.clone()).collect::<Vec<String>>())
-                .bind(rows.texts.iter().map(|row| row.ordinal).collect::<Vec<i32>>())
-                .bind(rows.texts.iter().map(|row| row.value.clone()).collect::<Vec<String>>())
-                .bind(rows.texts.iter().map(|row| row.folded.clone()).collect::<Vec<String>>())
+                .bind(
+                    rows.texts
+                        .iter()
+                        .map(|row| row.param.clone())
+                        .collect::<Vec<String>>(),
+                )
+                .bind(
+                    rows.texts
+                        .iter()
+                        .map(|row| row.slot.clone())
+                        .collect::<Vec<String>>(),
+                )
+                .bind(
+                    rows.texts
+                        .iter()
+                        .map(|row| row.ordinal)
+                        .collect::<Vec<i32>>(),
+                )
+                .bind(
+                    rows.texts
+                        .iter()
+                        .map(|row| row.value.clone())
+                        .collect::<Vec<String>>(),
+                )
+                .bind(
+                    rows.texts
+                        .iter()
+                        .map(|row| row.folded.clone())
+                        .collect::<Vec<String>>(),
+                )
                 .execute(&mut *transaction)
                 .await
                 .map_err(|error| faulted("indexing textual values", error))?;
@@ -575,10 +663,30 @@ impl RelationalStore {
             );
             sqlx::query(&statement)
                 .bind(surrogate)
-                .bind(rows.numbers.iter().map(|row| row.param.clone()).collect::<Vec<String>>())
-                .bind(rows.numbers.iter().map(|row| row.slot.clone()).collect::<Vec<String>>())
-                .bind(rows.numbers.iter().map(|row| row.ordinal).collect::<Vec<i32>>())
-                .bind(rows.numbers.iter().map(|row| row.value).collect::<Vec<f64>>())
+                .bind(
+                    rows.numbers
+                        .iter()
+                        .map(|row| row.param.clone())
+                        .collect::<Vec<String>>(),
+                )
+                .bind(
+                    rows.numbers
+                        .iter()
+                        .map(|row| row.slot.clone())
+                        .collect::<Vec<String>>(),
+                )
+                .bind(
+                    rows.numbers
+                        .iter()
+                        .map(|row| row.ordinal)
+                        .collect::<Vec<i32>>(),
+                )
+                .bind(
+                    rows.numbers
+                        .iter()
+                        .map(|row| row.value)
+                        .collect::<Vec<f64>>(),
+                )
                 .execute(&mut *transaction)
                 .await
                 .map_err(|error| faulted("indexing decimal values", error))?;
@@ -593,13 +701,48 @@ impl RelationalStore {
             );
             sqlx::query(&statement)
                 .bind(surrogate)
-                .bind(rows.dates.iter().map(|row| row.param.clone()).collect::<Vec<String>>())
-                .bind(rows.dates.iter().map(|row| row.slot.clone()).collect::<Vec<String>>())
-                .bind(rows.dates.iter().map(|row| row.ordinal).collect::<Vec<i32>>())
-                .bind(rows.dates.iter().map(|row| row.low_secs).collect::<Vec<i64>>())
-                .bind(rows.dates.iter().map(|row| row.low_nanos).collect::<Vec<i32>>())
-                .bind(rows.dates.iter().map(|row| row.high_secs).collect::<Vec<i64>>())
-                .bind(rows.dates.iter().map(|row| row.high_nanos).collect::<Vec<i32>>())
+                .bind(
+                    rows.dates
+                        .iter()
+                        .map(|row| row.param.clone())
+                        .collect::<Vec<String>>(),
+                )
+                .bind(
+                    rows.dates
+                        .iter()
+                        .map(|row| row.slot.clone())
+                        .collect::<Vec<String>>(),
+                )
+                .bind(
+                    rows.dates
+                        .iter()
+                        .map(|row| row.ordinal)
+                        .collect::<Vec<i32>>(),
+                )
+                .bind(
+                    rows.dates
+                        .iter()
+                        .map(|row| row.low_secs)
+                        .collect::<Vec<i64>>(),
+                )
+                .bind(
+                    rows.dates
+                        .iter()
+                        .map(|row| row.low_nanos)
+                        .collect::<Vec<i32>>(),
+                )
+                .bind(
+                    rows.dates
+                        .iter()
+                        .map(|row| row.high_secs)
+                        .collect::<Vec<i64>>(),
+                )
+                .bind(
+                    rows.dates
+                        .iter()
+                        .map(|row| row.high_nanos)
+                        .collect::<Vec<i32>>(),
+                )
                 .execute(&mut *transaction)
                 .await
                 .map_err(|error| faulted("indexing spans of time", error))?;
@@ -614,13 +757,48 @@ impl RelationalStore {
             );
             sqlx::query(&statement)
                 .bind(surrogate)
-                .bind(rows.quantities.iter().map(|row| row.param.clone()).collect::<Vec<String>>())
-                .bind(rows.quantities.iter().map(|row| row.slot.clone()).collect::<Vec<String>>())
-                .bind(rows.quantities.iter().map(|row| row.ordinal).collect::<Vec<i32>>())
-                .bind(rows.quantities.iter().map(|row| row.value).collect::<Vec<f64>>())
-                .bind(rows.quantities.iter().map(|row| row.system.clone()).collect::<Vec<Option<String>>>())
-                .bind(rows.quantities.iter().map(|row| row.code.clone()).collect::<Vec<Option<String>>>())
-                .bind(rows.quantities.iter().map(|row| row.structured).collect::<Vec<bool>>())
+                .bind(
+                    rows.quantities
+                        .iter()
+                        .map(|row| row.param.clone())
+                        .collect::<Vec<String>>(),
+                )
+                .bind(
+                    rows.quantities
+                        .iter()
+                        .map(|row| row.slot.clone())
+                        .collect::<Vec<String>>(),
+                )
+                .bind(
+                    rows.quantities
+                        .iter()
+                        .map(|row| row.ordinal)
+                        .collect::<Vec<i32>>(),
+                )
+                .bind(
+                    rows.quantities
+                        .iter()
+                        .map(|row| row.value)
+                        .collect::<Vec<f64>>(),
+                )
+                .bind(
+                    rows.quantities
+                        .iter()
+                        .map(|row| row.system.clone())
+                        .collect::<Vec<Option<String>>>(),
+                )
+                .bind(
+                    rows.quantities
+                        .iter()
+                        .map(|row| row.code.clone())
+                        .collect::<Vec<Option<String>>>(),
+                )
+                .bind(
+                    rows.quantities
+                        .iter()
+                        .map(|row| row.structured)
+                        .collect::<Vec<bool>>(),
+                )
                 .execute(&mut *transaction)
                 .await
                 .map_err(|error| faulted("indexing measured values", error))?;
@@ -635,12 +813,42 @@ impl RelationalStore {
             );
             sqlx::query(&statement)
                 .bind(surrogate)
-                .bind(rows.references.iter().map(|row| row.param.clone()).collect::<Vec<String>>())
-                .bind(rows.references.iter().map(|row| row.slot.clone()).collect::<Vec<String>>())
-                .bind(rows.references.iter().map(|row| row.ordinal).collect::<Vec<i32>>())
-                .bind(rows.references.iter().map(|row| row.ref_full.clone()).collect::<Vec<String>>())
-                .bind(rows.references.iter().map(|row| row.ref_id.clone()).collect::<Vec<String>>())
-                .bind(rows.references.iter().map(|row| row.ref_type.clone()).collect::<Vec<Option<String>>>())
+                .bind(
+                    rows.references
+                        .iter()
+                        .map(|row| row.param.clone())
+                        .collect::<Vec<String>>(),
+                )
+                .bind(
+                    rows.references
+                        .iter()
+                        .map(|row| row.slot.clone())
+                        .collect::<Vec<String>>(),
+                )
+                .bind(
+                    rows.references
+                        .iter()
+                        .map(|row| row.ordinal)
+                        .collect::<Vec<i32>>(),
+                )
+                .bind(
+                    rows.references
+                        .iter()
+                        .map(|row| row.ref_full.clone())
+                        .collect::<Vec<String>>(),
+                )
+                .bind(
+                    rows.references
+                        .iter()
+                        .map(|row| row.ref_id.clone())
+                        .collect::<Vec<String>>(),
+                )
+                .bind(
+                    rows.references
+                        .iter()
+                        .map(|row| row.ref_type.clone())
+                        .collect::<Vec<Option<String>>>(),
+                )
                 .execute(&mut *transaction)
                 .await
                 .map_err(|error| faulted("indexing pointers", error))?;
@@ -654,10 +862,30 @@ impl RelationalStore {
             );
             sqlx::query(&statement)
                 .bind(surrogate)
-                .bind(rows.uris.iter().map(|row| row.param.clone()).collect::<Vec<String>>())
-                .bind(rows.uris.iter().map(|row| row.slot.clone()).collect::<Vec<String>>())
-                .bind(rows.uris.iter().map(|row| row.ordinal).collect::<Vec<i32>>())
-                .bind(rows.uris.iter().map(|row| row.value.clone()).collect::<Vec<String>>())
+                .bind(
+                    rows.uris
+                        .iter()
+                        .map(|row| row.param.clone())
+                        .collect::<Vec<String>>(),
+                )
+                .bind(
+                    rows.uris
+                        .iter()
+                        .map(|row| row.slot.clone())
+                        .collect::<Vec<String>>(),
+                )
+                .bind(
+                    rows.uris
+                        .iter()
+                        .map(|row| row.ordinal)
+                        .collect::<Vec<i32>>(),
+                )
+                .bind(
+                    rows.uris
+                        .iter()
+                        .map(|row| row.value.clone())
+                        .collect::<Vec<String>>(),
+                )
                 .execute(&mut *transaction)
                 .await
                 .map_err(|error| faulted("indexing identifiers", error))?;
@@ -671,8 +899,18 @@ impl RelationalStore {
             );
             sqlx::query(&statement)
                 .bind(surrogate)
-                .bind(rows.sorts.iter().map(|row| row.param.clone()).collect::<Vec<String>>())
-                .bind(rows.sorts.iter().map(|row| row.sort_text.clone()).collect::<Vec<Option<String>>>())
+                .bind(
+                    rows.sorts
+                        .iter()
+                        .map(|row| row.param.clone())
+                        .collect::<Vec<String>>(),
+                )
+                .bind(
+                    rows.sorts
+                        .iter()
+                        .map(|row| row.sort_text.clone())
+                        .collect::<Vec<Option<String>>>(),
+                )
                 .execute(&mut *transaction)
                 .await
                 .map_err(|error| faulted("indexing ordering keys", error))?;
@@ -753,8 +991,14 @@ impl RelationalStore {
         let limit = query.count.min(i64::MAX as usize) as i64;
         let offset = query.offset.min(i64::MAX as usize) as i64;
         let listing = listing
-            .replace("$%L", &format!("${}", bind_count(&resource_type, &resource_id, &bounds) + 1))
-            .replace("$%O", &format!("${}", bind_count(&resource_type, &resource_id, &bounds) + 2));
+            .replace(
+                "$%L",
+                &format!("${}", bind_count(&resource_type, &resource_id, &bounds) + 1),
+            )
+            .replace(
+                "$%O",
+                &format!("${}", bind_count(&resource_type, &resource_id, &bounds) + 2),
+            );
 
         let mut counter = sqlx::query(&counting);
         if let Some(kind) = &resource_type {
@@ -807,7 +1051,11 @@ impl ResourceStore for RelationalStore {
     async fn create(&self, envelope: ResourceEnvelope) -> Result<ResourceEnvelope, Error> {
         let _place = self.admit().await?;
         let mut work = self.work().await?;
-        if self.current_in(work.conn()?, envelope.id(), true).await?.is_some() {
+        if self
+            .current_in(work.conn()?, envelope.id(), true)
+            .await?
+            .is_some()
+        {
             return Err(Error::Duplicate(format!(
                 "id {:?} already exists",
                 envelope.id().as_str()
@@ -827,7 +1075,9 @@ impl ResourceStore for RelationalStore {
             self.table("resource")
         );
         let binds = [Bind::Text(id.as_str().to_owned())];
-        let row = self.perhaps(&statement, &binds, "reading a resource").await?;
+        let row = self
+            .perhaps(&statement, &binds, "reading a resource")
+            .await?;
         match row {
             Some(row) => envelope_of(&row),
             None => Err(Error::NotFound),
@@ -842,7 +1092,9 @@ impl ResourceStore for RelationalStore {
         );
         let number = version_number(version)?;
         let binds = [Bind::Text(id.as_str().to_owned()), Bind::Big(number)];
-        let row = self.perhaps(&statement, &binds, "reading a version").await?;
+        let row = self
+            .perhaps(&statement, &binds, "reading a version")
+            .await?;
         match row {
             Some(row) => envelope_of(&row),
             None => Err(Error::NotFound),
@@ -877,13 +1129,31 @@ impl ResourceStore for RelationalStore {
                 return Ok(held);
             }
         }
-        let stored = envelope.stored_with(
-            next_version(&current.version)?,
-            (self.clock)(),
-        )?;
+        let stored = envelope.stored_with(next_version(&current.version)?, (self.clock)())?;
         self.append(work.conn()?, Some(&current), &stored).await?;
         work.done().await?;
         Ok(stored)
+    }
+
+    async fn restore_version(&self, envelope: ResourceEnvelope) -> Result<bool, Error> {
+        let _place = self.admit().await?;
+        let mut work = self.work().await?;
+        if let Some(held) = self
+            .version_in(work.conn()?, envelope.id(), envelope.version_id())
+            .await?
+        {
+            let exact = held.last_updated == *envelope.last_updated()
+                && held.deleted == envelope.is_deleted()
+                && held.envelope()?.content_eq(&envelope);
+            if exact {
+                return Ok(false);
+            }
+            return Err(repeated(&envelope));
+        }
+        let current = self.current_in(work.conn()?, envelope.id(), true).await?;
+        self.append(work.conn()?, current.as_ref(), &envelope).await?;
+        work.done().await?;
+        Ok(true)
     }
 
     async fn search(&self, query: &SearchQuery) -> Result<SearchPage, Error> {
@@ -1123,9 +1393,9 @@ impl StoreScope for RelationalScope {
 fn failures_text(failures: &[fhir_store::IndexFailure]) -> String {
     let held: Vec<Value> = failures
         .iter()
-        .map(|failure| {
-            serde_json::json!({ "resource": failure.resource, "reason": failure.reason })
-        })
+        .map(
+            |failure| serde_json::json!({ "resource": failure.resource, "reason": failure.reason }),
+        )
         .collect();
     Value::Array(held).to_string()
 }
