@@ -888,3 +888,55 @@ async fn a_preset_that_associates_nothing_writes_no_provenance_file() {
         .collect();
     assert_eq!(names, vec!["Patient.ndjson"]);
 }
+
+#[tokio::test]
+async fn an_export_until_names_the_window_end_the_release_uses() {
+    let hand = Arc::new(Hand {
+        now: Mutex::new("2026-09-06T04:00:00.000Z".to_owned()),
+    });
+    let store = Arc::new(MemoryStore::with_clock(clock(&hand)));
+    store.create(patient("p1", "Stone", true)).await.unwrap();
+    let sink = Arc::new(MemoryBulkStore::new());
+
+    at(&hand, "2026-09-06T06:00:00.000Z");
+    store.create(patient("p2", "Rivers", true)).await.unwrap();
+    store
+        .update(patient("p1", "Fields", true), None)
+        .await
+        .unwrap();
+
+    let record = ran(
+        Arc::clone(&store),
+        Arc::clone(&sink),
+        job("a4"),
+        r#"{"scope":"system","_type":["Patient"],"_until":"2026-09-06T05:00:00.000Z"}"#,
+    )
+    .await;
+
+    assert_eq!(record.state, JobState::Completed);
+    let outcome: Value = serde_json::from_str(&record.outcome.unwrap()).unwrap();
+    assert_eq!(outcome["transactionTime"], "2026-09-06T05:00:00.000Z");
+    let patients = rows(&sink.read(&job("a4"), "Patient.ndjson").await.unwrap());
+    assert_eq!(patients.len(), 1);
+    assert_eq!(patients[0]["id"], "p1");
+    assert_eq!(patients[0]["name"][0]["family"], "Stone");
+    assert_eq!(patients[0]["meta"]["versionId"], "1");
+}
+
+#[tokio::test]
+async fn an_until_that_does_not_parse_fails_the_export_naming_it() {
+    let store = Arc::new(MemoryStore::default());
+    store.create(patient("p1", "Stone", true)).await.unwrap();
+    let sink = Arc::new(MemoryBulkStore::new());
+
+    let record = ran(
+        Arc::clone(&store),
+        Arc::clone(&sink),
+        job("a5"),
+        r#"{"scope":"system","_until":"whenever"}"#,
+    )
+    .await;
+
+    assert_eq!(record.state, JobState::Failed);
+    assert!(record.outcome.unwrap().contains("whenever"));
+}

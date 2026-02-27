@@ -288,6 +288,46 @@ fn the_bulk_export_with_an_associated_preset_carried_the_preset_and_exported_pro
 }
 
 #[test]
+fn the_bulk_export_asked_for_until_echoed_the_name_and_value() {
+    let version = "r4";
+    let kickoff = bulk_events_named("bulk-until", version, "kickoff");
+    assert_eq!(kickoff.len(), 1, "{version} was kicked off {kickoff:?}");
+    let url = kickoff[0]["eventDetail"]["exportUrl"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        url.contains("_until=2026-12-31T00%3A00%3A00.000Z"),
+        "{version} did not ask for until: {url}"
+    );
+    assert!(
+        kickoff[0]["eventDetail"]["errorCode"].is_null(),
+        "{version} kickoff failed: {}",
+        kickoff[0]["eventDetail"]["errorBody"]
+    );
+    let manifest_path = folder()
+        .join("external")
+        .join("bulk-until")
+        .join(format!("{version}-manifest.json"));
+    let text = std::fs::read_to_string(&manifest_path)
+        .unwrap_or_else(|_| panic!("{version} has no manifest record"));
+    let manifest: Value = serde_json::from_str(&text).expect("the manifest is json");
+    assert_eq!(manifest["request"]["_until"], "2026-12-31T00:00:00.000Z");
+    assert_eq!(manifest["transactionTime"], "2026-12-31T00:00:00.000Z");
+    let downloaded: u64 = bulk_events_named("bulk-until", version, "download_complete")
+        .iter()
+        .map(|row| bulk_figure(row, "resourceCount"))
+        .sum();
+    assert!(downloaded > 0, "{version} downloaded no resource");
+    let complete = bulk_events_named("bulk-until", version, "export_complete");
+    assert_eq!(complete.len(), 1, "{version} never completed: {complete:?}");
+    assert!(
+        bulk_figure(&complete[0], "resources") == downloaded,
+        "{version} completed with {} of {downloaded} resources",
+        bulk_figure(&complete[0], "resources")
+    );
+}
+
+#[test]
 fn the_report_from_outside_names_every_version_and_carries_no_error() {
     for version in VERSIONS {
         let report = kept(version);

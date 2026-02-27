@@ -42,10 +42,11 @@ pub(crate) const REINDEX_PARAMS: [&str; 3] = ["_type", "_url", "_resource"];
 
 const REINDEX_LISTED: [&str; 3] = ["_type", "_url", "_resource"];
 
-pub(crate) const ACCEPTED_PARAMS: [&str; 10] = [
+pub(crate) const ACCEPTED_PARAMS: [&str; 11] = [
     "_type",
     "_typeFilter",
     "_since",
+    "_until",
     "_till",
     "_outputFormat",
     "_container",
@@ -523,7 +524,7 @@ fn described(
     if let Some(id) = id {
         carried.insert("id".to_owned(), Value::String(id.to_owned()));
     }
-    if !carried.contains_key("_till") {
+    if !carried.contains_key("_till") && !carried.contains_key("_until") {
         carried.insert(
             "_till".to_owned(),
             Value::String(fhir_store::system_clock()().as_str().to_owned()),

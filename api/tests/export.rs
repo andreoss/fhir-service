@@ -459,3 +459,38 @@ async fn a_preset_export_answers_the_manifest_with_the_provenance_files() {
     assert_eq!(file.status, StatusCode::OK);
     assert!(file.body.contains("Patient/p1"), "{}", file.body);
 }
+
+#[tokio::test]
+async fn an_export_asked_for_until_carries_the_name_in_the_submitted_description_and_manifest() {
+    let held = harness();
+    seeded(&held).await;
+
+    let accepted = request(
+        &held.app,
+        "GET",
+        "/$export?_type=Patient&_since=2026-09-06T00:00:00.000Z&_until=2026-09-06T12:00:00.000Z",
+        b"",
+    )
+    .await;
+    assert_eq!(accepted.status, StatusCode::ACCEPTED);
+    let id = submitted(&accepted);
+    let held_job = held.jobs.fetch(&id).await.unwrap();
+    let payload: Value = serde_json::from_str(held_job.payload.as_deref().unwrap()).unwrap();
+    assert_eq!(payload["_type"][0], "Patient");
+    assert_eq!(payload["_since"], "2026-09-06T00:00:00.000Z");
+    assert_eq!(payload["_until"], "2026-09-06T12:00:00.000Z");
+    assert!(
+        payload.get("_till").is_none(),
+        "only _until should be present"
+    );
+
+    work(&held).await;
+    let done = request(&held.app, "GET", &format!("/_jobs/{id}"), b"").await;
+    let manifest: Value = serde_json::from_str(&done.body).unwrap();
+    assert_eq!(manifest["state"], "completed");
+    assert_eq!(manifest["transactionTime"], "2026-09-06T12:00:00.000Z");
+    assert_eq!(manifest["request"]["_until"], "2026-09-06T12:00:00.000Z");
+    let files = manifest["output"].as_array().unwrap();
+    let patients = files.iter().find(|file| file["type"] == "Patient").unwrap();
+    assert_eq!(patients["count"], 2);
+}

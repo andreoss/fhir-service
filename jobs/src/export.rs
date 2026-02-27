@@ -219,7 +219,9 @@ impl ExportRequest {
             names = payload::listed(&payload, "types");
         }
         let till =
-            match payload::text(&payload, "_till").or_else(|| payload::text(&payload, "till")) {
+            match payload::text(&payload, "_until").or_else(|| payload::text(&payload, "_till"))
+                .or_else(|| payload::text(&payload, "till"))
+            {
                 Some(found) => FhirInstant::parse(&found)?,
                 None => fallback.clone(),
             };
