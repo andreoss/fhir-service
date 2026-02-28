@@ -38,7 +38,9 @@ fn spawn_server(namespace: &str) -> (Child, u16) {
         .expect("failed to spawn binary");
     let stdout = child.stdout.take().expect("missing stdout");
     let mut line = String::new();
-    let read = BufReader::new(stdout).read_line(&mut line).unwrap_or_default();
+    let read = BufReader::new(stdout)
+        .read_line(&mut line)
+        .unwrap_or_default();
     let port = line
         .trim()
         .rsplit_once(':')
@@ -64,7 +66,10 @@ fn stop(mut child: Child) {
 
 fn drop_schema(namespace: &str) {
     let statement = format!("drop schema if exists {namespace} cascade");
-    let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
         Ok(runtime) => runtime,
         Err(_) => return,
     };
@@ -141,7 +146,12 @@ fn the_service_serves_every_interaction_over_the_relational_backend() {
         .as_array()
         .expect("dependencies are listed")
         .iter()
-        .map(|held| held["name"].as_str().expect("a dependency is named").to_owned())
+        .map(|held| {
+            held["name"]
+                .as_str()
+                .expect("a dependency is named")
+                .to_owned()
+        })
         .collect();
     named.sort();
     assert_eq!(
@@ -225,9 +235,9 @@ fn bundle_body(kind: &str, entries: &str) -> Vec<u8> {
 fn entry(method: &str, url: &str, resource: &str) -> String {
     match resource.is_empty() {
         true => format!(r#"{{"request":{{"method":"{method}","url":"{url}"}}}}"#),
-        false => format!(
-            r#"{{"resource":{resource},"request":{{"method":"{method}","url":"{url}"}}}}"#
-        ),
+        false => {
+            format!(r#"{{"resource":{resource},"request":{{"method":"{method}","url":"{url}"}}}}"#)
+        }
     }
 }
 
@@ -295,11 +305,65 @@ fn bundles_are_atomic_over_the_relational_backend() {
     assert_eq!(mixed.status, 200, "{}", mixed.body);
     let value = json(&mixed.body);
     assert_eq!(value["entry"][0]["response"]["status"], "201 Created");
-    assert_eq!(value["entry"][1]["outcome"]["resourceType"], "OperationOutcome");
+    assert_eq!(
+        value["entry"][1]["outcome"]["resourceType"],
+        "OperationOutcome"
+    );
     assert_eq!(value["entry"][2]["resource"]["total"], 1);
 
     stop(child);
     drop_schema(&namespace);
+}
+
+#[test]
+fn a_transaction_resolves_its_placeholders_over_the_relational_backend() {
+    let namespace = schema();
+    let (child, port) = spawn_server(&namespace);
+    let headers = [("Content-Type", "application/fhir+json")];
+    let place = "urn:uuid:5f3ad0c4-7c2b-4f2e-9a5d-6d5c8e1f4b21";
+    let observation = format!(
+        r#"{{"resourceType":"Observation","id":"ob1","status":"final","code":{{"coding":[{{"system":"urn:s","code":"c1"}}]}},"subject":{{"reference":"{place}"}}}}"#
+    );
+    let applied = request(
+        port,
+        "POST",
+        "/",
+        &headers,
+        &bundle_body(
+            "transaction",
+            &format!(
+                "{},{}",
+                placed_entry(
+                    "POST",
+                    "Patient",
+                    &patient_text("bp1", "Quarry"),
+                    place
+                ),
+                entry("POST", "Observation", &observation)
+            ),
+        ),
+    );
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    assert_eq!(
+        json(&applied.body)["entry"][1]["resource"]["subject"]["reference"],
+        "Patient/bp1",
+        "{}",
+        applied.body
+    );
+    let stored = request(port, "GET", "/Observation/ob1", &[], &[]);
+    assert_eq!(stored.status, 200, "{}", stored.body);
+    assert_eq!(json(&stored.body)["subject"]["reference"], "Patient/bp1");
+    let document = request(port, "GET", "/Patient/bp1/$everything", &[], &[]);
+    assert_eq!(document.status, 200, "{}", document.body);
+
+    stop(child);
+    drop_schema(&namespace);
+}
+
+fn placed_entry(method: &str, url: &str, resource: &str, full_url: &str) -> String {
+    format!(
+        r#"{{"fullUrl":"{full_url}","resource":{resource},"request":{{"method":"{method}","url":"{url}"}}}}"#
+    )
 }
 
 fn header<'a>(reply: &'a Reply, name: &str) -> &'a str {
@@ -316,7 +380,13 @@ fn a_job_runs_to_completion_over_the_relational_backend() {
     let namespace = schema();
     let (child, port) = spawn_server(&namespace);
 
-    let created = request(port, "POST", "/Patient", &[], &patient("jr-1", "Stone", true));
+    let created = request(
+        port,
+        "POST",
+        "/Patient",
+        &[],
+        &patient("jr-1", "Stone", true),
+    );
     assert_eq!(created.status, 201, "create failed: {}", created.body);
 
     let submitted = request(port, "POST", "/$export", &[], br#"{"types":["Patient"]}"#);

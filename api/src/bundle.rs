@@ -9,6 +9,7 @@ use fhir_core::{Error, ResourceType};
 use http_body_util::BodyExt;
 use serde_json::{json, Map, Value};
 use std::sync::Arc;
+use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use tower::ServiceExt;
 
@@ -39,9 +40,7 @@ pub async fn process(
     let access = Arc::new(crate::access::access_of(&state, &headers).await?);
     let entries = Arc::new(incoming.entries);
     match incoming.kind {
-        Kind::Transaction => {
-            transaction(&state, &headers, &entries, &access, grant.as_ref()).await
-        }
+        Kind::Transaction => transaction(&state, &headers, &entries, &access, grant.as_ref()).await,
         Kind::Batch => Ok(batch(&state, &headers, &entries, &access, grant.as_ref()).await),
     }
 }
@@ -63,6 +62,7 @@ impl Kind {
 struct Entry {
     method: String,
     url: String,
+    full_url: Option<String>,
     resource: Option<Value>,
     if_none_exist: Option<String>,
     if_match: Option<String>,
@@ -81,15 +81,21 @@ impl Incoming {
         let kind = match value["type"].as_str() {
             Some(TRANSACTION) => Kind::Transaction,
             Some(BATCH) => Kind::Batch,
-            Some(other) => {
-                return Err(Error::InvalidEnvelope(format!("bundle type {other:?}")))
+            Some(other) => return Err(Error::InvalidEnvelope(format!("bundle type {other:?}"))),
+            None => {
+                return Err(Error::InvalidEnvelope(
+                    "a bundle type is required".to_owned(),
+                ))
             }
-            None => return Err(Error::InvalidEnvelope("a bundle type is required".to_owned())),
         };
         let listed = match &value["entry"] {
             Value::Null => Vec::new(),
             Value::Array(entries) => entries.clone(),
-            _ => return Err(Error::InvalidEnvelope("bundle entries are a list".to_owned())),
+            _ => {
+                return Err(Error::InvalidEnvelope(
+                    "bundle entries are a list".to_owned(),
+                ))
+            }
         };
         let entries = listed.iter().map(Entry::parse).collect();
         Ok(Incoming { kind, entries })
@@ -117,6 +123,7 @@ impl Entry {
         Ok(Entry {
             method,
             url,
+            full_url: text(value, "fullUrl"),
             resource: match &value["resource"] {
                 Value::Null => None,
                 found => Some(found.clone()),
@@ -125,17 +132,72 @@ impl Entry {
             if_match: text(request, "ifMatch"),
         })
     }
-
-    fn body(&self) -> Vec<u8> {
-        match &self.resource {
-            Some(resource) => resource.to_string().into_bytes(),
-            None => Vec::new(),
-        }
-    }
 }
 
 fn text(request: &Value, name: &str) -> Option<String> {
     request[name].as_str().map(str::to_owned)
+}
+
+#[derive(Default)]
+struct Places {
+    known: Vec<(String, String)>,
+}
+
+impl Places {
+    fn applied(&self, entry: &Entry) -> Vec<u8> {
+        match &entry.resource {
+            Some(resource) => walked(resource, &self.known).to_string().into_bytes(),
+            None => Vec::new(),
+        }
+    }
+
+    fn note(&mut self, entry: &Result<Entry, Error>, location: Option<&str>) {
+        let (Ok(entry), Some(location)) = (entry, location) else {
+            return;
+        };
+        let Some(place) = &entry.full_url else {
+            return;
+        };
+        match place.is_empty() {
+            true => (),
+            false => self.known.push((place.clone(), reference_of(location))),
+        }
+    }
+}
+
+fn walked(value: &Value, known: &[(String, String)]) -> Value {
+    match value {
+        Value::String(text) => {
+            Value::String(known.iter().fold(text.clone(), |text, (place, reference)| {
+                replaced(&text, place, reference)
+            }))
+        }
+        Value::Array(items) => Value::Array(items.iter().map(|item| walked(item, known)).collect()),
+        Value::Object(fields) => Value::Object(
+            fields
+                .iter()
+                .map(|(name, item)| (name.clone(), walked(item, known)))
+                .collect(),
+        ),
+        found => found.clone(),
+    }
+}
+
+fn replaced(text: &str, place: &str, reference: &str) -> String {
+    match text {
+        whole if whole == place => reference.to_owned(),
+        other => match other.split_once('#') {
+            Some((head, tail)) if head == place => format!("{reference}#{tail}"),
+            _ => other.replace(place, reference),
+        },
+    }
+}
+
+fn reference_of(location: &str) -> String {
+    match location.split_once("/_history/") {
+        Some((head, _)) => head.to_owned(),
+        None => location.to_owned(),
+    }
 }
 
 struct Taken {
@@ -182,7 +244,10 @@ impl Taken {
         };
         (
             self.status,
-            [(header::CONTENT_TYPE, FHIR_JSON), (header::CACHE_CONTROL, "no-store")],
+            [
+                (header::CONTENT_TYPE, FHIR_JSON),
+                (header::CACHE_CONTROL, "no-store"),
+            ],
             body,
         )
             .into_response()
@@ -206,16 +271,22 @@ async fn transaction(
     let scope = state.store.begin().await?;
     let router = crate::app::over(state, scope.store());
     let mut taken: Vec<Option<Taken>> = entries.iter().map(|_| None).collect();
+    let mut places = Places::default();
     for index in ordered(entries) {
-        let outcome = dispatch(&router, headers, &entries[index], access, grant).await;
+        let outcome = dispatch(&router, headers, &entries[index], &places, access, grant).await;
         if outcome.failed() {
             scope.rollback().await?;
             return Ok(outcome.into_response());
         }
+        places.note(&entries[index], outcome.location.as_deref());
         taken[index] = Some(outcome);
     }
     scope.commit().await?;
-    let listed = taken.into_iter().flatten().map(|outcome| outcome.to_entry()).collect();
+    let listed = taken
+        .into_iter()
+        .flatten()
+        .map(|outcome| outcome.to_entry())
+        .collect();
     Ok(replied(Kind::Transaction, listed))
 }
 
@@ -227,29 +298,74 @@ async fn batch(
     grant: Option<&Grant>,
 ) -> Response {
     let router = crate::app::over(state, Arc::clone(&state.store));
+    let mut listed = vec![Value::Null; entries.len()];
+    let gate = Arc::clone(&state.entries);
+    match linked(entries) {
+        true => sequential(&router, headers, entries, access, grant, &mut listed).await,
+        false => parallel(&router, headers, entries, access, grant, &gate, &mut listed).await,
+    }
+    replied(Kind::Batch, listed)
+}
+
+fn linked(entries: &[Result<Entry, Error>]) -> bool {
+    entries
+        .iter()
+        .any(|entry| matches!(entry, Ok(entry) if entry.full_url.is_some()))
+}
+
+async fn sequential(
+    router: &Router<()>,
+    headers: &HeaderMap,
+    entries: &[Result<Entry, Error>],
+    access: &Access,
+    grant: Option<&Grant>,
+    listed: &mut [Value],
+) {
+    let mut places = Places::default();
+    for index in 0..entries.len() {
+        let taken = dispatch(router, headers, &entries[index], &places, access, grant).await;
+        places.note(&entries[index], taken.location.as_deref());
+        listed[index] = taken.to_entry();
+    }
+}
+
+async fn parallel(
+    router: &Router<()>,
+    headers: &HeaderMap,
+    entries: &Arc<Vec<Result<Entry, Error>>>,
+    access: &Arc<Access>,
+    grant: Option<&Grant>,
+    gate: &Arc<Semaphore>,
+    listed: &mut [Value],
+) {
     let mut running = JoinSet::new();
     for index in 0..entries.len() {
         let router = router.clone();
         let headers = headers.clone();
         let entries = Arc::clone(entries);
+        let gate = Arc::clone(gate);
         let grant = grant.cloned();
         let access = Arc::clone(access);
-        let gate = Arc::clone(&state.entries);
         running.spawn(async move {
             let _permit = gate.acquire().await;
-            let taken =
-                dispatch(&router, &headers, &entries[index], &access, grant.as_ref()).await;
+            let taken = dispatch(
+                &router,
+                &headers,
+                &entries[index],
+                &Places::default(),
+                &access,
+                grant.as_ref(),
+            )
+            .await;
             (index, taken.to_entry())
         });
     }
-    let mut listed = vec![Value::Null; entries.len()];
     while let Some(joined) = running.join_next().await {
         match joined {
             Ok((index, entry)) => listed[index] = entry,
             Err(_) => continue,
         }
     }
-    replied(Kind::Batch, listed)
 }
 
 fn ordered(entries: &[Result<Entry, Error>]) -> Vec<usize> {
@@ -278,7 +394,10 @@ fn replied(kind: Kind, entries: Vec<Value>) -> Response {
     });
     (
         StatusCode::OK,
-        [(header::CONTENT_TYPE, FHIR_JSON), (header::CACHE_CONTROL, "no-store")],
+        [
+            (header::CONTENT_TYPE, FHIR_JSON),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
         bundle.to_string(),
     )
         .into_response()
@@ -288,6 +407,7 @@ async fn dispatch(
     router: &Router<()>,
     outer: &HeaderMap,
     entry: &Result<Entry, Error>,
+    places: &Places,
     access: &Access,
     grant: Option<&Grant>,
 ) -> Taken {
@@ -298,7 +418,7 @@ async fn dispatch(
     if let Err(error) = permitted(access, grant, entry) {
         return refused(&error);
     }
-    match built(outer, entry) {
+    match built(outer, entry, places) {
         Err(error) => refused(&error),
         Ok(request) => match router.clone().oneshot(request).await {
             Err(_) => refused(&Error::Internal("an entry was not dispatched".to_owned())),
@@ -307,13 +427,16 @@ async fn dispatch(
     }
 }
 
-fn built(outer: &HeaderMap, entry: &Entry) -> Result<Request<Body>, Error> {
+fn built(outer: &HeaderMap, entry: &Entry, places: &Places) -> Result<Request<Body>, Error> {
     let mut builder = Request::builder()
         .method(entry.method.as_str())
         .uri(format!("/{}", entry.url))
         .header(header::HOST, host_of(outer))
         .header(header::CONTENT_TYPE, FHIR_JSON);
-    for (name, value) in [(IF_NONE_EXIST, &entry.if_none_exist), ("if-match", &entry.if_match)] {
+    for (name, value) in [
+        (IF_NONE_EXIST, &entry.if_none_exist),
+        ("if-match", &entry.if_match),
+    ] {
         if let Some(value) = value {
             builder = builder.header(name, value.as_str());
         }
@@ -325,7 +448,7 @@ fn built(outer: &HeaderMap, entry: &Entry) -> Result<Request<Body>, Error> {
         builder = builder.header(header::AUTHORIZATION, credential.clone());
     }
     builder
-        .body(Body::from(entry.body()))
+        .body(Body::from(places.applied(entry)))
         .map_err(|_| Error::InvalidEnvelope(format!("entry url {:?}", entry.url)))
 }
 
@@ -379,7 +502,10 @@ fn trimmed(location: &str) -> String {
 }
 
 fn named(headers: &HeaderMap, name: HeaderName) -> Option<String> {
-    headers.get(name).and_then(|value| value.to_str().ok()).map(str::to_owned)
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned)
 }
 
 fn granted(headers: &HeaderMap) -> Result<Option<Grant>, Error> {
@@ -397,7 +523,9 @@ fn granted(headers: &HeaderMap) -> Result<Option<Grant>, Error> {
 fn permitted(access: &Access, grant: Option<&Grant>, entry: &Entry) -> Result<(), Error> {
     let kind = target(&entry.url).and_then(|name| name.parse::<ResourceType>().ok());
     access.require(action_of(&entry.method), kind)?;
-    let (Some(grant), Some(kind)) = (grant, kind) else { return Ok(()) };
+    let (Some(grant), Some(kind)) = (grant, kind) else {
+        return Ok(());
+    };
     match grant.admits(kind) {
         true => Ok(()),
         false => Err(Error::Forbidden(format!("type {:?}", kind.as_str()))),
@@ -412,7 +540,13 @@ fn action_of(method: &str) -> DataAction {
 }
 
 fn target(url: &str) -> Option<&str> {
-    let head = url.split('?').next().unwrap_or_default().split('/').next().unwrap_or_default();
+    let head = url
+        .split('?')
+        .next()
+        .unwrap_or_default()
+        .split('/')
+        .next()
+        .unwrap_or_default();
     match head.is_empty() || head.starts_with('_') || head.starts_with('$') {
         true => None,
         false => Some(head),
