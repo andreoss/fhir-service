@@ -180,6 +180,7 @@ pub struct ExportRequest {
     pub anonymization: Option<Anonymization>,
     pub associated: AssociatedData,
     pub exporting: Vec<ResourceType>,
+    pub unsupported: Vec<String>,
 }
 
 fn format_of(payload: &Value) -> Result<String, Error> {
@@ -218,13 +219,13 @@ impl ExportRequest {
         if names.is_empty() {
             names = payload::listed(&payload, "types");
         }
-        let till =
-            match payload::text(&payload, "_until").or_else(|| payload::text(&payload, "_till"))
-                .or_else(|| payload::text(&payload, "till"))
-            {
-                Some(found) => FhirInstant::parse(&found)?,
-                None => fallback.clone(),
-            };
+        let till = match payload::text(&payload, "_until")
+            .or_else(|| payload::text(&payload, "_till"))
+            .or_else(|| payload::text(&payload, "till"))
+        {
+            Some(found) => FhirInstant::parse(&found)?,
+            None => fallback.clone(),
+        };
         let container = payload::text(&payload, "_container")
             .or_else(|| payload::text(&payload, "container"))
             .unwrap_or_default();
@@ -249,6 +250,7 @@ impl ExportRequest {
             anonymization: anonymization(&payload)?,
             associated: AssociatedData::parse(&payload::listed(&payload, "includeAssociatedData"))?,
             exporting: payload::resource_types(&payload::listed(&payload, "_exporting"))?,
+            unsupported: payload::listed(&payload, "_unsupported"),
         })
     }
 
@@ -615,6 +617,21 @@ impl ExportJob {
         }
     }
 
+    async fn dropped(&self, job: &JobContext, request: &ExportRequest) -> Result<(), Error> {
+        let failures = request
+            .unsupported
+            .iter()
+            .map(|name| format!("the parameter {name} is not carried and was left out"))
+            .collect::<Vec<String>>();
+        report::record_failures(
+            self.sink.as_ref(),
+            &job.id,
+            &report::failure_file(&request.container, "parameters"),
+            &failures,
+        )
+        .await
+    }
+
     async fn associated(
         &self,
         job: &JobContext,
@@ -678,6 +695,7 @@ impl JobHandler for ExportJob {
     async fn plan(&self, job: &JobContext) -> Result<Vec<Unit>, Error> {
         let request = ExportRequest::parse(&job.payload, &(self.clock)())?;
         let _ = self.rules(&request).await?;
+        self.dropped(job, &request).await?;
         let exporting = self.planned(&request).await?;
         Ok(exporting
             .iter()

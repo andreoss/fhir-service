@@ -940,3 +940,47 @@ async fn an_until_that_does_not_parse_fails_the_export_naming_it() {
     assert_eq!(record.state, JobState::Failed);
     assert!(record.outcome.unwrap().contains("whenever"));
 }
+
+#[tokio::test]
+async fn a_parameter_a_lenient_kick_off_dropped_is_itemised_in_a_failure_file() {
+    let store = Arc::new(MemoryStore::default());
+    store.create(patient("p1", "Stone", true)).await.unwrap();
+    let sink = Arc::new(MemoryBulkStore::new());
+
+    let record = ran(
+        Arc::clone(&store),
+        Arc::clone(&sink),
+        job("l1"),
+        r#"{"scope":"system","_unsupported":["_elements"]}"#,
+    )
+    .await;
+
+    assert_eq!(record.state, JobState::Completed);
+    let reported = shaped(
+        &sink
+            .read(&job("l1"), "parameters-failures.ndjson")
+            .await
+            .unwrap(),
+    );
+    assert_eq!(reported.len(), 1);
+    assert_eq!(reported[0]["resourceType"], "OperationOutcome");
+    assert_eq!(reported[0]["issue"][0]["severity"], "error");
+    assert!(reported[0]["issue"][0]["diagnostics"]
+        .as_str()
+        .unwrap()
+        .contains("_elements"));
+    assert_eq!(
+        rows(&sink.read(&job("l1"), "Patient.ndjson").await.unwrap()).len(),
+        1
+    );
+}
+
+#[test]
+fn a_request_carries_the_parameters_a_lenient_kick_off_dropped() {
+    let request = ExportRequest::parse(
+        r#"{"scope":"system","_unsupported":["_elements","_since"]}"#,
+        &FhirInstant::parse("2026-09-06T04:00:00.000Z").unwrap(),
+    )
+    .unwrap();
+    assert_eq!(request.unsupported, vec!["_elements", "_since"]);
+}

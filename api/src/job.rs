@@ -68,6 +68,27 @@ fn sink(state: &AppState) -> Option<Arc<dyn fhir_store::BulkStore>> {
     state.outputs.as_ref().map(Arc::clone)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Handling {
+    Strict,
+    Lenient,
+}
+
+fn handling_of(headers: &HeaderMap) -> Handling {
+    let declared = headers
+        .get("prefer")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    match declared
+        .split(';')
+        .chain(declared.split(','))
+        .any(|token| token.trim().eq_ignore_ascii_case("handling=lenient"))
+    {
+        true => Handling::Lenient,
+        false => Handling::Strict,
+    }
+}
+
 fn unsupported() -> Response {
     let outcome = OperationOutcome::error(
         IssueCode::NotSupported,
@@ -294,7 +315,13 @@ pub async fn submit_resource_reindex(
 }
 
 fn indexing(reference: Option<&str>, raw: Option<&str>, body: &[u8]) -> Result<String, Error> {
-    let mut carried = merged(raw, body, &REINDEX_PARAMS, &REINDEX_LISTED)?;
+    let (mut carried, _) = merged(
+        raw,
+        body,
+        &REINDEX_PARAMS,
+        &REINDEX_LISTED,
+        Handling::Strict,
+    )?;
     if let Some(reference) = reference {
         carried.insert(
             "_resource".to_owned(),
@@ -459,7 +486,8 @@ fn merged(
     body: &[u8],
     accepted: &[&str],
     listed: &[&str],
-) -> Result<serde_json::Map<String, Value>, Error> {
+    handling: Handling,
+) -> Result<(serde_json::Map<String, Value>, Vec<String>), Error> {
     let mut payload = match std::str::from_utf8(body) {
         Ok(text) if !text.trim().is_empty() => serde_json::from_str::<Value>(text)
             .map_err(|error| Error::InvalidJson(error.to_string()))?,
@@ -469,32 +497,69 @@ fn merged(
     let carried = payload
         .as_object_mut()
         .ok_or_else(|| Error::InvalidJson("a request is described by an object".to_owned()))?;
+    let mut dropped = Vec::new();
     for (name, value) in crate::query::pairs(raw) {
-        if !accepted.contains(&name.as_str()) {
-            return Err(Error::UnsupportedParameter(format!("{name:?}")));
-        }
-        if value.trim().is_empty() {
-            return Err(Error::UnsupportedParameter(format!(
+        let refused = match () {
+            _ if !accepted.contains(&name.as_str()) => {
+                Some(Error::UnsupportedParameter(format!("{name:?}")))
+            }
+            _ if value.trim().is_empty() => Some(Error::UnsupportedParameter(format!(
                 "{name:?} with an empty value"
-            )));
-        }
-        if name == "_outputFormat" {
-            fhir_store::output_format(&value)?;
+            ))),
+            _ if name == "_outputFormat" => fhir_store::output_format(&value).err(),
+            _ => None,
+        };
+        if let Some(error) = refused {
+            match handling {
+                Handling::Lenient => {
+                    dropped.push(name);
+                    continue;
+                }
+                Handling::Strict => return Err(error),
+            }
         }
         if name == "includeAssociatedData" {
-            for part in value
+            let parts = value
                 .split(',')
                 .map(str::trim)
                 .filter(|part| !part.is_empty())
-            {
-                if !matches!(
-                    part,
-                    "LatestProvenanceResources" | "RelevantProvenanceResources"
-                ) {
-                    return Err(Error::UnsupportedParameter(format!(
-                        "includeAssociatedData {part:?} is not carried"
-                    )));
+                .collect::<Vec<&str>>();
+            let carried_parts = parts
+                .iter()
+                .copied()
+                .filter(|part| {
+                    matches!(
+                        *part,
+                        "LatestProvenanceResources" | "RelevantProvenanceResources"
+                    )
+                })
+                .collect::<Vec<&str>>();
+            if carried_parts.len() != parts.len() {
+                match handling {
+                    Handling::Lenient if carried_parts.is_empty() => {
+                        dropped.push(name);
+                        continue;
+                    }
+                    Handling::Lenient => {}
+                    Handling::Strict => {
+                        let unknown = parts
+                            .iter()
+                            .find(|part| !carried_parts.contains(part))
+                            .copied()
+                            .unwrap_or_default();
+                        return Err(Error::UnsupportedParameter(format!(
+                            "includeAssociatedData {unknown:?} is not carried"
+                        )));
+                    }
                 }
+            }
+            if carried_parts.len() != parts.len() {
+                let items = carried_parts
+                    .iter()
+                    .map(|part| Value::String((*part).to_owned()))
+                    .collect();
+                carried.insert(name, Value::Array(items));
+                continue;
             }
         }
         match listed.contains(&name.as_str()) {
@@ -510,7 +575,7 @@ fn merged(
             false => carried.insert(name, Value::String(value)),
         };
     }
-    Ok(carried.clone())
+    Ok((carried.clone(), dropped))
 }
 
 fn described(
@@ -518,8 +583,10 @@ fn described(
     id: Option<&str>,
     raw: Option<&str>,
     body: &[u8],
+    headers: &HeaderMap,
 ) -> Result<String, Error> {
-    let mut carried = merged(raw, body, &ACCEPTED_PARAMS, &LISTED)?;
+    let (mut carried, dropped) =
+        merged(raw, body, &ACCEPTED_PARAMS, &LISTED, handling_of(headers))?;
     carried.insert("scope".to_owned(), Value::String(scope.to_owned()));
     if let Some(id) = id {
         carried.insert("id".to_owned(), Value::String(id.to_owned()));
@@ -528,6 +595,12 @@ fn described(
         carried.insert(
             "_till".to_owned(),
             Value::String(fhir_store::system_clock()().as_str().to_owned()),
+        );
+    }
+    if !dropped.is_empty() {
+        carried.insert(
+            "_unsupported".to_owned(),
+            Value::Array(dropped.into_iter().map(Value::String).collect()),
         );
     }
     Ok(Value::Object(carried).to_string())
@@ -539,7 +612,7 @@ fn removal(
     raw: Option<&str>,
     body: &[u8],
 ) -> Result<String, Error> {
-    let mut carried = merged(raw, body, &DELETE_PARAMS, &DELETE_LISTED)?;
+    let (mut carried, _) = merged(raw, body, &DELETE_PARAMS, &DELETE_LISTED, Handling::Strict)?;
     if let Some(resource_type) = resource_type {
         carried.insert(
             "_type".to_owned(),
@@ -564,8 +637,8 @@ fn patching(resource_type: Option<&str>, raw: Option<&str>, body: &[u8]) -> Resu
     let held = supplied(body)?;
     let describes = matches!(&held, Value::Object(map) if map.contains_key("patch"));
     let mut carried = match describes {
-        true => merged(raw, body, &UPDATE_PARAMS, &DELETE_LISTED)?,
-        false => merged(raw, b"", &UPDATE_PARAMS, &DELETE_LISTED)?,
+        true => merged(raw, body, &UPDATE_PARAMS, &DELETE_LISTED, Handling::Strict)?.0,
+        false => merged(raw, b"", &UPDATE_PARAMS, &DELETE_LISTED, Handling::Strict)?.0,
     };
     if !describes && !held.is_null() {
         carried.insert("patch".to_owned(), held);
@@ -659,7 +732,7 @@ async fn submit_export_scope(
     raw: Option<&str>,
     body: &[u8],
 ) -> Response {
-    match described(scope, id, raw, body) {
+    match described(scope, id, raw, body, headers) {
         Ok(payload) => submit(state, JobKind::Export, headers, payload.as_bytes()).await,
         Err(error) => AppError::from(error).into_response_now(),
     }
