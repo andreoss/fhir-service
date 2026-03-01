@@ -29,6 +29,7 @@ pub enum Error {
     NoMatch(String),
     Unauthenticated(String),
     Unavailable(String),
+    TooManyRequests(u32),
 }
 
 pub const RETRY_SECONDS: u32 = 2;
@@ -39,6 +40,7 @@ impl Error {
     pub fn retry_after(&self) -> Option<u32> {
         match self {
             Error::Unavailable(_) => Some(RETRY_SECONDS),
+            Error::TooManyRequests(seconds) => Some(*seconds),
             _ => None,
         }
     }
@@ -128,6 +130,10 @@ impl Error {
                 IssueCode::Transient,
                 format!("{message}; the request may be repeated in {RETRY_SECONDS} seconds"),
             ),
+            Error::TooManyRequests(seconds) => OperationOutcome::error(
+                IssueCode::Throttled,
+                format!("the request was repeated inside the {seconds} second(s) it was told to wait; ask again once the wait has passed"),
+            ),
         }
     }
 }
@@ -161,6 +167,9 @@ impl fmt::Display for Error {
             Error::Unauthenticated(message) => write!(f, "not authenticated: {message}"),
             Error::NoMatch(message) => write!(f, "{message}"),
             Error::Unavailable(message) => write!(f, "temporarily unavailable: {message}"),
+            Error::TooManyRequests(seconds) => {
+                write!(f, "too many requests: wait {seconds} second(s)")
+            }
         }
     }
 }
@@ -336,6 +345,7 @@ mod tests {
             Error::NoMatch("X".to_owned()),
             Error::Unauthenticated("X".to_owned()),
             Error::Unavailable("X".to_owned()),
+            Error::TooManyRequests(1),
         ]
     }
 
@@ -411,6 +421,7 @@ mod tests {
                 503,
                 IssueCode::Transient,
             ),
+            (Error::TooManyRequests(1), 429, IssueCode::Throttled),
         ];
         assert_eq!(expected.len(), every_failure().len());
         for (error, status, code) in expected {
@@ -454,5 +465,17 @@ mod budget {
         let error = Error::Unavailable("the store is busy".to_owned());
         assert_eq!(error.retry_after(), Some(RETRY_SECONDS));
         assert_eq!(Error::NotFound.retry_after(), None);
+    }
+
+    #[test]
+    fn a_client_that_comes_back_too_soon_is_told_how_long_to_wait() {
+        let error = Error::TooManyRequests(1);
+        assert_eq!(error.http_status(), 429);
+        assert_eq!(error.retry_after(), Some(1));
+        let diagnostics = error
+            .to_operation_outcome()
+            .diagnostics
+            .expect("a refusal says something");
+        assert!(diagnostics.contains('1'), "{diagnostics}");
     }
 }

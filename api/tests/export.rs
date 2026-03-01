@@ -1,7 +1,7 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use fhir_adapter_memory::{MemoryBulkStore, MemoryJobStore, MemoryStore};
-use fhir_api::{Dependency, Service};
+use fhir_api::{Dependency, Polling, Service};
 use fhir_core::{FhirInstant, FhirVersion};
 use fhir_jobs::{ExportJob, Orchestrator, Worker};
 use fhir_store::{BulkStore, JobId, JobStore, ResourceStore, StepTicker};
@@ -22,6 +22,7 @@ struct Harness {
     jobs: Arc<MemoryJobStore>,
     store: Arc<MemoryStore>,
     sink: Arc<MemoryBulkStore>,
+    ticker: StepTicker,
 }
 
 fn harness() -> Harness {
@@ -41,12 +42,14 @@ fn harness() -> Harness {
         dependencies,
     )
     .with_jobs(Arc::clone(&jobs) as Arc<dyn JobStore>)
-    .with_outputs(Arc::clone(&sink) as Arc<dyn BulkStore>);
+    .with_outputs(Arc::clone(&sink) as Arc<dyn BulkStore>)
+    .with_polling(Polling::new(ticker.ticker()));
     Harness {
         app,
         jobs,
         store,
         sink,
+        ticker,
     }
 }
 
@@ -293,6 +296,7 @@ async fn a_running_export_reports_how_far_it_has_come() {
         .await
         .unwrap();
 
+    held.ticker.advance(1_000);
     let running = request(&held.app, "GET", &format!("/_jobs/{id}"), b"").await;
     assert_eq!(running.status, StatusCode::ACCEPTED);
     assert_eq!(header(&running, "retry-after"), "1");

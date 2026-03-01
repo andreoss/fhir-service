@@ -37,6 +37,7 @@ pub struct AppState {
     pub scrape: Arc<fhir_telemetry::Scrape>,
     pub authorization: Option<Arc<crate::smart::Authorization>>,
     pub guard: Option<Arc<crate::access::Guard>>,
+    pub polling: Arc<crate::polling::Polling>,
 }
 
 pub type Asked = std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>;
@@ -115,6 +116,7 @@ impl Service {
                 )),
                 authorization: None,
                 guard: None,
+                polling: Arc::new(crate::polling::Polling::new(fhir_store::system_ticker())),
             },
         }
     }
@@ -123,6 +125,15 @@ impl Service {
         Service {
             state: AppState {
                 jobs: Some(jobs),
+                ..self.state
+            },
+        }
+    }
+
+    pub fn with_polling(self, polling: crate::polling::Polling) -> Service {
+        Service {
+            state: AppState {
+                polling: Arc::new(polling),
                 ..self.state
             },
         }

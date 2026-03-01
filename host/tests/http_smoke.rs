@@ -5,6 +5,7 @@ use std::io::{BufRead, BufReader};
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
+const POLL_WAIT: Duration = Duration::from_millis(1_100);
 
 fn header<'a>(reply: &'a Reply, name: &str) -> &'a str {
     reply
@@ -832,7 +833,7 @@ fn a_submitted_job_is_polled_to_completion_over_http() {
         if polled.status != 202 {
             break;
         }
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(POLL_WAIT);
         polled = request(port, "GET", &path, &[], &[]);
     }
     stop(child);
@@ -868,7 +869,7 @@ fn a_submitted_job_is_cancelled_over_http_and_its_status_is_then_gone() {
         if polled.status != 202 {
             break;
         }
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(POLL_WAIT);
         polled = request(port, "GET", &path, &[], &[]);
     }
     let repeated = request(port, "DELETE", &path, &[], &[]);
@@ -891,7 +892,7 @@ fn settled(port: u16, path: &str) -> Reply {
         if polled.status != 202 {
             break;
         }
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(POLL_WAIT);
         polled = request(port, "GET", path, &[], &[]);
     }
     polled

@@ -6,6 +6,8 @@ use std::time::Duration;
 const REQUIRED: &str =
     "the relational engine is required and none answered; start the services named in compose.yaml";
 
+const POLL_WAIT: Duration = Duration::from_millis(1_100);
+
 struct Reply {
     status: u16,
     headers: Vec<(String, String)>,
@@ -397,7 +399,7 @@ fn a_job_runs_to_completion_over_the_relational_backend() {
         if polled.status != 202 {
             break;
         }
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(POLL_WAIT);
         polled = request(port, "GET", &path, &[], &[]);
     }
     stop(child);
@@ -408,6 +410,44 @@ fn a_job_runs_to_completion_over_the_relational_backend() {
     assert_eq!(manifest["state"], "completed");
     assert_eq!(manifest["kind"], "export");
     assert_eq!(manifest["outcome"]["handled"], 1);
+}
+
+#[test]
+fn a_client_that_polls_too_often_is_asked_to_wait_over_the_relational_backend() {
+    let namespace = schema();
+    let (child, port) = spawn_server(&namespace);
+
+    for _ in 0..40 {
+        let queued = request(port, "POST", "/$import", &[], br#"{"resources":[]}"#);
+        assert_eq!(queued.status, 202, "submit failed: {}", queued.body);
+    }
+    let submitted = request(port, "POST", "/$export", &[], br#"{"types":["Patient"]}"#);
+    assert_eq!(submitted.status, 202, "submit failed: {}", submitted.body);
+    let path = header(&submitted, "content-location")
+        .split_once("/_jobs/")
+        .map(|(_, id)| format!("/_jobs/{id}"))
+        .expect("a status location carries an id");
+
+    let first = request(port, "GET", &path, &[], &[]);
+    let soon = request(port, "GET", &path, &[], &[]);
+    std::thread::sleep(POLL_WAIT);
+    let later = request(port, "GET", &path, &[], &[]);
+    stop(child);
+    drop_schema(&namespace);
+
+    assert_eq!(
+        first.status, 202,
+        "the job is still in progress: {}",
+        first.body
+    );
+    assert_eq!(
+        soon.status, 429,
+        "a second query inside the wait is refused: {}",
+        soon.body
+    );
+    assert_eq!(header(&soon, "retry-after"), "1");
+    assert_eq!(json(&soon.body)["issue"][0]["code"], "throttled");
+    assert_ne!(later.status, 429, "the wait was kept: {}", later.body);
 }
 
 #[test]
@@ -520,7 +560,7 @@ fn a_search_asked_to_answer_later_is_answered_over_the_relational_backend() {
         if polled.status != 202 {
             break;
         }
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(POLL_WAIT);
         polled = request(port, "GET", &path, &[], &[]);
     }
     stop(child);

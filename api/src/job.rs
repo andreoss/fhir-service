@@ -388,6 +388,9 @@ pub async fn poll(
     if let Err(error) = owns(&access, &record) {
         return AppError::from(error).into_response_now();
     }
+    if let Err(wait) = counted(&state, &access, &headers, &id, &record) {
+        return AppError::from(Error::TooManyRequests(wait)).into_response_now();
+    }
     match record.state {
         JobState::Queued | JobState::Running | JobState::Cancelling => {
             let mut response = Response::new(Body::empty());
@@ -813,6 +816,22 @@ fn wide_enough(
             action.as_str()
         ))),
     }
+}
+
+fn counted(
+    state: &AppState,
+    access: &Access,
+    headers: &HeaderMap,
+    id: &JobId,
+    record: &JobRecord,
+) -> Result<(), u32> {
+    match record.state {
+        JobState::Queued | JobState::Running | JobState::Cancelling => {}
+        JobState::Completed | JobState::Failed | JobState::Cancelled => return Ok(()),
+    }
+    state
+        .polling
+        .asked(&crate::polling::client_of(access, headers), id)
 }
 
 fn owns(access: &Access, record: &JobRecord) -> Result<(), Error> {

@@ -39,6 +39,7 @@ pub enum IssueCode {
     Informational,
     BusinessRule,
     Transient,
+    Throttled,
 }
 
 impl IssueCode {
@@ -60,6 +61,7 @@ impl IssueCode {
             IssueCode::Informational => "informational",
             IssueCode::BusinessRule => "business-rule",
             IssueCode::Transient => "transient",
+            IssueCode::Throttled => "throttled",
         }
     }
 
@@ -79,6 +81,7 @@ impl IssueCode {
             IssueCode::Informational => 200,
             IssueCode::BusinessRule => 422,
             IssueCode::Transient => 503,
+            IssueCode::Throttled => 429,
         }
     }
 }
