@@ -16,6 +16,7 @@ use uuid::Uuid;
 
 use crate::app::AppState;
 use crate::compartment::{definition_json, definitions_bundle};
+use crate::conditional;
 use crate::history::{history_bundle, HistoryRequest};
 use crate::parameter::{self, SEARCH_PARAMETER};
 use crate::preference::Return;
@@ -87,7 +88,12 @@ pub async fn read(
         return Err(Error::Deleted.into());
     }
     within(&state, &access, &headers, DataAction::Read, &envelope)?;
-    Ok(respond_resource(&envelope, host_from(&headers)))
+    let host = host_from(&headers);
+    let precondition = conditional::asked_for(&headers);
+    if conditional::holds(precondition.as_ref(), &envelope) {
+        return Ok(respond_not_modified(&envelope, host));
+    }
+    Ok(respond_resource(&envelope, host))
 }
 
 pub async fn vread(
@@ -673,6 +679,28 @@ fn respond_resource(envelope: &ResourceEnvelope, host: &str) -> Response {
         HeaderValue::from_str(&location(host, envelope))
             .expect("content-location is a header value"),
     );
+    response
+}
+
+fn respond_not_modified(envelope: &ResourceEnvelope, host: &str) -> Response {
+    let mut response = Response::new(Body::empty());
+    *response.status_mut() = StatusCode::NOT_MODIFIED;
+    let headers = response.headers_mut();
+    headers.insert(
+        header::ETAG,
+        HeaderValue::from_str(&etag(envelope)).expect("etag is a header value"),
+    );
+    headers.insert(
+        header::LAST_MODIFIED,
+        HeaderValue::from_str(&last_modified(envelope.last_updated()))
+            .expect("last-modified is a header value"),
+    );
+    headers.insert(
+        header::CONTENT_LOCATION,
+        HeaderValue::from_str(&location(host, envelope))
+            .expect("content-location is a header value"),
+    );
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
     response
 }
 
