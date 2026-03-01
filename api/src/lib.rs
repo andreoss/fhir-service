@@ -12,6 +12,7 @@ pub mod job;
 pub mod measure;
 pub mod operation;
 pub mod parameter;
+pub mod preference;
 pub mod query;
 pub mod representation;
 pub mod scrape;

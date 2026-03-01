@@ -15,6 +15,7 @@ use tower::ServiceExt;
 
 use crate::app::AppState;
 use crate::handlers::AppError;
+use crate::preference::Return;
 use fhir_core::security::scope::DataAction;
 use fhir_core::security::Access;
 
@@ -287,7 +288,11 @@ async fn transaction(
         .flatten()
         .map(|outcome| outcome.to_entry())
         .collect();
-    Ok(replied(Kind::Transaction, listed))
+    Ok(replied(
+        Kind::Transaction,
+        listed,
+        Return::asked_for(headers),
+    ))
 }
 
 async fn batch(
@@ -304,7 +309,7 @@ async fn batch(
         true => sequential(&router, headers, entries, access, grant, &mut listed).await,
         false => parallel(&router, headers, entries, access, grant, &gate, &mut listed).await,
     }
-    replied(Kind::Batch, listed)
+    replied(Kind::Batch, listed, Return::asked_for(headers))
 }
 
 fn linked(entries: &[Result<Entry, Error>]) -> bool {
@@ -386,7 +391,11 @@ fn rank(method: &str) -> u8 {
     }
 }
 
-fn replied(kind: Kind, entries: Vec<Value>) -> Response {
+fn replied(kind: Kind, entries: Vec<Value>, asked: Option<Return>) -> Response {
+    let entries = match asked {
+        Some(Return::Minimal) => entries.into_iter().map(stripped).collect(),
+        _ => entries,
+    };
     let bundle = json!({
         "resourceType": BUNDLE,
         "type": kind.response_type(),
@@ -401,6 +410,16 @@ fn replied(kind: Kind, entries: Vec<Value>) -> Response {
         bundle.to_string(),
     )
         .into_response()
+}
+
+fn stripped(entry: Value) -> Value {
+    match entry {
+        Value::Object(mut fields) => {
+            fields.remove("resource");
+            Value::Object(fields)
+        }
+        other => other,
+    }
 }
 
 async fn dispatch(

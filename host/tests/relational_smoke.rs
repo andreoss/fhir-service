@@ -333,12 +333,7 @@ fn a_transaction_resolves_its_placeholders_over_the_relational_backend() {
             "transaction",
             &format!(
                 "{},{}",
-                placed_entry(
-                    "POST",
-                    "Patient",
-                    &patient_text("bp1", "Quarry"),
-                    place
-                ),
+                placed_entry("POST", "Patient", &patient_text("bp1", "Quarry"), place),
                 entry("POST", "Observation", &observation)
             ),
         ),
@@ -413,4 +408,81 @@ fn a_job_runs_to_completion_over_the_relational_backend() {
     assert_eq!(manifest["state"], "completed");
     assert_eq!(manifest["kind"], "export");
     assert_eq!(manifest["outcome"]["handled"], 1);
+}
+
+#[test]
+fn a_return_preference_is_honoured_over_the_relational_backend() {
+    let namespace = schema();
+    let (child, port) = spawn_server(&namespace);
+
+    let minimal = request(
+        port,
+        "POST",
+        "/Patient",
+        &[
+            ("Content-Type", "application/fhir+json"),
+            ("Prefer", "return=minimal"),
+        ],
+        &patient("rt-1", "Stone", true),
+    );
+    assert_eq!(minimal.status, 201, "{}", minimal.body);
+    assert!(minimal.body.is_empty(), "{}", minimal.body);
+
+    let outcome = request(
+        port,
+        "PUT",
+        "/Patient/rt-1",
+        &[
+            ("Content-Type", "application/fhir+json"),
+            ("Prefer", "return=OperationOutcome"),
+        ],
+        &patient("rt-1", "Stone", false),
+    );
+    assert_eq!(outcome.status, 200, "{}", outcome.body);
+    assert_eq!(json(&outcome.body)["resourceType"], "OperationOutcome");
+    assert_eq!(json(&outcome.body)["issue"][0]["severity"], "information");
+
+    let again = request(
+        port,
+        "PUT",
+        "/Patient/rt-1",
+        &[
+            ("Content-Type", "application/fhir+json"),
+            ("Prefer", "return=representation"),
+        ],
+        &patient("rt-1", "Stone", true),
+    );
+    assert_eq!(again.status, 200, "{}", again.body);
+    assert_eq!(json(&again.body)["resourceType"], "Patient");
+
+    let bundle = request(
+        port,
+        "POST",
+        "/",
+        &[
+            ("Content-Type", "application/fhir+json"),
+            ("Prefer", "return=minimal"),
+        ],
+        &bundle_body(
+            "transaction",
+            &format!(
+                "{},{}",
+                entry("POST", "Patient", &patient_text("rt-2", "Rivers")),
+                entry("POST", "Patient", &patient_text("rt-3", "Marsh"))
+            ),
+        ),
+    );
+    assert_eq!(bundle.status, 200, "{}", bundle.body);
+    let value = json(&bundle.body);
+    for index in 0..2 {
+        assert_eq!(value["entry"][index]["response"]["status"], "201 Created");
+        assert!(
+            value["entry"][index].get("resource").is_none(),
+            "{}",
+            value["entry"][index]
+        );
+    }
+
+    stop(child);
+    drop_schema(&namespace);
 }
