@@ -1,8 +1,6 @@
 use crate::handler::{JobContext, JobHandler, UnitOutcome};
 use fhir_core::Error;
-use fhir_store::{
-    JobKind, JobProgress, JobRecord, JobResult, JobSignal, JobStore, JobState,
-};
+use fhir_store::{JobKind, JobProgress, JobRecord, JobResult, JobSignal, JobState, JobStore};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -19,6 +17,7 @@ pub fn measured(kind: JobKind) -> fhir_telemetry::Operation {
         JobKind::BulkDelete => fhir_telemetry::Operation::BulkDelete,
         JobKind::BulkUpdate => fhir_telemetry::Operation::BulkUpdate,
         JobKind::Reindex => fhir_telemetry::Operation::Reindex,
+        JobKind::Interaction => fhir_telemetry::Operation::Search,
     }
 }
 
@@ -154,7 +153,10 @@ impl Orchestrator {
 fn report(units: u64, summary: &UnitOutcome) -> String {
     let mut report = serde_json::Map::new();
     report.insert("units".to_owned(), serde_json::Value::from(units));
-    report.insert("handled".to_owned(), serde_json::Value::from(summary.handled));
+    report.insert(
+        "handled".to_owned(),
+        serde_json::Value::from(summary.handled),
+    );
     report.insert(
         "unchanged".to_owned(),
         serde_json::Value::from(summary.unchanged),
@@ -223,7 +225,10 @@ impl Worker {
     }
 
     pub async fn stopping(&self) -> Result<usize, Error> {
-        self.jobs.hand_over(&self.name).await.map(|moved| moved.len())
+        self.jobs
+            .hand_over(&self.name)
+            .await
+            .map(|moved| moved.len())
     }
 
     pub async fn poll(&self) -> Result<usize, Error> {

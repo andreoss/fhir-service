@@ -5,6 +5,7 @@ const RETURN: &str = "return";
 const MINIMAL: &str = "minimal";
 const REPRESENTATION: &str = "representation";
 const OUTCOME: &str = "operationoutcome";
+const RESPOND_ASYNC: &str = "respond-async";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Return {
@@ -35,6 +36,18 @@ impl Return {
 fn asked(value: &axum::http::HeaderValue) -> Option<Return> {
     let text = value.to_str().ok()?;
     text.split(',').filter_map(Return::parse).next()
+}
+
+pub fn respond_async(headers: &HeaderMap) -> bool {
+    headers
+        .get_all(PREFER)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .any(|text| {
+            text.split(',')
+                .chain(text.split(';'))
+                .any(|token| token.trim().eq_ignore_ascii_case(RESPOND_ASYNC))
+        })
 }
 
 #[cfg(test)]
@@ -89,5 +102,26 @@ mod tests {
     fn the_first_return_of_several_preference_headers_wins() {
         let headers = headers(&["handling=strict", "return=minimal", "return=representation"]);
         assert_eq!(Return::asked_for(&headers), Some(Return::Minimal));
+    }
+
+    #[test]
+    fn a_client_that_asks_to_answer_later_is_heard() {
+        for text in [
+            "respond-async",
+            "Respond-Async",
+            " respond-async ",
+            "handling=lenient, respond-async",
+            "respond-async; return=minimal",
+        ] {
+            assert!(super::respond_async(&headers(&[text])), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_preference_that_is_not_to_answer_later_is_not_one() {
+        for text in ["return=minimal", "handling=lenient", "", "respond"] {
+            assert!(!super::respond_async(&headers(&[text])), "{text}");
+        }
+        assert!(!super::respond_async(&HeaderMap::new()));
     }
 }

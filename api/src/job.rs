@@ -7,7 +7,7 @@ use fhir_core::security::scope::DataAction;
 use fhir_core::security::Access;
 use fhir_core::Error;
 use fhir_core::{IssueCode, OperationOutcome};
-use fhir_store::{JobId, JobKind, JobRecord, JobRequest, JobState, JobStore};
+use fhir_store::{InteractionEntry, JobId, JobKind, JobRecord, JobRequest, JobState, JobStore};
 use serde_json::Value;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -191,6 +191,7 @@ fn action_of(kind: JobKind) -> DataAction {
         JobKind::BulkDelete => DataAction::BulkDelete,
         JobKind::BulkUpdate => DataAction::BulkUpdate,
         JobKind::Reindex => DataAction::Reindex,
+        JobKind::Interaction => DataAction::Read,
     }
 }
 
@@ -239,6 +240,25 @@ async fn submit(state: &AppState, kind: JobKind, headers: &HeaderMap, body: &[u8
     match jobs.submit(request).await {
         Ok(_) => accepted(&host_of(headers), &id),
         Err(error) => AppError::from(error).into_response_now(),
+    }
+}
+
+pub(crate) async fn deferred(
+    state: &AppState,
+    asked: &crate::interaction::Asked,
+    headers: &HeaderMap,
+) -> Option<Response> {
+    match crate::preference::respond_async(headers) {
+        false => None,
+        true => Some(
+            submit(
+                state,
+                JobKind::Interaction,
+                headers,
+                asked.to_request().as_bytes(),
+            )
+            .await,
+        ),
     }
 }
 
@@ -381,6 +401,18 @@ pub async fn poll(
                 "x-progress",
                 HeaderValue::from_str(&progress_of(&record)).expect("progress is a header"),
             );
+            response
+        }
+        JobState::Completed if record.kind == JobKind::Interaction => {
+            let body = record
+                .outcome
+                .as_deref()
+                .and_then(InteractionEntry::read_back)
+                .unwrap_or(Value::Null);
+            let mut response = Response::new(Body::from(body.to_string()));
+            response
+                .headers_mut()
+                .insert(header::CONTENT_TYPE, HeaderValue::from_static(FHIR_JSON));
             response
         }
         JobState::Completed => {

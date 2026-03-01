@@ -247,6 +247,15 @@ impl Service {
         Arc::clone(&self.state.registry)
     }
 
+    pub fn interactions(&self) -> Arc<dyn fhir_store::Interactions> {
+        Arc::new(crate::interaction::Searches::new(
+            Arc::clone(&self.state.store),
+            self.state.version,
+            Arc::clone(&self.state.registry),
+            Arc::clone(&self.state.terminology),
+        ))
+    }
+
     pub fn router(&self) -> Router<()> {
         layered(routes().with_state(self.state.clone()), &self.state)
     }

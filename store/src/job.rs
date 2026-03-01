@@ -46,15 +46,17 @@ pub enum JobKind {
     BulkDelete,
     BulkUpdate,
     Reindex,
+    Interaction,
 }
 
 impl JobKind {
-    pub const ALL: [JobKind; 5] = [
+    pub const ALL: [JobKind; 6] = [
         JobKind::Import,
         JobKind::Export,
         JobKind::BulkDelete,
         JobKind::BulkUpdate,
         JobKind::Reindex,
+        JobKind::Interaction,
     ];
 
     pub fn as_str(&self) -> &'static str {
@@ -64,6 +66,7 @@ impl JobKind {
             JobKind::BulkDelete => "bulk-delete",
             JobKind::BulkUpdate => "bulk-update",
             JobKind::Reindex => "reindex",
+            JobKind::Interaction => "interaction",
         }
     }
 
@@ -74,6 +77,7 @@ impl JobKind {
             JobKind::BulkDelete => 2,
             JobKind::BulkUpdate => 3,
             JobKind::Reindex => 4,
+            JobKind::Interaction => 5,
         }
     }
 }
@@ -252,8 +256,8 @@ pub const RETRY_BACKOFF: i64 = 1_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct JobLimits {
-    running: [i64; 5],
-    gap: [i64; 5],
+    running: [i64; 6],
+    gap: [i64; 6],
 }
 
 impl Default for JobLimits {
@@ -265,8 +269,8 @@ impl Default for JobLimits {
 impl JobLimits {
     pub const fn unlimited() -> JobLimits {
         JobLimits {
-            running: [-1; 5],
-            gap: [0; 5],
+            running: [-1; 6],
+            gap: [0; 6],
         }
     }
 
@@ -385,6 +389,81 @@ pub trait JobStore: Send + Sync {
     async fn health(&self) -> Result<(), Error> {
         Ok(())
     }
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct InteractionEntry {
+    pub status: String,
+    pub location: Option<String>,
+    pub resource: Option<serde_json::Value>,
+    pub outcome: Option<serde_json::Value>,
+}
+
+impl InteractionEntry {
+    pub const RESPONSE: &str = "response";
+
+    pub fn answered(status: impl Into<String>) -> InteractionEntry {
+        InteractionEntry {
+            status: status.into(),
+            ..InteractionEntry::default()
+        }
+    }
+
+    pub fn carrying(mut self, resource: serde_json::Value) -> InteractionEntry {
+        self.resource = Some(resource);
+        self
+    }
+
+    pub fn reporting(mut self, outcome: serde_json::Value) -> InteractionEntry {
+        self.outcome = Some(outcome);
+        self
+    }
+
+    pub fn bundle(&self) -> serde_json::Value {
+        let mut response = serde_json::Map::new();
+        response.insert(
+            "status".to_owned(),
+            serde_json::Value::String(self.status.clone()),
+        );
+        if let Some(location) = &self.location {
+            response.insert(
+                "location".to_owned(),
+                serde_json::Value::String(location.clone()),
+            );
+        }
+        if let Some(outcome) = &self.outcome {
+            response.insert("outcome".to_owned(), outcome.clone());
+        }
+        let mut entry = serde_json::Map::new();
+        entry.insert("response".to_owned(), serde_json::Value::Object(response));
+        if let Some(resource) = &self.resource {
+            entry.insert("resource".to_owned(), resource.clone());
+        }
+        let mut bundle = serde_json::Map::new();
+        bundle.insert(
+            "resourceType".to_owned(),
+            serde_json::Value::String("Bundle".to_owned()),
+        );
+        bundle.insert(
+            "type".to_owned(),
+            serde_json::Value::String("batch-response".to_owned()),
+        );
+        bundle.insert(
+            "entry".to_owned(),
+            serde_json::Value::Array(vec![serde_json::Value::Object(entry)]),
+        );
+        serde_json::Value::Object(bundle)
+    }
+
+    pub fn read_back(report: &str) -> Option<serde_json::Value> {
+        let parsed = serde_json::from_str::<serde_json::Value>(report).ok()?;
+        parsed.as_object()?.get(InteractionEntry::RESPONSE).cloned()
+    }
+}
+
+#[async_trait]
+pub trait Interactions: Send + Sync {
+    async fn perform(&self, request: &str) -> InteractionEntry;
 }
 
 #[cfg(test)]

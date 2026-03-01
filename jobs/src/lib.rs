@@ -1,4 +1,3 @@
-
 pub mod export;
 pub mod handler;
 pub mod orchestrator;
@@ -12,6 +11,6 @@ pub use handler::{JobContext, JobHandler, Unit, UnitOutcome};
 pub use orchestrator::{measured, Orchestrator, Worker};
 pub use watchdog::{Schedule, Sweep, Watchdog, RETENTION};
 pub use work::{
-    BulkDeleteJob, BulkDeleteRequest, BulkUpdateJob, BulkUpdateRequest, ImportJob, ReindexJob,
-    ReindexRequest, IMPORT_FAILURES,
+    BulkDeleteJob, BulkDeleteRequest, BulkUpdateJob, BulkUpdateRequest, ImportJob, InteractionJob,
+    ReindexJob, ReindexRequest, IMPORT_FAILURES,
 };

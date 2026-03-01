@@ -1,4 +1,4 @@
-use fhir_api::{DiscoveredKeys, Dependency, HeldKeys, Keys, Service, StoredTrail};
+use fhir_api::{Dependency, DiscoveredKeys, HeldKeys, Keys, Service, StoredTrail};
 use fhir_core::Error;
 use fhir_store::ResourceStore;
 use std::sync::Arc;
@@ -38,8 +38,7 @@ async fn run() -> Result<(), Error> {
         let keys: Arc<dyn Keys> = match config.keys.clone() {
             Some(set) => Arc::new(HeldKeys::new(set)),
             None => Arc::new(
-                DiscoveredKeys::new(DISCOVERY_TIMEOUT)
-                    .pinning(&issuer, config.pins.clone()),
+                DiscoveredKeys::new(DISCOVERY_TIMEOUT).pinning(&issuer, config.pins.clone()),
             ),
         };
         let trail = StoredTrail::resumed(
@@ -70,6 +69,7 @@ async fn run() -> Result<(), Error> {
             outputs,
             config.version,
             service.telemetry(),
+            service.interactions(),
         ));
         spawn_watchdog(Arc::clone(jobs));
     }
@@ -113,13 +113,16 @@ fn spawn_worker(
     outputs: Option<Arc<dyn fhir_store::BulkStore>>,
     version: fhir_core::FhirVersion,
     telemetry: Arc<fhir_telemetry::Telemetry>,
+    interactions: Arc<dyn fhir_store::Interactions>,
 ) -> Arc<fhir_jobs::Worker> {
     let importing = fhir_jobs::ImportJob::new(Arc::clone(&store), version);
     let importing = match &outputs {
         Some(sink) => importing.reporting(Arc::clone(sink)),
         None => importing,
     };
-    let mut registry = fhir_jobs::Orchestrator::new().with(Arc::new(importing));
+    let mut registry = fhir_jobs::Orchestrator::new()
+        .with(Arc::new(importing))
+        .with(Arc::new(fhir_jobs::InteractionJob::new(interactions)));
     if let Some(sink) = outputs {
         registry = registry
             .with(Arc::new(fhir_jobs::ReindexJob::new(

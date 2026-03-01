@@ -916,6 +916,16 @@ pub async fn search_type(
     )
     .await?;
     let path = format!("/{resource_type}");
+    let asked = crate::interaction::Asked::new(
+        crate::interaction::SEARCH,
+        path.clone(),
+        Some(resource_type.as_str()),
+        query.as_deref(),
+        host_from(&headers),
+    );
+    if let Some(answered) = crate::job::deferred(&state, &asked, &headers).await {
+        return Ok(answered);
+    }
     respond_search(&state, Some(resource_type), path, query, &headers).await
 }
 
@@ -925,6 +935,16 @@ pub async fn search_system(
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
     allowed(&state, &headers, DataAction::Read, None, None).await?;
+    let asked = crate::interaction::Asked::new(
+        crate::interaction::SEARCH,
+        "/",
+        None,
+        query.as_deref(),
+        host_from(&headers),
+    );
+    if let Some(answered) = crate::job::deferred(&state, &asked, &headers).await {
+        return Ok(answered);
+    }
     respond_search(&state, None, String::new(), query, &headers).await
 }
 

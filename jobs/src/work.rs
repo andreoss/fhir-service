@@ -4,7 +4,8 @@ use async_trait::async_trait;
 use fhir_core::search::ParameterSpec;
 use fhir_core::{Error, FhirVersion, Patch, ResourceEnvelope, ResourceId, ResourceType};
 use fhir_store::{
-    BulkStore, HistoryOrder, HistoryQuery, HistoryScope, JobKind, ResourceStore, SearchQuery,
+    BulkStore, HistoryOrder, HistoryQuery, HistoryScope, InteractionEntry, Interactions, JobKind,
+    ResourceStore, SearchQuery,
 };
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -49,7 +50,6 @@ async fn every_recorded_type(store: &dyn ResourceStore) -> Result<Vec<ResourceTy
     Ok(found)
 }
 
-
 async fn every_type(store: &dyn ResourceStore) -> Result<Vec<ResourceType>, Error> {
     let page = store.search(&SearchQuery::default()).await?;
     let mut found: Vec<ResourceType> = Vec::new();
@@ -63,8 +63,10 @@ async fn every_type(store: &dyn ResourceStore) -> Result<Vec<ResourceType>, Erro
     Ok(found)
 }
 
-
-async fn current_of(store: &dyn ResourceStore, label: &str) -> Result<Vec<ResourceEnvelope>, Error> {
+async fn current_of(
+    store: &dyn ResourceStore,
+    label: &str,
+) -> Result<Vec<ResourceEnvelope>, Error> {
     let resource_type = label.parse::<ResourceType>()?;
     let page = store.search(&SearchQuery::of_type(resource_type)).await?;
     Ok(page.entries)
@@ -173,7 +175,8 @@ impl JobHandler for ImportJob {
     }
 
     async fn process(&self, job: &JobContext, unit: &Unit) -> Result<UnitOutcome, Error> {
-        let envelope = match ResourceEnvelope::parse_supplied(self.version, unit.detail.as_bytes()) {
+        let envelope = match ResourceEnvelope::parse_supplied(self.version, unit.detail.as_bytes())
+        {
             Ok(envelope) => envelope,
             Err(error) => {
                 let failures = vec![format!("{}: {error}", unit.label)];
@@ -223,10 +226,7 @@ impl BulkDeleteRequest {
         let parsed = payload::body(payload)?;
         Ok(BulkDeleteRequest {
             types: payload::resource_types(&payload::named(&parsed, &["_type", "types"]))?,
-            excluded: payload::resource_types(&payload::named(
-                &parsed,
-                &["_exclude", "excluded"],
-            ))?,
+            excluded: payload::resource_types(&payload::named(&parsed, &["_exclude", "excluded"]))?,
             max_count: payload::count(&parsed, "_maxCount")?,
             hard: payload::flagged(&parsed, &["_hardDelete", "hardDelete"]),
             purge: payload::flagged(&parsed, &["_purgeHistory", "purgeHistory"]),
@@ -402,10 +402,7 @@ impl BulkUpdateRequest {
         Patch::parse(supplied.as_bytes())?;
         Ok(BulkUpdateRequest {
             types: payload::resource_types(&payload::named(&parsed, &["_type", "types"]))?,
-            excluded: payload::resource_types(&payload::named(
-                &parsed,
-                &["_exclude", "excluded"],
-            ))?,
+            excluded: payload::resource_types(&payload::named(&parsed, &["_exclude", "excluded"]))?,
             max_count: payload::count(&parsed, "_maxCount")?,
             patch: supplied,
         })
@@ -525,7 +522,6 @@ impl JobHandler for BulkUpdateJob {
     }
 }
 
-
 fn logical(reference: &str) -> Result<ResourceId, Error> {
     ResourceId::parse(reference.rsplit('/').next().unwrap_or_default())
 }
@@ -533,10 +529,12 @@ fn logical(reference: &str) -> Result<ResourceId, Error> {
 fn safe(label: &str) -> String {
     label
         .chars()
-        .map(|held| match held.is_ascii_alphanumeric() || held == '.' || held == '-' {
-            true => held,
-            false => '-',
-        })
+        .map(
+            |held| match held.is_ascii_alphanumeric() || held == '.' || held == '-' {
+                true => held,
+                false => '-',
+            },
+        )
         .collect()
 }
 
@@ -574,7 +572,10 @@ impl ReindexJob {
 
     async fn matching(&self, urls: &[String]) -> Result<Vec<ParameterSpec>, Error> {
         let resource_type = "SearchParameter".parse::<ResourceType>()?;
-        let page = self.store.search(&SearchQuery::of_type(resource_type)).await?;
+        let page = self
+            .store
+            .search(&SearchQuery::of_type(resource_type))
+            .await?;
         let mut specs = Vec::new();
         for entry in page.entries {
             let Ok(parsed) = serde_json::from_slice::<Value>(entry.raw()) else {
@@ -606,7 +607,11 @@ impl ReindexJob {
         outcome: &mut UnitOutcome,
     ) -> Result<(), Error> {
         let specs = self.matching(&payload::listed(detail, "urls")).await?;
-        let reports = match self.store.reindex_resource(&specs, &logical(reference)?).await {
+        let reports = match self
+            .store
+            .reindex_resource(&specs, &logical(reference)?)
+            .await
+        {
             Ok(reports) => reports,
             Err(error) => {
                 outcome.failures.push(format!("{reference}: {error}"));
@@ -693,7 +698,11 @@ impl JobHandler for ReindexJob {
             Some(reference) => self.one_resource(&detail, &reference, &mut outcome).await?,
             None => match payload::text(&detail, "url") {
                 Some(url) => self.one_parameter(&url, &mut outcome).await?,
-                None => return Err(Error::InvalidParameter("a reindex unit names nothing".to_owned())),
+                None => {
+                    return Err(Error::InvalidParameter(
+                        "a reindex unit names nothing".to_owned(),
+                    ))
+                }
             },
         }
         report::record_failures(
@@ -703,6 +712,36 @@ impl JobHandler for ReindexJob {
             &outcome.failures,
         )
         .await?;
+        Ok(outcome)
+    }
+}
+
+pub struct InteractionJob {
+    runner: Arc<dyn Interactions>,
+}
+
+impl InteractionJob {
+    pub fn new(runner: Arc<dyn Interactions>) -> InteractionJob {
+        InteractionJob { runner }
+    }
+}
+
+#[async_trait]
+impl JobHandler for InteractionJob {
+    fn kind(&self) -> JobKind {
+        JobKind::Interaction
+    }
+
+    async fn plan(&self, job: &JobContext) -> Result<Vec<Unit>, Error> {
+        Ok(vec![Unit::new("interaction", job.payload.clone())])
+    }
+
+    async fn process(&self, _job: &JobContext, unit: &Unit) -> Result<UnitOutcome, Error> {
+        let entry = self.runner.perform(&unit.detail).await;
+        let mut outcome = UnitOutcome::handled(1);
+        outcome
+            .detail
+            .insert(InteractionEntry::RESPONSE.to_owned(), entry.bundle());
         Ok(outcome)
     }
 }

@@ -486,3 +486,52 @@ fn a_return_preference_is_honoured_over_the_relational_backend() {
     stop(child);
     drop_schema(&namespace);
 }
+
+#[test]
+fn a_search_asked_to_answer_later_is_answered_over_the_relational_backend() {
+    let namespace = schema();
+    let (child, port) = spawn_server(&namespace);
+
+    let created = request(
+        port,
+        "POST",
+        "/Patient",
+        &[],
+        &patient("da-1", "River", true),
+    );
+    assert_eq!(created.status, 201, "create failed: {}", created.body);
+
+    let deferred = request(
+        port,
+        "GET",
+        "/Patient?family=River",
+        &[("Prefer", "respond-async")],
+        &[],
+    );
+    assert_eq!(deferred.status, 202, "kick-off failed: {}", deferred.body);
+    assert_eq!(header(&deferred, "retry-after"), "1");
+    let path = header(&deferred, "content-location")
+        .split_once("/_jobs/")
+        .map(|(_, id)| format!("/_jobs/{id}"))
+        .expect("a status location carries an id");
+
+    let mut polled = request(port, "GET", &path, &[], &[]);
+    for _ in 0..100 {
+        if polled.status != 202 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+        polled = request(port, "GET", &path, &[], &[]);
+    }
+    stop(child);
+    drop_schema(&namespace);
+
+    assert_eq!(polled.status, 200, "poll failed: {}", polled.body);
+    let answered = json(&polled.body);
+    assert_eq!(answered["resourceType"], "Bundle");
+    assert_eq!(answered["type"], "batch-response");
+    assert_eq!(answered["entry"][0]["response"]["status"], "200 OK");
+    let carried = &answered["entry"][0]["resource"];
+    assert_eq!(carried["type"], "searchset");
+    assert_eq!(carried["entry"][0]["resource"]["id"], "da-1");
+}
