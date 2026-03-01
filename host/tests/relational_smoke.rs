@@ -575,3 +575,71 @@ fn a_search_asked_to_answer_later_is_answered_over_the_relational_backend() {
     assert_eq!(carried["type"], "searchset");
     assert_eq!(carried["entry"][0]["resource"]["id"], "da-1");
 }
+
+#[test]
+fn a_read_of_what_has_not_changed_answers_not_modified_over_the_relational_backend() {
+    let namespace = schema();
+    let (child, port) = spawn_server(&namespace);
+
+    let created = request(
+        port,
+        "PUT",
+        "/Patient/cr-1",
+        &[("Content-Type", "application/fhir+json")],
+        &patient("cr-1", "Stone", true),
+    );
+    let etag = header(&created, "etag").to_owned();
+    let written = header(&created, "last-modified").to_owned();
+    let held = request(
+        port,
+        "GET",
+        "/Patient/cr-1",
+        &[("If-None-Match", &etag)],
+        &[],
+    );
+    let any = request(port, "GET", "/Patient/cr-1", &[("If-None-Match", "*")], &[]);
+    let since = request(
+        port,
+        "GET",
+        "/Patient/cr-1",
+        &[("If-Modified-Since", &written)],
+        &[],
+    );
+    let stale = request(
+        port,
+        "GET",
+        "/Patient/cr-1",
+        &[("If-None-Match", "W/\"9\"")],
+        &[],
+    );
+    let early = request(
+        port,
+        "GET",
+        "/Patient/cr-1",
+        &[("If-Modified-Since", "Sun, 06 Sep 2026 03:59:59 GMT")],
+        &[],
+    );
+    let whole = request(port, "GET", "/Patient/cr-1", &[], &[]);
+    stop(child);
+    drop_schema(&namespace);
+
+    assert_eq!(created.status, 201, "create failed: {}", created.body);
+    assert_eq!(etag, "W/\"1\"", "{}", created.body);
+    assert!(!written.is_empty(), "{}", created.body);
+    assert_eq!(held.status, 304, "the version is held: {}", held.body);
+    assert!(held.body.is_empty(), "no body: {}", held.body);
+    assert_eq!(header(&held, "etag"), etag, "{}", held.body);
+    assert_eq!(header(&held, "last-modified"), written, "{}", held.body);
+    assert_eq!(header(&held, "cache-control"), "no-cache", "{}", held.body);
+    assert!(
+        header(&held, "content-location").contains("/Patient/cr-1"),
+        "{}",
+        held.body
+    );
+    assert_eq!(any.status, 304, "any version is held: {}", any.body);
+    assert_eq!(since.status, 304, "nothing changed since: {}", since.body);
+    assert_eq!(stale.status, 200, "a stale version: {}", stale.body);
+    assert_eq!(json(&stale.body)["resourceType"], "Patient");
+    assert_eq!(early.status, 200, "an earlier date: {}", early.body);
+    assert_eq!(whole.status, 200, "no precondition: {}", whole.body);
+}
