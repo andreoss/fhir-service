@@ -28,10 +28,14 @@ fn schema() -> String {
 }
 
 fn spawn_server(namespace: &str) -> (Child, u16) {
+    spawn_version(namespace, "R4")
+}
+
+fn spawn_version(namespace: &str, version: &str) -> (Child, u16) {
     let mut child = Command::new(env!("CARGO_BIN_EXE_fhir-host"))
         .env("FHIR_BACKEND", "relational")
         .env("FHIR_BIND", "127.0.0.1:0")
-        .env("FHIR_VERSION", "R4")
+        .env("FHIR_VERSION", version)
         .env("FHIR_DATABASE_URL", url())
         .env("FHIR_SCHEMA", namespace)
         .stdout(Stdio::piped())
@@ -642,4 +646,101 @@ fn a_read_of_what_has_not_changed_answers_not_modified_over_the_relational_backe
     assert_eq!(json(&stale.body)["resourceType"], "Patient");
     assert_eq!(early.status, 200, "an earlier date: {}", early.body);
     assert_eq!(whole.status, 200, "no precondition: {}", whole.body);
+}
+
+#[test]
+fn a_search_names_the_common_parameters_of_the_release_over_the_relational_backend() {
+    fn carried(id: &str, language: &str, source: &str) -> Vec<u8> {
+        format!(
+            r#"{{"resourceType":"Patient","id":"{id}","language":"{language}","meta":{{"source":"{source}"}},"name":[{{"family":"Stone"}}]}}"#
+        )
+        .into_bytes()
+    }
+
+    let namespace = schema();
+    let (child, port) = spawn_version(&namespace, "R5");
+    for (id, language, source) in [
+        ("cm-1", "en", "http://example.org/records/one"),
+        ("cm-2", "fr", "http://example.org/records/two"),
+    ] {
+        let reply = request(
+            port,
+            "PUT",
+            &format!("/Patient/{id}"),
+            &[("Content-Type", "application/fhir+json")],
+            &carried(id, language, source),
+        );
+        assert_eq!(reply.status, 201, "create failed: {}", reply.body);
+    }
+
+    let by_language = request(port, "GET", "/Patient?_language=en", &[], &[]);
+    let both = request(port, "GET", "/Patient?_language=fr,en", &[], &[]);
+    let no_language = request(port, "GET", "/Patient?_language=de", &[], &[]);
+    let by_source = request(
+        port,
+        "GET",
+        "/Patient?_source=http%3A%2F%2Fexample.org%2Frecords%2Fone",
+        &[],
+        &[],
+    );
+    let no_source = request(
+        port,
+        "GET",
+        "/Patient?_source=http%3A%2F%2Fexample.org%2Frecords%2Fthree",
+        &[],
+        &[],
+    );
+    stop(child);
+    let earlier = schema();
+    let (child, port) = spawn_version(&earlier, "R4");
+    let refused = request(port, "GET", "/Patient?_language=en", &[], &[]);
+    let answered = request(
+        port,
+        "GET",
+        "/Patient?_source=http%3A%2F%2Fexample.org%2Frecords%2Fone",
+        &[],
+        &[],
+    );
+    stop(child);
+    drop_schema(&namespace);
+    drop_schema(&earlier);
+
+    assert_eq!(
+        by_language.status,
+        200,
+        "the language is answered: {}",
+        by_language.body
+    );
+    assert_eq!(json(&by_language.body)["total"], 1, "{}", by_language.body);
+    assert_eq!(
+        json(&by_language.body)["entry"][0]["resource"]["id"],
+        "cm-1",
+        "{}",
+        by_language.body
+    );
+    assert_eq!(json(&both.body)["total"], 2, "{}", both.body);
+    assert_eq!(json(&no_language.body)["total"], 0, "{}", no_language.body);
+    assert_eq!(
+        json(&by_source.body)["entry"][0]["resource"]["id"],
+        "cm-1",
+        "{}",
+        by_source.body
+    );
+    assert_eq!(json(&no_source.body)["total"], 0, "{}", no_source.body);
+    assert_eq!(
+        refused.status, 400,
+        "a release that names no language refuses one: {}",
+        refused.body
+    );
+    assert!(
+        refused.body.contains("_language"),
+        "the refusal names the parameter: {}",
+        refused.body
+    );
+    assert_eq!(
+        answered.status,
+        200,
+        "the source is answered where the release names it: {}",
+        answered.body
+    );
 }
