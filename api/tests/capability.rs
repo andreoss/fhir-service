@@ -391,7 +391,14 @@ async fn a_definition_declares_the_parameters_the_handler_accepts() {
     let (_, body) = reply(&app, "GET", "/OperationDefinition/export", b"").await;
     let export: Value = serde_json::from_str(&body).unwrap();
     let declared = names(export.get("parameter"));
-    for name in ["_type", "_since", "_till", "_outputFormat", "_typeFilter"] {
+    for name in [
+        "_type",
+        "_since",
+        "_till",
+        "_until",
+        "_outputFormat",
+        "_typeFilter",
+    ] {
         assert!(declared.contains(name), "{name}");
     }
     let (_, body) = reply(&app, "GET", "/OperationDefinition/expand", b"").await;
