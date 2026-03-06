@@ -239,6 +239,24 @@ const COMMON: &[StaticDef] = &[
         since: FhirVersion::Stu3,
         until: None,
     },
+    StaticDef {
+        name: "_source",
+        value_type: ValueType::Uri,
+        target: StaticTarget::Path(&["meta.source"]),
+        targets: &[],
+        sortable: false,
+        since: FhirVersion::R4,
+        until: None,
+    },
+    StaticDef {
+        name: "_language",
+        value_type: ValueType::Token,
+        target: StaticTarget::Path(&["language"]),
+        targets: &[],
+        sortable: false,
+        since: FhirVersion::R5,
+        until: None,
+    },
 ];
 
 const fn def(
@@ -989,7 +1007,24 @@ mod tests {
         assert!(references_in(FhirVersion::R5, kind("Observation"))
             .iter()
             .all(|def| def.name != "context"));
-        assert_eq!(common_in(FhirVersion::Stu3).len(), common().len());
+        let named = |version: FhirVersion| {
+            common_in(version)
+                .iter()
+                .map(|def| def.name.clone())
+                .collect::<Vec<String>>()
+        };
+        let third = named(FhirVersion::Stu3);
+        let fourth = named(FhirVersion::R4);
+        let latest = named(FhirVersion::R5);
+        assert!(!third.contains(&"_source".to_owned()), "{third:?}");
+        assert!(!third.contains(&"_language".to_owned()), "{third:?}");
+        assert!(fourth.contains(&"_source".to_owned()), "{fourth:?}");
+        assert!(!fourth.contains(&"_language".to_owned()), "{fourth:?}");
+        assert_eq!(named(FhirVersion::R4b), fourth);
+        assert_eq!(third.len() + 1, fourth.len());
+        assert!(latest.contains(&"_language".to_owned()), "{latest:?}");
+        assert_eq!(fourth.len() + 1, latest.len());
+        assert_eq!(latest.len(), common().len());
     }
 
     #[test]

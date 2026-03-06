@@ -1,5 +1,5 @@
-use fhir_core::search::{common, lookup, Filter, SearchValue, Target, ValueType};
-use fhir_core::{FhirInstant, ResourceId};
+use fhir_core::search::{common, common_in, lookup, lookup_in, Filter, SearchValue, Target, ValueType};
+use fhir_core::{FhirInstant, FhirVersion, ResourceId};
 use serde_json::json;
 
 fn filter(name: &str, raw: &str) -> Filter {
@@ -17,9 +17,11 @@ fn body() -> serde_json::Value {
     json!({
         "resourceType": "Patient",
         "id": "pt-1",
+        "language": "en",
         "meta": {
             "versionId": "1",
             "lastUpdated": "2026-09-06T04:00:00Z",
+            "source": "http://example.org/records/one",
             "profile": ["http://example.org/StructureDefinition/vip"],
             "tag": [{"system": "urn:tags", "code": "gold"}],
             "security": [{"system": "urn:sec", "code": "R"}]
@@ -91,6 +93,64 @@ fn tag_and_security_match_the_way_the_system_was_supplied() {
 }
 
 #[test]
+fn the_source_parameter_matches_the_address_the_meta_carries() {
+    assert!(matches("_source", "http://example.org/records/one"));
+    assert!(!matches("_source", "http://example.org/records/two"));
+    assert!(!matches("_source", "http://example.org/records"));
+    assert!(matches(
+        "_source",
+        "http://example.org/records/two,http://example.org/records/one"
+    ));
+}
+
+#[test]
+fn the_language_parameter_matches_the_language_the_resource_declares() {
+    assert!(matches("_language", "en"));
+    assert!(!matches("_language", "fr"));
+    assert!(matches("_language", "fr,en"));
+}
+
+#[test]
+fn a_common_parameter_is_answered_only_where_its_release_names_it() {
+    for version in FhirVersion::ALL {
+        let named: Vec<String> = common_in(version)
+            .iter()
+            .map(|def| def.name.clone())
+            .collect();
+        let holds = |name: &str| named.iter().any(|held| held == name);
+        assert!(holds("_id") && holds("_lastUpdated"), "{version:?}");
+        assert_eq!(
+            holds("_source"),
+            version != FhirVersion::Stu3,
+            "_source {version:?}"
+        );
+        assert_eq!(
+            holds("_language"),
+            version == FhirVersion::R5,
+            "_language {version:?}"
+        );
+        assert_eq!(
+            lookup_in(version, None, "_source").is_some(),
+            version != FhirVersion::Stu3,
+            "_source {version:?}"
+        );
+        assert_eq!(
+            lookup_in(version, None, "_language").is_some(),
+            version == FhirVersion::R5,
+            "_language {version:?}"
+        );
+    }
+    assert_eq!(
+        lookup_in(FhirVersion::R5, None, "_language").map(|def| def.paths()),
+        Some(vec!["language".to_owned()])
+    );
+    assert_eq!(
+        lookup_in(FhirVersion::R4, None, "_source").map(|def| def.paths()),
+        Some(vec!["meta.source".to_owned()])
+    );
+}
+
+#[test]
 fn the_common_parameters_are_the_ones_the_specification_gives_every_type() {
     let published: &[(&str, ValueType)] = &[
         ("_id", ValueType::Token),
@@ -98,6 +158,8 @@ fn the_common_parameters_are_the_ones_the_specification_gives_every_type() {
         ("_profile", ValueType::Uri),
         ("_tag", ValueType::Token),
         ("_security", ValueType::Token),
+        ("_source", ValueType::Uri),
+        ("_language", ValueType::Token),
         ("_text", ValueType::String),
     ];
     for (name, value_type) in published {
