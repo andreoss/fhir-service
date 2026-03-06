@@ -1,4 +1,6 @@
-use fhir_core::search::{common, common_in, lookup, lookup_in, Filter, SearchValue, Target, ValueType};
+use fhir_core::search::{
+    active, common, common_in, lookup, lookup_in, Filter, SearchValue, Target, ValueType,
+};
 use fhir_core::{FhirInstant, FhirVersion, ResourceId};
 use serde_json::json;
 
@@ -160,6 +162,7 @@ fn the_common_parameters_are_the_ones_the_specification_gives_every_type() {
         ("_security", ValueType::Token),
         ("_source", ValueType::Uri),
         ("_language", ValueType::Token),
+        ("_in", ValueType::Reference),
         ("_text", ValueType::String),
     ];
     for (name, value_type) in published {
@@ -204,4 +207,91 @@ fn the_common_parameters_are_the_ones_the_specification_gives_every_type() {
     );
     assert!(lookup(None, "_nonesuch").is_none());
     assert!(lookup(None, "name").is_none());
+}
+
+#[test]
+fn the_membership_parameter_is_named_by_the_latest_release_alone() {
+    for version in FhirVersion::ALL {
+        let named: Vec<String> = common_in(version)
+            .iter()
+            .map(|def| def.name.clone())
+            .collect();
+        assert_eq!(
+            named.iter().any(|name| name == "_in"),
+            version == FhirVersion::R5,
+            "_in {version:?} {named:?}"
+        );
+        assert_eq!(
+            lookup_in(version, None, "_in").is_some(),
+            version == FhirVersion::R5,
+            "lookup _in {version:?}"
+        );
+    }
+    let def = lookup_in(FhirVersion::R5, None, "_in").expect("the fifth release names it");
+    assert_eq!(def.value_type, ValueType::Reference);
+    assert!(matches!(def.target, Target::Collection));
+    assert_eq!(
+        def.targets,
+        vec!["CareTeam".to_owned(), "Group".to_owned(), "List".to_owned()]
+    );
+}
+
+#[test]
+fn the_active_members_of_a_collection_are_the_ones_the_release_counts() {
+    let now = FhirInstant::parse("2026-09-06T04:00:00Z").unwrap();
+    let group = json!({
+        "resourceType": "Group",
+        "id": "grp-1",
+        "actual": true,
+        "member": [
+            {"entity": {"reference": "Patient/101"}},
+            {"entity": {"reference": "Patient/102"}, "inactive": true},
+            {"entity": {"reference": "Patient/103"}, "period": {"start": "2020-01-01T00:00:00Z", "end": "2021-01-01T00:00:00Z"}},
+            {"entity": {"reference": "Patient/104"}, "period": {"start": "2020-01-01T00:00:00Z", "end": "2027-01-01T00:00:00Z"}}
+        ]
+    });
+    assert_eq!(
+        active(&"Group".parse().unwrap(), &group, &now),
+        vec!["101".to_owned(), "104".to_owned()]
+    );
+    let list = json!({
+        "resourceType": "List",
+        "id": "lst-1",
+        "status": "current",
+        "mode": "working",
+        "entry": [
+            {"item": {"reference": "Patient/201"}},
+            {"item": {"reference": "Patient/202"}, "deleted": true},
+            {"item": {"reference": "Patient/203"}, "period": {"start": "2026-09-01T00:00:00Z", "end": "2026-09-30T00:00:00Z"}}
+        ]
+    });
+    assert_eq!(
+        active(&"List".parse().unwrap(), &list, &now),
+        vec!["201".to_owned(), "203".to_owned()]
+    );
+    let team = json!({
+        "resourceType": "CareTeam",
+        "id": "ct-1",
+        "status": "active",
+        "participant": [
+            {"member": {"reference": "Patient/301"}, "period": {"start": "2026-01-01T00:00:00Z"}},
+            {"member": {"reference": "Patient/302"}, "period": {"start": "2027-01-01T00:00:00Z"}}
+        ]
+    });
+    assert_eq!(
+        active(&"CareTeam".parse().unwrap(), &team, &now),
+        vec!["301".to_owned()]
+    );
+    assert_eq!(
+        active(&"Patient".parse().unwrap(), &group, &now),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        active(
+            &"Group".parse().unwrap(),
+            &json!({"resourceType": "Group", "id": "gp"}),
+            &now
+        ),
+        Vec::<String>::new()
+    );
 }

@@ -22,6 +22,7 @@ pub enum Target {
     LastUpdated,
     Path(Vec<String>),
     Composite(Box<CompositeDef>),
+    Collection,
 }
 
 impl Target {
@@ -98,7 +99,7 @@ impl ParamDef {
                     SearchValue::parse(def.right.value_type, right)?,
                 ))
             }
-            Target::Id | Target::LastUpdated | Target::Path(_) => {
+            Target::Id | Target::LastUpdated | Target::Path(_) | Target::Collection => {
                 SearchValue::parse(self.value_type, raw)
             }
         }
@@ -114,7 +115,9 @@ impl ParamDef {
     pub fn paths(&self) -> Vec<String> {
         match &self.target {
             Target::Path(paths) => paths.clone(),
-            Target::Id | Target::LastUpdated | Target::Composite(_) => Vec::new(),
+            Target::Id | Target::LastUpdated | Target::Composite(_) | Target::Collection => {
+                Vec::new()
+            }
         }
     }
 }
@@ -138,6 +141,7 @@ enum StaticTarget {
     LastUpdated,
     Path(&'static [&'static str]),
     Composite(&'static StaticComposite),
+    Collection,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -176,6 +180,7 @@ impl From<&StaticDef> for ParamDef {
                     left: sub(composite.left),
                     right: sub(composite.right),
                 })),
+                StaticTarget::Collection => Target::Collection,
             },
             targets: owned(def.targets),
             sortable: def.sortable,
@@ -253,6 +258,15 @@ const COMMON: &[StaticDef] = &[
         value_type: ValueType::Token,
         target: StaticTarget::Path(&["language"]),
         targets: &[],
+        sortable: false,
+        since: FhirVersion::R5,
+        until: None,
+    },
+    StaticDef {
+        name: "_in",
+        value_type: ValueType::Reference,
+        target: StaticTarget::Collection,
+        targets: &["CareTeam", "Group", "List"],
         sortable: false,
         since: FhirVersion::R5,
         until: None,
@@ -1023,7 +1037,9 @@ mod tests {
         assert_eq!(named(FhirVersion::R4b), fourth);
         assert_eq!(third.len() + 1, fourth.len());
         assert!(latest.contains(&"_language".to_owned()), "{latest:?}");
-        assert_eq!(fourth.len() + 1, latest.len());
+        assert!(latest.contains(&"_in".to_owned()), "{latest:?}");
+        assert!(!fourth.contains(&"_in".to_owned()), "{fourth:?}");
+        assert_eq!(fourth.len() + 2, latest.len());
         assert_eq!(latest.len(), common().len());
     }
 

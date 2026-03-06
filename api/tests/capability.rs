@@ -568,9 +568,21 @@ async fn the_statement_lists_the_parameters_of_the_running_version() {
     assert!(old.contains("encounter"), "{old:?}");
     assert!(current.contains("encounter"));
     assert!(!current.contains("context"));
-    for version in [FhirVersion::R4b, FhirVersion::R5] {
-        assert_eq!(observation_parameters(version).await, current);
-    }
+    assert!(current.contains("_source"), "{current:?}");
+    assert!(!old.contains("_source"), "{old:?}");
+    assert_eq!(observation_parameters(FhirVersion::R4b).await, current);
+    let latest = observation_parameters(FhirVersion::R5).await;
+    assert!(
+        latest.contains("_language") && !current.contains("_language"),
+        "the fifth release alone names a language: {latest:?}"
+    );
+    let mut without_language = latest.clone();
+    assert!(without_language.remove("_language"), "{latest:?}");
+    assert!(
+        without_language.remove("_in"),
+        "the fifth release alone names the membership parameter: {latest:?}"
+    );
+    assert_eq!(without_language, current);
 }
 
 #[tokio::test]

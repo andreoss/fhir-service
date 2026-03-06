@@ -112,7 +112,7 @@ fn at(target: &Target, body: &Value) -> Vec<String> {
             .flat_map(|path| fhir_core::search::select(body, path))
             .flat_map(references)
             .collect(),
-        Target::Id | Target::LastUpdated | Target::Composite(_) => Vec::new(),
+        Target::Id | Target::LastUpdated | Target::Composite(_) | Target::Collection => Vec::new(),
     }
 }
 

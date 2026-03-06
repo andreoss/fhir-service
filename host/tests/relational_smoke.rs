@@ -706,8 +706,7 @@ fn a_search_names_the_common_parameters_of_the_release_over_the_relational_backe
     drop_schema(&earlier);
 
     assert_eq!(
-        by_language.status,
-        200,
+        by_language.status, 200,
         "the language is answered: {}",
         by_language.body
     );
@@ -738,9 +737,70 @@ fn a_search_names_the_common_parameters_of_the_release_over_the_relational_backe
         refused.body
     );
     assert_eq!(
-        answered.status,
-        200,
+        answered.status, 200,
         "the source is answered where the release names it: {}",
         answered.body
     );
+}
+
+#[test]
+fn a_search_names_the_members_of_a_collection_over_the_relational_backend() {
+    let namespace = schema();
+    let (child, port) = spawn_version(&namespace, "R5");
+    for (path, body) in [
+        ("/Patient/101", r#"{"resourceType":"Patient","id":"101"}"#),
+        ("/Patient/102", r#"{"resourceType":"Patient","id":"102"}"#),
+        (
+            "/Group/grp-1",
+            r#"{"resourceType":"Group","id":"grp-1","type":"person","membership":"enumerated","member":[{"entity":{"reference":"Patient/101"}},{"entity":{"reference":"Patient/102"},"inactive":true}]}"#,
+        ),
+        (
+            "/List/lst-1",
+            r#"{"resourceType":"List","id":"lst-1","status":"current","mode":"working","entry":[{"item":{"reference":"Patient/102"}}]}"#,
+        ),
+    ] {
+        let reply = request(
+            port,
+            "PUT",
+            path,
+            &[("Content-Type", "application/fhir+json")],
+            body.as_bytes(),
+        );
+        assert_eq!(reply.status, 201, "create failed {path}: {}", reply.body);
+    }
+
+    let by_group = request(port, "GET", "/Patient?_in=Group/grp-1", &[], &[]);
+    let inverted = request(port, "GET", "/Patient?_in:not=Group/grp-1", &[], &[]);
+    let by_list = request(port, "GET", "/Patient?_in=List/lst-1", &[], &[]);
+    let absent = request(port, "GET", "/Patient?_in=Group/grp-2", &[], &[]);
+    stop(child);
+    drop_schema(&namespace);
+
+    assert_eq!(
+        by_group.status, 200,
+        "the members are answered: {}",
+        by_group.body
+    );
+    assert_eq!(json(&by_group.body)["total"], 1, "{}", by_group.body);
+    assert_eq!(
+        json(&by_group.body)["entry"][0]["resource"]["id"],
+        "101",
+        "{}",
+        by_group.body
+    );
+    assert_eq!(json(&inverted.body)["total"], 1, "{}", inverted.body);
+    assert_eq!(
+        json(&inverted.body)["entry"][0]["resource"]["id"],
+        "102",
+        "{}",
+        inverted.body
+    );
+    assert_eq!(json(&by_list.body)["total"], 1, "{}", by_list.body);
+    assert_eq!(
+        json(&by_list.body)["entry"][0]["resource"]["id"],
+        "102",
+        "{}",
+        by_list.body
+    );
+    assert_eq!(json(&absent.body)["total"], 0, "{}", absent.body);
 }

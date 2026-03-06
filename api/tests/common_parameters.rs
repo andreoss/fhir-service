@@ -68,13 +68,7 @@ async fn seeded(version: FhirVersion, with_source: bool) -> Service {
         let body = format!(
             r#"{{"resourceType":"Patient","id":"{id}","language":"{language}"{meta},"name":[{{"family":"Stone"}}]}}"#
         );
-        let reply = ask(
-            &app,
-            "PUT",
-            &format!("/Patient/{id}"),
-            body.as_bytes(),
-        )
-        .await;
+        let reply = ask(&app, "PUT", &format!("/Patient/{id}"), body.as_bytes()).await;
         assert_eq!(reply.status, StatusCode::CREATED, "{}", reply.body);
     }
     app
@@ -186,4 +180,105 @@ async fn the_parameters_the_search_was_answered_by_come_back_in_its_self_link() 
         itself.contains("_source=x"),
         "the search is named back: {itself}"
     );
+}
+
+async fn collections(version: FhirVersion) -> Service {
+    let app = service(version);
+    for (path, body) in [
+        ("/Patient/101", r#"{"resourceType":"Patient","id":"101"}"#),
+        ("/Patient/102", r#"{"resourceType":"Patient","id":"102"}"#),
+        ("/Patient/103", r#"{"resourceType":"Patient","id":"103"}"#),
+        (
+            "/Group/grp-1",
+            &format!(
+                r#"{{"resourceType":"Group","id":"grp-1","type":"person"{},"member":[
+                {{"entity":{{"reference":"Patient/101"}}}},
+                {{"entity":{{"reference":"Patient/102"}},"inactive":true}}]}}"#,
+                match version {
+                    FhirVersion::R5 => r#","membership":"enumerated""#,
+                    _ => r#","actual":true"#,
+                }
+            ),
+        ),
+        (
+            "/List/lst-1",
+            r#"{"resourceType":"List","id":"lst-1","status":"current","mode":"working","entry":[
+                {"item":{"reference":"Patient/103"}},
+                {"item":{"reference":"Patient/102"},"deleted":true}]}"#,
+        ),
+        (
+            "/CareTeam/ct-1",
+            r#"{"resourceType":"CareTeam","id":"ct-1","status":"active","participant":[
+                {"member":{"reference":"Patient/103"}}]}"#,
+        ),
+        (
+            "/Observation/ob-1",
+            r#"{"resourceType":"Observation","id":"ob-1","status":"final","code":{"text":"weight"},"subject":{"reference":"Patient/101"}}"#,
+        ),
+        (
+            "/Observation/ob-2",
+            r#"{"resourceType":"Observation","id":"ob-2","status":"final","code":{"text":"weight"},"subject":{"reference":"Patient/102"}}"#,
+        ),
+    ] {
+        let reply = ask(&app, "PUT", path, body.as_bytes()).await;
+        assert_eq!(reply.status, StatusCode::CREATED, "{path} {}", reply.body);
+    }
+    app
+}
+
+fn sorted(body: &str) -> Vec<String> {
+    let mut held = ids(body);
+    held.sort();
+    held
+}
+
+#[tokio::test]
+async fn a_search_names_the_members_a_collection_counts_as_active() {
+    let app = collections(FhirVersion::R5).await;
+    for (uri, expected) in [
+        ("/Patient?_in=Group/grp-1", vec!["101"]),
+        ("/Patient?_in=grp-1", vec!["101"]),
+        ("/Patient?_in=List/lst-1", vec!["103"]),
+        ("/Patient?_in=CareTeam/ct-1", vec!["103"]),
+        ("/Patient?_in=Group/grp-1,List/lst-1", vec!["101", "103"]),
+    ] {
+        let reply = ask(&app, "GET", uri, &[]).await;
+        assert_eq!(reply.status, StatusCode::OK, "{uri} {}", reply.body);
+        assert_eq!(sorted(&reply.body), expected, "{uri}");
+    }
+}
+
+#[tokio::test]
+async fn a_search_names_what_a_collection_does_not_count() {
+    let app = collections(FhirVersion::R5).await;
+    let reply = ask(&app, "GET", "/Patient?_in:not=Group/grp-1", &[]).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert_eq!(sorted(&reply.body), vec!["102", "103"]);
+    for uri in [
+        "/Patient?_in=Group/lst-1",
+        "/Patient?_in=Patient/101",
+        "/Patient?_in=Group/grp-1&_in=Patient/101",
+    ] {
+        let reply = ask(&app, "GET", uri, &[]).await;
+        assert_eq!(reply.status, StatusCode::OK, "{uri} {}", reply.body);
+        assert!(sorted(&reply.body).is_empty(), "{uri} {}", reply.body);
+    }
+}
+
+#[tokio::test]
+async fn a_chained_search_follows_the_members_of_a_collection() {
+    let app = collections(FhirVersion::R5).await;
+    let reply = ask(&app, "GET", "/Observation?subject._in=Group/grp-1", &[]).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert_eq!(sorted(&reply.body), vec!["ob-1"]);
+}
+
+#[tokio::test]
+async fn a_release_that_names_no_membership_parameter_refuses_one() {
+    let app = collections(FhirVersion::R4).await;
+    let reply = ask(&app, "GET", "/Patient?_in=Group/grp-1", &[]).await;
+    assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{}", reply.body);
+    assert!(reply.body.contains("_in"), "{}", reply.body);
+    let chained = ask(&app, "GET", "/Observation?subject._in=Group/grp-1", &[]).await;
+    assert_eq!(chained.status, StatusCode::BAD_REQUEST, "{}", chained.body);
 }

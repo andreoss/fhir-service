@@ -3,6 +3,7 @@ pub mod compartment;
 pub mod grant;
 pub mod include;
 pub mod index;
+pub mod membership;
 pub mod modifier;
 pub mod parameter;
 pub mod path;
@@ -15,6 +16,7 @@ pub use compartment::{Compartment, CompartmentDef, Membership};
 pub use grant::{Grant, GrantFilter};
 pub use include::{Include, IncludeDirection};
 pub use index::IndexKey;
+pub use membership::{active, collection_types, identity, is_collection, COLLECTIONS};
 pub use modifier::Modifier;
 pub use parameter::ParameterSpec;
 pub use path::select;
@@ -153,7 +155,7 @@ impl Filter {
 
     fn absent(&self, body: &Value) -> bool {
         match &self.target {
-            Target::Id | Target::LastUpdated => false,
+            Target::Id | Target::LastUpdated | Target::Collection => false,
             Target::Path(paths) => paths
                 .iter()
                 .flat_map(|path| select(body, path))
@@ -210,6 +212,7 @@ impl Filter {
                     .flat_map(|path| select(body, path))
                     .any(|element| self.modifier.accepts(value, element))
             }
+            Target::Collection => false,
             Target::Composite(def) => match value.components() {
                 Some((left, right)) => {
                     def.base
@@ -279,7 +282,7 @@ pub fn sort_value(
             .find_map(scalar)
             .map(SortValue::Text)
             .unwrap_or(SortValue::Missing),
-        Target::Composite(_) => SortValue::Missing,
+        Target::Composite(_) | Target::Collection => SortValue::Missing,
     }
 }
 

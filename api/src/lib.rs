@@ -12,6 +12,7 @@ pub mod interaction;
 pub mod introspect;
 pub mod job;
 pub mod measure;
+pub mod membership;
 pub mod operation;
 pub mod parameter;
 pub mod polling;

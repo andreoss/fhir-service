@@ -554,6 +554,7 @@ impl<'a> Compiler<'a> {
                 other => self.scalar(filter, other, &format!("{outer}.last_updated")),
             }),
             Target::Path(_) => self.qualified(filter, value, outer),
+            Target::Collection => Ok("false".to_owned()),
             Target::Composite(definition) => {
                 let Some((left, right)) = value.components() else {
                     return Ok("false".to_owned());

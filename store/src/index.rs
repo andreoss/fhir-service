@@ -496,7 +496,7 @@ pub fn rows_of(envelope: &ResourceEnvelope, body: &Value, defs: &[Arc<ParamDef>]
             continue;
         }
         match &def.target {
-            Target::Id | Target::LastUpdated => {}
+            Target::Id | Target::LastUpdated | Target::Collection => {}
             Target::Path(paths) => {
                 let elements: Vec<&Value> =
                     paths.iter().flat_map(|path| select(body, path)).collect();

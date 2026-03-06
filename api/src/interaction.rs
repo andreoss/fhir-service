@@ -106,6 +106,7 @@ impl Searches {
         };
         let mut request = SearchRequest::parse(&self.registry, base_type, asked.query.as_deref())?;
         crate::terminology::resolve(self.terminology.as_ref(), &mut request.query).await?;
+        crate::membership::resolve(&self.store, &mut request.query).await?;
         let page = self.store.search(&request.query).await?;
         let base = format!("http://{}", asked.host);
         let self_url = match asked.query.as_deref() {

@@ -364,6 +364,9 @@ fn filter(
     let def = registry
         .searchable(base_type, base)?
         .ok_or_else(|| Error::UnsupportedParameter(format!("{name:?}")))?;
+    if matches!(def.target, fhir_core::search::Target::Collection) {
+        return collection(name, &def, &modifier, raw);
+    }
     if !modifier.applies_in(def.value_type, registry.fhir_version()) {
         return Err(Error::UnsupportedParameter(format!("{name:?}")));
     }
@@ -391,6 +394,36 @@ fn filter(
         name: name.to_owned(),
         target: def.target.clone(),
         modifier,
+        values,
+        index: def.url.clone(),
+    })
+}
+
+fn collection(
+    name: &str,
+    def: &std::sync::Arc<fhir_core::search::ParamDef>,
+    modifier: &Modifier,
+    raw: &str,
+) -> Result<Filter, Error> {
+    let negated = match modifier {
+        Modifier::None => false,
+        Modifier::Not => true,
+        _ => return Err(Error::UnsupportedParameter(format!("{name:?}"))),
+    };
+    let values = raw
+        .split(',')
+        .map(|part| SearchValue::parse(def.value_type, part))
+        .collect::<Result<Vec<SearchValue>, Error>>()?;
+    if values.is_empty() {
+        return Err(Error::InvalidParameter(format!("{name:?} has no value")));
+    }
+    Ok(Filter {
+        name: name.to_owned(),
+        target: fhir_core::search::Target::Collection,
+        modifier: match negated {
+            true => Modifier::Not,
+            false => Modifier::None,
+        },
         values,
         index: def.url.clone(),
     })

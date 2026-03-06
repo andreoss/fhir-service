@@ -603,6 +603,7 @@ impl Compiler {
                 other => self.scalar(filter, other, Bson::String("$last_updated".to_owned())),
             }),
             Target::Path(_) => self.qualified(filter, value),
+            Target::Collection => Ok(Bson::Boolean(false)),
             Target::Composite(definition) => {
                 let Some((left, right)) = value.components() else {
                     return Ok(Bson::Boolean(false));

@@ -1207,6 +1207,7 @@ pub(crate) async fn respond_page(
         confining(state, &access, headers, DataAction::Read)?,
     )?;
     crate::terminology::resolve(state.terminology.as_ref(), &mut request.query).await?;
+    crate::membership::resolve(&state.store, &mut request.query).await?;
     let page = state.store.search(&request.query).await?;
     let base = format!("http://{}", host_from(headers));
     let self_url = match query.as_deref() {
