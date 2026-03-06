@@ -75,6 +75,8 @@ pub struct Field {
     type_name: String,
     repeating: bool,
     shape: Option<String>,
+    required: bool,
+    codes: Vec<String>,
 }
 
 impl Field {
@@ -88,6 +90,17 @@ impl Field {
 
     pub fn shape(&self) -> Option<&str> {
         self.shape.as_deref()
+    }
+
+    
+    pub fn required(&self) -> bool {
+        self.required
+    }
+
+    
+    
+    pub fn codes(&self) -> &[String] {
+        &self.codes
     }
 }
 
@@ -238,7 +251,23 @@ impl Model {
             shape: self.primitives.get(&type_name).map(|p| p.shape.clone()),
             type_name,
             repeating: element.max != 1,
+            required: element.min >= 1,
+            codes: element
+                .binding
+                .as_ref()
+                .and_then(|url| self.bindings.get(url))
+                .map(|set| set.iter().cloned().collect())
+                .unwrap_or_default(),
         })
+    }
+
+    
+    
+    pub fn elements(&self, node: &str) -> Vec<&str> {
+        match self.nodes.get(node) {
+            None => Vec::new(),
+            Some(elements) => elements.iter().map(Element::base).collect(),
+        }
     }
 
     pub fn resources(&self) -> impl Iterator<Item = &str> {
@@ -792,5 +821,47 @@ mod tests {
         ] {
             assert!(!rule.to_string().is_empty());
         }
+    }
+
+    #[test]
+    fn a_field_reports_what_the_definitions_require_of_it() {
+        let model = Model::of(FhirVersion::R4);
+        let status = model
+            .field("Observation", "status")
+            .expect("Observation carries a status");
+        assert!(status.required(), "the definitions make status mandatory");
+        assert!(
+            status.codes().iter().any(|code| code == "final"),
+            "the observation-status binding admits final"
+        );
+        assert!(
+            !status.codes().iter().any(|code| code == "not-a-status"),
+            "the binding admits only what the value set names"
+        );
+        let subject = model
+            .field("Observation", "subject")
+            .expect("Observation carries a subject");
+        assert!(!subject.required(), "the definitions leave subject optional");
+        assert!(
+            subject.codes().is_empty(),
+            "an unbound element admits no code list"
+        );
+    }
+
+    #[test]
+    fn a_node_lists_the_elements_the_definitions_give_it() {
+        let model = Model::of(FhirVersion::R4);
+        let elements = model.elements("Observation");
+        for named in ["status", "code", "subject", "category"] {
+            assert!(elements.contains(&named), "Observation carries {named}");
+        }
+        assert!(
+            elements.iter().all(|name| !name.ends_with("[x]")),
+            "a choice element is named by its base"
+        );
+        assert!(
+            model.elements("NotANode").is_empty(),
+            "an unknown node carries no element"
+        );
     }
 }
