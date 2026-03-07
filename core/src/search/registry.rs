@@ -621,7 +621,7 @@ fn per_type(resource_type: ResourceType) -> &'static [StaticDef] {
 type Definitions = Vec<Held>;
 
 struct Held {
-    kind: Option<&'static str>,
+    kind: Option<String>,
     def: Arc<ParamDef>,
     since: FhirVersion,
     until: Option<FhirVersion>,
@@ -633,7 +633,7 @@ impl Held {
     }
 
     fn applies(&self, resource_type: Option<ResourceType>) -> bool {
-        match self.kind {
+        match self.kind.as_deref() {
             None => true,
             Some(text) => resource_type.is_some_and(|wanted| wanted.as_str() == text),
         }
@@ -668,12 +668,38 @@ fn definitions() -> &'static Definitions {
             let resource_type: ResourceType = name.parse().expect("built-in type is known");
             for def in per_type(resource_type) {
                 all.push(Held {
-                    kind: Some(name),
+                    kind: Some(name.to_owned()),
                     def: Arc::new(ParamDef::from(def)),
                     since: def.since,
                     until: def.until,
                 });
             }
+        }
+        
+        
+        
+        
+        
+        for entry in crate::search::published::all() {
+            let already = all.iter().any(|held| {
+                held.def.name == entry.name && held.kind.as_deref() == Some(entry.kind.as_str())
+            });
+            if already {
+                continue;
+            }
+            all.push(Held {
+                kind: Some(entry.kind.clone()),
+                def: Arc::new(ParamDef {
+                    name: entry.name.clone(),
+                    value_type: entry.value_type,
+                    target: Target::path(entry.paths.iter()),
+                    targets: entry.targets.clone(),
+                    sortable: false,
+                    url: None,
+                }),
+                since: entry.since,
+                until: entry.until,
+            });
         }
         all
     })
@@ -717,7 +743,7 @@ pub fn references_in(version: FhirVersion, resource_type: ResourceType) -> Vec<A
     definitions()
         .iter()
         .filter(|held| {
-            held.kind == Some(resource_type.as_str())
+            held.kind.as_deref() == Some(resource_type.as_str())
                 && held.def.value_type == ValueType::Reference
                 && held.spans(version)
         })
@@ -729,7 +755,7 @@ pub fn references(resource_type: ResourceType) -> Vec<Arc<ParamDef>> {
     definitions()
         .iter()
         .filter(|held| {
-            held.kind == Some(resource_type.as_str()) && held.def.value_type == ValueType::Reference
+            held.kind.as_deref() == Some(resource_type.as_str()) && held.def.value_type == ValueType::Reference
         })
         .map(|held| Arc::clone(&held.def))
         .collect()
@@ -1165,8 +1191,11 @@ mod tests {
     }
 
     #[test]
-    fn a_type_the_server_does_not_implement_resolves_no_parameter_of_its_own() {
-        assert!(lookup(Some(kind("Device")), "patient").is_none());
+    fn a_parameter_belongs_to_the_type_that_publishes_it() {
+        
+        
+        
+        assert!(lookup(Some(kind("Device")), "patient").is_some());
         assert!(lookup(Some(kind("Device")), "_id").is_some());
         assert!(lookup(Some(kind("Observation")), "family").is_none());
         assert!(lookup(Some(kind("Patient")), "code").is_none());

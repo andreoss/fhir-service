@@ -7,6 +7,7 @@ pub mod membership;
 pub mod modifier;
 pub mod parameter;
 pub mod path;
+pub mod published;
 pub mod registry;
 pub mod text;
 pub mod value;

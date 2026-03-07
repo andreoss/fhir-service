@@ -664,7 +664,11 @@ async fn a_container_carries_the_failure_file_beside_the_rows() {
         .collect();
     assert_eq!(
         names,
-        vec!["nightly/Patient-failures.ndjson", "nightly/Patient.ndjson"]
+vec![
+            "nightly/Group.ndjson",
+            "nightly/Patient-failures.ndjson",
+            "nightly/Patient.ndjson"
+        ]
     );
     let reported = shaped(
         &sink
