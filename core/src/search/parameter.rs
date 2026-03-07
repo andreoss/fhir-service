@@ -102,13 +102,20 @@ fn targets(body: &Value) -> Result<Vec<String>, Error> {
     items
         .iter()
         .filter_map(Value::as_str)
-        .map(|name| name.parse::<ResourceType>().map(|kind| kind.as_str().to_owned()))
+        .map(|name| {
+            name.parse::<ResourceType>()
+                .map(|kind| kind.as_str().to_owned())
+        })
         .collect()
 }
 
 fn expression(raw: &str, base: &[ResourceType]) -> Result<Vec<String>, Error> {
     let mut paths = Vec::new();
-    for part in raw.split('|').map(str::trim).filter(|part| !part.is_empty()) {
+    for part in raw
+        .split('|')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+    {
         if part.contains(['(', ')', ' ', '\'']) {
             return Err(Error::UnsupportedParameter(format!(
                 "expression {part:?} is not a path"
@@ -215,27 +222,44 @@ mod tests {
         let spec = ParameterSpec::parse(&value).unwrap();
         assert_eq!(
             spec.def.paths(),
-            vec!["extension.valueReference".to_owned(), "link.other".to_owned()]
+            vec![
+                "extension.valueReference".to_owned(),
+                "link.other".to_owned()
+            ]
         );
-        assert_eq!(spec.def.targets, vec!["Organization".to_owned(), "Practitioner".to_owned()]);
+        assert_eq!(
+            spec.def.targets,
+            vec!["Organization".to_owned(), "Practitioner".to_owned()]
+        );
     }
 
     #[test]
     fn a_path_of_a_type_the_definition_does_not_name_is_kept_as_it_stands() {
         let mut value = body();
         value["base"] = json!(["Patient", "Practitioner"]);
-        value["expression"] = json!("Patient.extension.valueCode | Practitioner.extension.valueCode");
+        value["expression"] =
+            json!("Patient.extension.valueCode | Practitioner.extension.valueCode");
         let spec = ParameterSpec::parse(&value).unwrap();
         assert_eq!(
             spec.def.paths(),
-            vec!["extension.valueCode".to_owned(), "extension.valueCode".to_owned()]
+            vec![
+                "extension.valueCode".to_owned(),
+                "extension.valueCode".to_owned()
+            ]
         );
         assert_eq!(spec.base.len(), 2);
     }
 
     #[test]
     fn a_code_the_server_reserves_for_itself_is_refused() {
-        for code in ["_id", "_lastUpdated", "_profile", "_tag", "_security", "_nonesuch"] {
+        for code in [
+            "_id",
+            "_lastUpdated",
+            "_profile",
+            "_tag",
+            "_security",
+            "_nonesuch",
+        ] {
             let mut value = body();
             value["code"] = json!(code);
             assert!(

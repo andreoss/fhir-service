@@ -1,7 +1,7 @@
 use crate::search::compartment::Compartment;
 use crate::search::Filter;
-use serde_json::Value;
 use crate::{Error, ResourceEnvelope, ResourceId, ResourceType};
+use serde_json::Value;
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Grant {
@@ -19,16 +19,18 @@ pub struct GrantFilter {
 impl Grant {
     pub fn parse(raw: &str) -> Result<Grant, Error> {
         let mut grant = Grant::default();
-        for entry in raw.split(';').map(str::trim).filter(|part| !part.is_empty()) {
+        for entry in raw
+            .split(';')
+            .map(str::trim)
+            .filter(|part| !part.is_empty())
+        {
             let (key, value) = entry
                 .split_once('=')
                 .ok_or_else(|| Error::InvalidParameter(format!("grant entry {entry:?}")))?;
             match key.trim() {
                 "types" => grant.types.extend(parsed_types(value)?),
                 "compartment" => grant.compartments.push(compartment(value)?),
-                other => {
-                    return Err(Error::UnsupportedParameter(format!("grant key {other:?}")))
-                }
+                other => return Err(Error::UnsupportedParameter(format!("grant key {other:?}"))),
             }
         }
         Ok(grant)

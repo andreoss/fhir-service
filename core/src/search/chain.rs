@@ -35,7 +35,7 @@ impl Chain {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::search::{lookup, select, pointers, SearchValue, ValueType};
+    use crate::search::{lookup, pointers, select, SearchValue, ValueType};
     use serde_json::json;
 
     fn kind(name: &str) -> ResourceType {

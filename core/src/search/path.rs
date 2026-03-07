@@ -52,7 +52,10 @@ mod tests {
     #[test]
     fn a_repeating_element_yields_one_selection_for_each_repetition() {
         let value = json!({"name": [{"family": "Ann"}, {"family": "Bo"}]});
-        assert_eq!(select(&value, "name.family"), vec![&json!("Ann"), &json!("Bo")]);
+        assert_eq!(
+            select(&value, "name.family"),
+            vec![&json!("Ann"), &json!("Bo")]
+        );
         let nested = json!({"name": [{"given": ["Ana", "Maria"]}, {"given": ["Bo"]}]});
         assert_eq!(
             select(&nested, "name.given"),

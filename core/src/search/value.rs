@@ -207,12 +207,7 @@ impl SearchValue {
     }
 }
 
-fn of_type_matches(
-    system: &TokenSystem,
-    code: Option<&str>,
-    value: &str,
-    element: &Value,
-) -> bool {
+fn of_type_matches(system: &TokenSystem, code: Option<&str>, value: &str, element: &Value) -> bool {
     match element {
         Value::Array(items) => items
             .iter()
@@ -239,7 +234,10 @@ fn number(raw: &str) -> Result<SearchValue, Error> {
     if !value.is_finite() {
         return Err(Error::InvalidParameter(format!("number {raw:?}")));
     }
-    let decimals = rest.split_once('.').map(|(_, tail)| tail.len()).unwrap_or_default();
+    let decimals = rest
+        .split_once('.')
+        .map(|(_, tail)| tail.len())
+        .unwrap_or_default();
     Ok(SearchValue::Number {
         comparator,
         value,
@@ -389,7 +387,10 @@ fn token_matches(token: &Token, element: &Value) -> bool {
         Value::Bool(flag) => accepts(token, None, &flag.to_string()),
         Value::Number(number) => accepts(token, None, &number.to_string()),
         Value::Object(map) => {
-            if map.get("coding").is_some_and(|codings| token_matches(token, codings)) {
+            if map
+                .get("coding")
+                .is_some_and(|codings| token_matches(token, codings))
+            {
                 return true;
             }
             let system = map.get("system").and_then(Value::as_str);
@@ -432,9 +433,12 @@ fn uri_matches(wanted: &str, element: &Value) -> bool {
 
 fn date_matches(comparator: Comparator, query: &InstantPeriod, element: &Value) -> bool {
     match element {
-        Value::Array(items) => items.iter().any(|item| date_matches(comparator, query, item)),
-        Value::String(text) => InstantPeriod::parse(text)
-            .is_ok_and(|stored| compare(comparator, query, &stored)),
+        Value::Array(items) => items
+            .iter()
+            .any(|item| date_matches(comparator, query, item)),
+        Value::String(text) => {
+            InstantPeriod::parse(text).is_ok_and(|stored| compare(comparator, query, &stored))
+        }
         Value::Object(map) => {
             let start = map.get("start").and_then(Value::as_str);
             let end = map.get("end").and_then(Value::as_str);
@@ -501,12 +505,24 @@ mod tests {
             );
         }
         let number = SearchValue::parse(ValueType::Number, "ge4.5").unwrap();
-        assert!(matches!(number, SearchValue::Number { comparator: Comparator::Ge, .. }));
+        assert!(matches!(
+            number,
+            SearchValue::Number {
+                comparator: Comparator::Ge,
+                ..
+            }
+        ));
         let quantity = SearchValue::parse(ValueType::Quantity, "lt5|urn:u|kg").unwrap();
         let SearchValue::Quantity { number, .. } = quantity else {
             panic!("a quantity carries a number")
         };
-        assert!(matches!(*number, SearchValue::Number { comparator: Comparator::Lt, .. }));
+        assert!(matches!(
+            *number,
+            SearchValue::Number {
+                comparator: Comparator::Lt,
+                ..
+            }
+        ));
 
         assert_eq!(
             SearchValue::parse(ValueType::String, "gtAnn").unwrap(),
@@ -597,7 +613,11 @@ mod tests {
             ("eb0.4", 0.35, true),
         ] {
             let held = SearchValue::parse(ValueType::Number, raw).expect("the number parses");
-            assert_eq!(held.matches(&json!(stored)), wanted, "{raw} against {stored}");
+            assert_eq!(
+                held.matches(&json!(stored)),
+                wanted,
+                "{raw} against {stored}"
+            );
         }
     }
 
@@ -638,7 +658,11 @@ mod tests {
             ("urn:other|c", false, &with),
         ] {
             let token = parse_token(raw);
-            assert_eq!(token_matches(&token, sample), wanted, "{raw} against {sample}");
+            assert_eq!(
+                token_matches(&token, sample),
+                wanted,
+                "{raw} against {sample}"
+            );
         }
     }
 
@@ -661,7 +685,8 @@ mod tests {
     fn a_date_value_compares_against_a_stored_period() {
         let value = SearchValue::parse(ValueType::Date, "ge2026-09-06").unwrap();
         assert!(value.matches(&json!({"start": "2026-09-07T00:00:00Z"})));
-        assert!(!value.matches(&json!({"start": "2020-01-01T00:00:00Z", "end": "2020-02-01T00:00:00Z"})));
+        assert!(!value
+            .matches(&json!({"start": "2020-01-01T00:00:00Z", "end": "2020-02-01T00:00:00Z"})));
         assert!(!value.matches(&json!({})));
         assert!(!value.matches(&json!(3)));
     }
@@ -702,10 +727,14 @@ mod tests {
         assert!(SearchValue::parse(ValueType::Reference, "Patient/p-1")
             .unwrap()
             .matches(&stored));
-        assert!(SearchValue::parse(ValueType::Reference, "p-1").unwrap().matches(&stored));
+        assert!(SearchValue::parse(ValueType::Reference, "p-1")
+            .unwrap()
+            .matches(&stored));
         assert!(!SearchValue::parse(ValueType::Reference, "Group/p-1")
             .unwrap()
             .matches(&stored));
-        assert!(!SearchValue::parse(ValueType::Reference, "p-2").unwrap().matches(&stored));
+        assert!(!SearchValue::parse(ValueType::Reference, "p-2")
+            .unwrap()
+            .matches(&stored));
     }
 }

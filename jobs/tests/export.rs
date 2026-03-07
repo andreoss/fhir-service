@@ -201,7 +201,14 @@ async fn a_patient_export_carries_the_compartment_and_a_group_export_its_members
         .into_iter()
         .map(|file| file.name)
         .collect();
-    assert_eq!(listed, vec!["Observation.ndjson", "Patient.ndjson"]);
+    
+    
+    
+    
+    assert_eq!(
+        listed,
+        vec!["Group.ndjson", "Observation.ndjson", "Patient.ndjson"]
+    );
     assert_eq!(
         rows(&sink.read(&job("x4"), "Patient.ndjson").await.unwrap()).len(),
         2

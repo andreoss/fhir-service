@@ -61,7 +61,14 @@ mod tests {
 
     #[test]
     fn a_rule_naming_no_path_follows_every_reference_of_a_match() {
-        let every = rule("_include", None, Vec::new(), None, IncludeDirection::Forward, false);
+        let every = rule(
+            "_include",
+            None,
+            Vec::new(),
+            None,
+            IncludeDirection::Forward,
+            false,
+        );
         assert!(every.is_wildcard());
         assert!(every.covers(kind("Patient")));
         assert!(every.covers(kind("Observation")));
