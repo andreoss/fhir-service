@@ -30,6 +30,9 @@ fn the_pipeline_runs_build_tests_analysis_coverage_and_publish() {
             "dependencies",
             "bill of materials",
             "coverage",
+            
+            
+            "conformance",
             "publish"
         ]
     );
