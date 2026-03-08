@@ -1,7 +1,11 @@
 use async_trait::async_trait;
-use fhir_adapter_relational::{Namespace, RelationalJobStore, RelationalStore, DEFAULT_URL, ENV_URL};
+use fhir_adapter_relational::{
+    Namespace, RelationalJobStore, RelationalStore, DEFAULT_URL, ENV_URL,
+};
 use fhir_core::Error;
-use fhir_jobs::{JobContext, JobHandler, Orchestrator, Schedule, Unit, UnitOutcome, Watchdog, Worker};
+use fhir_jobs::{
+    JobContext, JobHandler, Orchestrator, Schedule, Unit, UnitOutcome, Watchdog, Worker,
+};
 use fhir_store::{
     JobId, JobKind, JobLimits, JobRequest, JobResult, JobState, JobStore, Lease, StepTicker,
     RETRY_BACKOFF,
@@ -157,7 +161,10 @@ async fn a_lease_a_worker_holds_is_read_back_through_another_handle() {
     let queue = Queue::opened("lease").await;
     let claiming = queue.handle().await;
     let reading = queue.handle().await;
-    claiming.submit(queued("l1", JobKind::Export)).await.unwrap();
+    claiming
+        .submit(queued("l1", JobKind::Export))
+        .await
+        .unwrap();
 
     let held = claiming
         .claim(&Lease::new("one", LEASE))
@@ -165,7 +172,10 @@ async fn a_lease_a_worker_holds_is_read_back_through_another_handle() {
         .expect("a job is claimed");
 
     assert_eq!(held.len(), 1);
-    let seen = reading.fetch(&job("l1")).await.expect("the record persists");
+    let seen = reading
+        .fetch(&job("l1"))
+        .await
+        .expect("the record persists");
     assert_eq!(seen.state, JobState::Running);
     assert_eq!(seen.worker.as_deref(), Some("one"));
     assert_eq!(seen.lease, Some(queue.ticker.now() + LEASE));
@@ -226,7 +236,10 @@ async fn a_job_whose_lease_ran_out_is_reclaimed_and_finished_by_a_second_worker(
     );
     queue.ticker.advance(LEASE + 1);
     assert_eq!(watchdog.sweep().await.unwrap().reclaimed, 1);
-    assert_eq!(reading.fetch(&job("r1")).await.unwrap().state, JobState::Queued);
+    assert_eq!(
+        reading.fetch(&job("r1")).await.unwrap().state,
+        JobState::Queued
+    );
     assert_eq!(
         stopped
             .finish(&job("r1"), "one", JobResult::Succeeded("{}".to_owned()))
@@ -260,7 +273,11 @@ async fn a_failed_attempt_waits_its_backoff_and_then_runs_again() {
 
     assert_eq!(worker.poll().await.unwrap(), 1);
     let failed = reading.fetch(&job("t1")).await.unwrap();
-    assert_eq!(failed.state, JobState::Queued, "an attempt left means a retry");
+    assert_eq!(
+        failed.state,
+        JobState::Queued,
+        "an attempt left means a retry"
+    );
     assert_eq!(failed.attempt, 1);
     assert_eq!(
         failed.available,
@@ -297,7 +314,10 @@ async fn a_job_with_no_attempt_left_is_failed_rather_than_queued() {
     let worker = working(Arc::clone(&running), Arc::clone(&handler), "one");
 
     worker.poll().await.unwrap();
-    assert_eq!(reading.fetch(&job("s1")).await.unwrap().state, JobState::Queued);
+    assert_eq!(
+        reading.fetch(&job("s1")).await.unwrap().state,
+        JobState::Queued
+    );
     queue.ticker.advance(RETRY_BACKOFF);
     worker.poll().await.unwrap();
 
@@ -350,7 +370,10 @@ async fn a_queued_job_stopped_before_it_starts_is_never_claimed() {
     let stopping = queue.handle().await;
     let reading = queue.handle().await;
     running.submit(queued("c2", JobKind::Export)).await.unwrap();
-    stopping.cancel(&job("c2")).await.expect("a queued job stops");
+    stopping
+        .cancel(&job("c2"))
+        .await
+        .expect("a queued job stops");
 
     let handler = Arc::new(Counting::of(1));
     let worker = working(Arc::clone(&running), Arc::clone(&handler), "one");
@@ -454,8 +477,10 @@ async fn the_queue_reports_the_engine_it_cannot_reach() {
     assert_eq!(live.health().await, Ok(()));
 
     let closing = pool().await;
-    let gone: Arc<dyn JobStore> =
-        Arc::new(RelationalJobStore::new(closing.clone(), queue.namespace.clone()));
+    let gone: Arc<dyn JobStore> = Arc::new(RelationalJobStore::new(
+        closing.clone(),
+        queue.namespace.clone(),
+    ));
     closing.close().await;
 
     assert!(

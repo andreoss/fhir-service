@@ -734,6 +734,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "axum",
+ "base64",
  "fhir-adapter-memory",
  "fhir-core",
  "fhir-jobs",
@@ -780,6 +781,7 @@ dependencies = [
  "fhir-shadow",
  "fhir-store",
  "fhir-telemetry",
+ "fhir-tools",
  "jsonwebtoken",
  "mongodb",
  "serde_json",
@@ -800,6 +802,7 @@ dependencies = [
  "fhir-telemetry",
  "serde_json",
  "sqlx",
+ "time",
  "tokio",
 ]
 
@@ -841,6 +844,28 @@ version = "0.1.0"
 dependencies = [
  "fhir-core",
  "fhir-store",
+]
+
+[[package]]
+name = "fhir-tools"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "fhir-adapter-document",
+ "fhir-adapter-memory",
+ "fhir-adapter-relational",
+ "fhir-api",
+ "fhir-core",
+ "fhir-host",
+ "fhir-jobs",
+ "fhir-shadow",
+ "fhir-store",
+ "fhir-store-contract",
+ "fhir-telemetry",
+ "mongodb",
+ "serde_json",
+ "sqlx",
+ "tokio",
 ]
 
 [[package]]

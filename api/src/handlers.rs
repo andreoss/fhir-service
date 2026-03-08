@@ -8,13 +8,14 @@ use fhir_core::security::scope::DataAction;
 use fhir_core::security::Access;
 use fhir_core::{
     Error, FhirInstant, IssueCode, IssueSeverity, OperationOutcome, Patch, ResourceEnvelope,
-    ResourceId, ResourceType, VersionId, WeakEtag,
+    ResourceId, ResourceKey, ResourceType, VersionId, WeakEtag,
 };
 use fhir_store::{AuditEvent, HistoryScope, Interaction, SearchQuery};
 use serde_json::Value;
 use uuid::Uuid;
 
 use crate::app::AppState;
+use crate::capabilities::ConditionalDelete;
 use crate::compartment::{definition_json, definitions_bundle};
 use crate::conditional;
 use crate::history::{history_bundle, HistoryRequest};
@@ -70,7 +71,7 @@ pub async fn read(
     Path((type_name, id_text)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
-    let resource_type = served(state.version, &type_name)?;
+    let resource_type = served_here(&state, &type_name)?;
     let id = id_text.parse::<ResourceId>()?;
     let access = allowed(
         &state,
@@ -80,7 +81,7 @@ pub async fn read(
         Some(&id),
     )
     .await?;
-    let envelope = state.store.read(&id).await?;
+    let envelope = state.store.read(&key(resource_type, &id)).await?;
     if envelope.resource_type() != resource_type {
         return Err(Error::NotFound.into());
     }
@@ -88,7 +89,7 @@ pub async fn read(
         return Err(Error::Deleted.into());
     }
     within(&state, &access, &headers, DataAction::Read, &envelope)?;
-    let host = host_from(&headers);
+    let host = &addressed(&state, &headers);
     let precondition = conditional::asked_for(&headers);
     if conditional::holds(precondition.as_ref(), &envelope) {
         return Ok(respond_not_modified(&envelope, host));
@@ -101,7 +102,7 @@ pub async fn vread(
     Path((type_name, id_text, version_text)): Path<(String, String, String)>,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
-    let resource_type = served(state.version, &type_name)?;
+    let resource_type = served_here(&state, &type_name)?;
     let id = id_text.parse::<ResourceId>()?;
     let access = allowed(
         &state,
@@ -111,8 +112,12 @@ pub async fn vread(
         Some(&id),
     )
     .await?;
+    state.tenancy.refuses("reading a past version")?;
     let version = version_text.parse::<VersionId>()?;
-    let envelope = state.store.vread(&id, &version).await?;
+    let envelope = state
+        .store
+        .vread(&key(resource_type, &id), &version)
+        .await?;
     if envelope.resource_type() != resource_type {
         return Err(Error::NotFound.into());
     }
@@ -120,7 +125,7 @@ pub async fn vread(
         return Err(Error::Deleted.into());
     }
     within(&state, &access, &headers, DataAction::Read, &envelope)?;
-    Ok(respond_resource(&envelope, host_from(&headers)))
+    Ok(respond_resource(&envelope, &addressed(&state, &headers)))
 }
 
 pub async fn create(
@@ -129,11 +134,14 @@ pub async fn create(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, AppError> {
-    let resource_type = served(state.version, &type_name)?;
+    let resource_type = served_here(&state, &type_name)?;
     let access = crate::access::access_of(&state, &headers).await?;
     let asked = Return::asked_for(&headers);
-    let value: Value =
+    let provenance = crate::provenance::carried(&headers, state.version)?;
+    let mut value: Value =
         serde_json::from_slice(&body).map_err(|error| Error::InvalidJson(error.to_string()))?;
+    tenanted(&state, &access, &headers, &mut value)?;
+    shortened(&state, &headers, &mut value);
     let id = body_id(&value)?;
     judged(
         &state,
@@ -154,7 +162,7 @@ pub async fn create(
         )?;
         if let Some(existing) = single_match(&state, &query).await? {
             return Ok(answered(
-                respond_updated(&existing, host_from(&headers)),
+                respond_updated(&existing, &addressed(&state, &headers)),
                 &existing,
                 asked,
             ));
@@ -162,24 +170,37 @@ pub async fn create(
     }
     let envelope = write_envelope(state.version, resource_type, value.clone(), &id)?;
     within(&state, &access, &headers, DataAction::Write, &envelope)?;
+    profiled(&state, true, &value).await?;
     if resource_type.as_str() == SEARCH_PARAMETER {
         let spec = ParameterSpec::parse(&value)?;
         let _guard = state.parameters.lock().await;
         parameter::accepts(&state, &spec)?;
         let stored = state.store.create(envelope).await?;
         parameter::install(&state, &spec).await?;
+        provenanced(&state, &access, provenance, &stored).await?;
         return Ok(answered(
-            respond_created(&stored, host_from(&headers)),
+            respond_created(&stored, &addressed(&state, &headers)),
             &stored,
             asked,
         ));
     }
     let stored = state.store.create(envelope).await?;
+    registered_type(&value)?;
+    provenanced(&state, &access, provenance, &stored).await?;
     Ok(answered(
-        respond_created(&stored, host_from(&headers)),
+        respond_created(&stored, &addressed(&state, &headers)),
         &stored,
         asked,
     ))
+}
+
+
+
+fn registered_type(value: &Value) -> Result<(), Error> {
+    match crate::profile::defines_a_type(value) {
+        None => Ok(()),
+        Some(name) => fhir_core::resource_type::register(&name).map(|_| ()),
+    }
 }
 
 pub async fn conditional_update(
@@ -189,7 +210,7 @@ pub async fn conditional_update(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, AppError> {
-    let resource_type = served(state.version, &type_name)?;
+    let resource_type = served_here(&state, &type_name)?;
     let access = allowed(
         &state,
         &headers,
@@ -207,21 +228,32 @@ pub async fn conditional_update(
         confining(&state, &access, &headers, DataAction::Write)?,
     )?;
     let asked = Return::asked_for(&headers);
-    let value: Value =
+    let provenance = crate::provenance::carried(&headers, state.version)?;
+    let mut value: Value =
         serde_json::from_slice(&body).map_err(|error| Error::InvalidJson(error.to_string()))?;
+    tenanted(&state, &access, &headers, &mut value)?;
+    shortened(&state, &headers, &mut value);
     let expected = expected_version(&headers)?;
     match single_match(&state, &selection).await? {
         Some(existing) => {
-            let envelope = write_envelope(state.version, resource_type, value, existing.id())?;
+            let envelope =
+                write_envelope(state.version, resource_type, value.clone(), existing.id())?;
+            profiled(&state, false, &value).await?;
+            under_policy(&state, resource_type, expected.as_ref(), true)?;
             let written = upsert(&state, envelope, expected.as_ref()).await?;
-            Ok(written.respond(host_from(&headers), asked))
+            after_policy(&state, written.envelope()).await?;
+            provenanced(&state, &access, provenance, written.envelope()).await?;
+            Ok(written.respond(&addressed(&state, &headers), asked))
         }
+        None if !state.capabilities.create_on_update => Err(Error::NotFound.into()),
         None => {
             let id = body_id(&value)?;
-            let envelope = write_envelope(state.version, resource_type, value, &id)?;
+            let envelope = write_envelope(state.version, resource_type, value.clone(), &id)?;
+            profiled(&state, true, &value).await?;
             let stored = state.store.create(envelope).await?;
+            provenanced(&state, &access, provenance, &stored).await?;
             Ok(answered(
-                respond_created(&stored, host_from(&headers)),
+                respond_created(&stored, &addressed(&state, &headers)),
                 &stored,
                 asked,
             ))
@@ -235,7 +267,7 @@ pub async fn update(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, AppError> {
-    let resource_type = served(state.version, &type_name)?;
+    let resource_type = served_here(&state, &type_name)?;
     let id = id_text.parse::<ResourceId>()?;
     let access = allowed(
         &state,
@@ -246,15 +278,39 @@ pub async fn update(
     )
     .await?;
     let expected = expected_version(&headers)?;
-    let value: Value =
+    let provenance = crate::provenance::carried(&headers, state.version)?;
+    let mut value: Value =
         serde_json::from_slice(&body).map_err(|error| Error::InvalidJson(error.to_string()))?;
+    tenanted(&state, &access, &headers, &mut value)?;
+    shortened(&state, &headers, &mut value);
     let envelope = write_envelope(state.version, resource_type, value.clone(), &id)?;
     within(&state, &access, &headers, DataAction::Write, &envelope)?;
+    over_current(&state, &access, &headers, resource_type, &id).await?;
+    profiled(
+        &state,
+        matches!(presence(&state, resource_type, &id).await, Presence::Absent),
+        &value,
+    )
+    .await?;
     if resource_type.as_str() == SEARCH_PARAMETER {
         return replace_parameter(&state, &id, &value, envelope, expected, &headers).await;
     }
+    under_policy(
+        &state,
+        resource_type,
+        expected.as_ref(),
+        !matches!(presence(&state, resource_type, &id).await, Presence::Absent),
+    )?;
+    if !state.capabilities.create_on_update
+        && matches!(presence(&state, resource_type, &id).await, Presence::Absent)
+    {
+        return Err(Error::NotFound.into());
+    }
     let written = upsert(&state, envelope, expected.as_ref()).await?;
-    Ok(written.respond(host_from(&headers), Return::asked_for(&headers)))
+    registered_type(&value)?;
+    after_policy(&state, written.envelope()).await?;
+    provenanced(&state, &access, provenance, written.envelope()).await?;
+    Ok(written.respond(&addressed(&state, &headers), Return::asked_for(&headers)))
 }
 
 async fn replace_parameter(
@@ -268,7 +324,11 @@ async fn replace_parameter(
     let spec = ParameterSpec::parse(value)?;
     let _guard = state.parameters.lock().await;
     parameter::accepts(state, &spec)?;
-    let previous = state.store.read(id).await.ok();
+    let previous = state
+        .store
+        .read(&key(SEARCH_PARAMETER.parse()?, id))
+        .await
+        .ok();
     let written = upsert(state, envelope, expected.as_ref()).await?;
     let replaced = previous
         .as_ref()
@@ -280,7 +340,7 @@ async fn replace_parameter(
         }
     }
     parameter::install(state, &spec).await?;
-    Ok(written.respond(host_from(headers), Return::asked_for(headers)))
+    Ok(written.respond(&addressed(state, headers), Return::asked_for(headers)))
 }
 
 pub async fn delete_instance(
@@ -289,7 +349,7 @@ pub async fn delete_instance(
     RawQuery(query): RawQuery,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
-    let resource_type = served(state.version, &type_name)?;
+    let resource_type = served_here(&state, &type_name)?;
     let id = id_text.parse::<ResourceId>()?;
     let access = allowed_doing(
         &state,
@@ -300,13 +360,13 @@ pub async fn delete_instance(
         Some(&id),
     )
     .await?;
-    let current = match state.store.read(&id).await {
+    let current = match state.store.read(&key(resource_type, &id)).await {
         Ok(current) if current.resource_type() == resource_type => current,
         Ok(_) | Err(Error::NotFound) => return Ok(no_content(None)),
         Err(error) => return Err(error.into()),
     };
     within(&state, &access, &headers, DataAction::Write, &current)?;
-    let removed = remove(&state, &id, hard_delete(query.as_deref())).await?;
+    let removed = remove(&state, resource_type, &id, hard_delete(query.as_deref())).await?;
     if resource_type.as_str() == SEARCH_PARAMETER {
         if let Ok(body) = serde_json::from_slice::<Value>(current.raw()) {
             if let Ok(spec) = ParameterSpec::parse(&body) {
@@ -323,7 +383,7 @@ pub async fn conditional_delete(
     RawQuery(query): RawQuery,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
-    let resource_type = served(state.version, &type_name)?;
+    let resource_type = served_here(&state, &type_name)?;
     let access = allowed_doing(
         &state,
         &headers,
@@ -341,9 +401,23 @@ pub async fn conditional_delete(
         &mut selection,
         confining(&state, &access, &headers, DataAction::Write)?,
     )?;
-    match single_match(&state, &selection).await? {
-        Some(existing) => remove(&state, existing.id(), hard_delete(query.as_deref())).await,
-        None => Ok(no_content(None)),
+    let hard = hard_delete(query.as_deref());
+    let most = state.capabilities.conditional_delete.most();
+    selection.count = most.saturating_add(1);
+    let found = state.store.search(&selection).await?.entries;
+    match (found.len(), state.capabilities.conditional_delete) {
+        (0, _) => Ok(no_content(None)),
+        (1, _) => remove(&state, resource_type, found[0].id(), hard).await,
+        (_, ConditionalDelete::Single) => Err(Error::MultipleMatches.into()),
+        (held, ConditionalDelete::Multiple(most)) if held > most => {
+            Err(Error::MultipleMatches.into())
+        }
+        (_, ConditionalDelete::Multiple(_)) => {
+            for entry in &found {
+                remove(&state, resource_type, entry.id(), hard).await?;
+            }
+            Ok(no_content(None))
+        }
     }
 }
 
@@ -353,7 +427,7 @@ pub async fn patch_instance(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, AppError> {
-    let resource_type = served(state.version, &type_name)?;
+    let resource_type = served_here(&state, &type_name)?;
     let id = id_text.parse::<ResourceId>()?;
     let access = allowed(
         &state,
@@ -363,7 +437,7 @@ pub async fn patch_instance(
         Some(&id),
     )
     .await?;
-    let current = state.store.read(&id).await?;
+    let current = state.store.read(&key(resource_type, &id)).await?;
     if current.resource_type() != resource_type {
         return Err(Error::NotFound.into());
     }
@@ -371,7 +445,7 @@ pub async fn patch_instance(
     if current.is_deleted() {
         return Err(Error::Deleted.into());
     }
-    patch_stored(&state, resource_type, &current, &headers, &body).await
+    patch_stored(&state, &access, resource_type, &current, &headers, &body).await
 }
 
 pub async fn conditional_patch(
@@ -381,7 +455,7 @@ pub async fn conditional_patch(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, AppError> {
-    let resource_type = served(state.version, &type_name)?;
+    let resource_type = served_here(&state, &type_name)?;
     let access = allowed(
         &state,
         &headers,
@@ -399,7 +473,9 @@ pub async fn conditional_patch(
         confining(&state, &access, &headers, DataAction::Write)?,
     )?;
     match single_match(&state, &selection).await? {
-        Some(existing) => patch_stored(&state, resource_type, &existing, &headers, &body).await,
+        Some(existing) => {
+            patch_stored(&state, &access, resource_type, &existing, &headers, &body).await
+        }
         None => Err(Error::NotFound.into()),
     }
 }
@@ -409,7 +485,7 @@ pub async fn purge_history(
     Path((type_name, id_text)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
-    let resource_type = served(state.version, &type_name)?;
+    let resource_type = served_here(&state, &type_name)?;
     let id = id_text.parse::<ResourceId>()?;
     let access = allowed_doing(
         &state,
@@ -420,12 +496,12 @@ pub async fn purge_history(
         Some(&id),
     )
     .await?;
-    let current = state.store.read(&id).await?;
+    let current = state.store.read(&key(resource_type, &id)).await?;
     if current.resource_type() != resource_type {
         return Err(Error::NotFound.into());
     }
     within(&state, &access, &headers, DataAction::Write, &current)?;
-    let purged = state.store.purge_history(&id).await?;
+    let purged = state.store.purge_history(&key(resource_type, &id)).await?;
     let body = serde_json::json!({
         "resourceType": "Parameters",
         "parameter": [{ "name": "versionsPurged", "valueInteger": purged }],
@@ -482,9 +558,88 @@ pub async fn method_not_allowed() -> Result<Response, AppError> {
     Err(Error::MethodNotAllowed.into())
 }
 
+
+
+
+
+fn under_policy(
+    state: &AppState,
+    resource_type: ResourceType,
+    expected: Option<&VersionId>,
+    existed: bool,
+) -> Result<(), Error> {
+    let policy = state.versioning.of(resource_type);
+    if policy.needs_match() && expected.is_none() && existed {
+        return Err(Error::VersionRequired(format!(
+            "{resource_type} is held under {}, so an update names the version it replaces with If-Match",
+            policy.as_str()
+        )));
+    }
+    Ok(())
+}
+
+
+
+
+async fn after_policy(state: &AppState, written: &ResourceEnvelope) -> Result<(), Error> {
+    if state.versioning.of(written.resource_type()).keeps_history() {
+        return Ok(());
+    }
+    state.store.purge_history(&ResourceKey::of(written)).await?;
+    Ok(())
+}
+
+
+
+async fn profiled(state: &AppState, created: bool, value: &Value) -> Result<(), Error> {
+    if !state.allowed_profiles.accepts(value) {
+        return Err(Error::NoMatch(format!(
+            "this instance accepts a resource claiming one of {}, and this one claims none",
+            state.allowed_profiles.named().join(", ")
+        )));
+    }
+    let asked = match created {
+        true => state.profiles.create,
+        false => state.profiles.update,
+    };
+    if !asked {
+        return Ok(());
+    }
+    crate::profile::judged_for_write(&state.store, state.terminology.as_ref(), value).await
+}
+
+async fn provenanced(
+    state: &AppState,
+    access: &Access,
+    carried: Option<Value>,
+    written: &ResourceEnvelope,
+) -> Result<(), Error> {
+    crate::provenance::record(
+        state,
+        access,
+        carried,
+        &[crate::provenance::reference_of(written)],
+    )
+    .await
+}
+
+impl Written {
+    fn envelope(&self) -> &ResourceEnvelope {
+        match self {
+            Written::Created(stored) | Written::Updated(stored) | Written::Unchanged(stored) => {
+                stored
+            }
+        }
+    }
+}
+
 enum Written {
     Created(ResourceEnvelope),
     Updated(ResourceEnvelope),
+    
+    
+    
+    Unchanged(ResourceEnvelope),
 }
 
 impl Written {
@@ -492,6 +647,24 @@ impl Written {
         match self {
             Written::Created(stored) => answered(respond_created(stored, host), stored, asked),
             Written::Updated(stored) => answered(respond_updated(stored, host), stored, asked),
+            Written::Unchanged(stored) => match asked {
+                
+                
+                Some(Return::Outcome) => {
+                    let (mut parts, _) = respond_updated(stored, host).into_parts();
+                    let body = crate::unchanged::outcome().to_fhir_json();
+                    parts
+                        .headers
+                        .insert(header::CONTENT_TYPE, HeaderValue::from_static(FHIR_JSON));
+                    parts.headers.insert(
+                        header::CONTENT_LENGTH,
+                        HeaderValue::from_str(&body.len().to_string())
+                            .expect("a length is a header value"),
+                    );
+                    Response::from_parts(parts, Body::from(body))
+                }
+                asked => answered(respond_updated(stored, host), stored, asked),
+            },
         }
     }
 }
@@ -548,8 +721,8 @@ enum Presence {
     Absent,
 }
 
-async fn presence(state: &AppState, id: &ResourceId) -> Presence {
-    match state.store.read(id).await {
+async fn presence(state: &AppState, resource_type: ResourceType, id: &ResourceId) -> Presence {
+    match state.store.read(&key(resource_type, id)).await {
         Ok(current) if current.is_deleted() => Presence::Deleted,
         Ok(_) => Presence::Live,
         Err(_) => Presence::Absent,
@@ -562,9 +735,36 @@ async fn upsert(
     expected: Option<&VersionId>,
 ) -> Result<Written, Error> {
     let offered = envelope.clone();
-    let recreated = matches!(presence(state, envelope.id()).await, Presence::Deleted);
+    
+    
+    
+    
+    
+    
+    
+    let before = match state.unchanged.is_on() {
+        false => None,
+        true => state.store.read(&ResourceKey::of(&envelope)).await.ok(),
+    };
+    if let Some(current) = &before {
+        if !current.is_deleted() {
+            let stored = serde_json::from_slice::<Value>(current.raw()).unwrap_or(Value::Null);
+            let sent = serde_json::from_slice::<Value>(envelope.raw()).unwrap_or(Value::Null);
+            if state.unchanged.holds(&sent, &stored) {
+                return Ok(Written::Unchanged(current.clone()));
+            }
+        }
+    }
+    let recreated = matches!(
+        presence(state, envelope.resource_type(), envelope.id()).await,
+        Presence::Deleted
+    );
+    let held = before.map(|current| current.version_id().clone());
     match state.store.update(envelope, expected).await {
         Ok(stored) if recreated => Ok(Written::Created(stored)),
+        
+        
+        Ok(stored) if held.as_ref() == Some(stored.version_id()) => Ok(Written::Unchanged(stored)),
         Ok(stored) => Ok(Written::Updated(stored)),
         Err(Error::VersionConflict) => Err(contended(state.version)),
         Err(Error::NotFound) if expected.is_none() => {
@@ -576,26 +776,43 @@ async fn upsert(
 
 async fn patch_stored(
     state: &AppState,
+    access: &Access,
     resource_type: ResourceType,
     current: &ResourceEnvelope,
     headers: &HeaderMap,
     body: &[u8],
 ) -> Result<Response, AppError> {
+    let provenance = crate::provenance::carried(headers, state.version)?;
     let patched = Patch::parse(body)?.apply(current.raw())?;
-    let value: Value =
+    let mut value: Value =
         serde_json::from_slice(&patched).map_err(|error| Error::InvalidJson(error.to_string()))?;
-    let envelope = write_envelope(state.version, resource_type, value, current.id())?;
+    
+    
+    tenanted(state, access, headers, &mut value)?;
+    shortened(state, headers, &mut value);
+    let envelope = write_envelope(state.version, resource_type, value.clone(), current.id())?;
+    within(state, access, headers, DataAction::Write, current)?;
+    profiled(state, false, &value).await?;
     let expected = expected_version(headers)?;
+    under_policy(state, resource_type, expected.as_ref(), true)?;
     let written = upsert(state, envelope, expected.as_ref()).await?;
-    Ok(written.respond(host_from(headers), Return::asked_for(headers)))
+    after_policy(state, written.envelope()).await?;
+    provenanced(state, access, provenance, written.envelope()).await?;
+    Ok(written.respond(&addressed(state, headers), Return::asked_for(headers)))
 }
 
-async fn remove(state: &AppState, id: &ResourceId, hard: bool) -> Result<Response, AppError> {
+async fn remove(
+    state: &AppState,
+    resource_type: ResourceType,
+    id: &ResourceId,
+    hard: bool,
+) -> Result<Response, AppError> {
+    let held = key(resource_type, id);
     if hard {
-        state.store.hard_delete(id).await?;
+        state.store.hard_delete(&held).await?;
         return Ok(no_content(None));
     }
-    match state.store.delete(id).await {
+    match state.store.delete(&held).await {
         Ok(marker) => Ok(no_content(Some(&marker))),
         Err(Error::Deleted) => Ok(no_content(None)),
         Err(error) => Err(error.into()),
@@ -637,6 +854,11 @@ async fn single_match(
         1 => Ok(Some(page.entries.remove(0))),
         _ => Err(Error::MultipleMatches),
     }
+}
+
+
+fn key(resource_type: ResourceType, id: &ResourceId) -> ResourceKey {
+    ResourceKey::new(resource_type, id.clone())
 }
 
 fn body_id(value: &Value) -> Result<ResourceId, Error> {
@@ -727,25 +949,25 @@ fn etag(envelope: &ResourceEnvelope) -> String {
     WeakEtag::from(envelope.version_id()).to_string()
 }
 
-pub(crate) fn host_from(headers: &HeaderMap) -> &str {
-    headers
-        .get(header::HOST)
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or("localhost")
-}
 
-fn location(host: &str, envelope: &ResourceEnvelope) -> String {
-    let host = if host.trim().is_empty() {
-        "localhost"
-    } else {
-        host.trim()
+
+
+fn location(base: &str, envelope: &ResourceEnvelope) -> String {
+    let base = match base.trim().is_empty() {
+        true => "http://localhost",
+        false => base.trim(),
     };
     format!(
-        "http://{host}/{}/{}/_history/{}",
+        "{base}/{}/{}/_history/{}",
         envelope.resource_type(),
         envelope.id(),
         envelope.version_id()
     )
+}
+
+
+pub(crate) fn addressed(state: &AppState, headers: &HeaderMap) -> String {
+    state.forwarding.base(headers)
 }
 
 fn last_modified(instant: &FhirInstant) -> String {
@@ -854,7 +1076,7 @@ pub async fn type_history(
     RawQuery(query): RawQuery,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
-    let resource_type = served(state.version, &type_name)?;
+    let resource_type = served_here(&state, &type_name)?;
     allowed(
         &state,
         &headers,
@@ -880,7 +1102,7 @@ pub async fn instance_history(
     RawQuery(query): RawQuery,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
-    let resource_type = served(state.version, &type_name)?;
+    let resource_type = served_here(&state, &type_name)?;
     let id = id_text.parse::<ResourceId>()?;
     let access = allowed(
         &state,
@@ -891,7 +1113,7 @@ pub async fn instance_history(
     )
     .await?;
     let path = format!("/{resource_type}/{id}/_history");
-    let current = state.store.read(&id).await?;
+    let current = state.store.read(&key(resource_type, &id)).await?;
     within(&state, &access, &headers, DataAction::Read, &current)?;
     let scope = HistoryScope::Instance(resource_type, id);
     respond_history(&state, scope, path, query, &headers).await
@@ -904,6 +1126,7 @@ async fn respond_history(
     query: Option<String>,
     headers: &HeaderMap,
 ) -> Result<Response, AppError> {
+    state.tenancy.refuses("history")?;
     let request = HistoryRequest::parse(query.as_deref())?;
     let access = crate::access::access_of(state, headers).await?;
     covers(
@@ -911,7 +1134,7 @@ async fn respond_history(
         &scope,
     )?;
     let page = state.store.history(&scope, &request.query).await?;
-    let base = format!("http://{}", host_from(headers));
+    let base = addressed(state, headers);
     let self_url = match query.as_deref() {
         Some(raw) if !raw.is_empty() => format!("{base}{path}?{raw}"),
         _ => format!("{base}{path}"),
@@ -934,7 +1157,7 @@ pub async fn search_type(
     RawQuery(query): RawQuery,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
-    let resource_type = served(state.version, &type_name)?;
+    let resource_type = served_here(&state, &type_name)?;
     allowed(
         &state,
         &headers,
@@ -949,12 +1172,61 @@ pub async fn search_type(
         path.clone(),
         Some(resource_type.as_str()),
         query.as_deref(),
-        host_from(&headers),
+        addressed(&state, &headers),
     );
     if let Some(answered) = crate::job::deferred(&state, &asked, &headers).await {
         return Ok(answered);
     }
     respond_search(&state, Some(resource_type), path, query, &headers).await
+}
+
+
+
+
+pub async fn search_type_form(
+    State(state): State<AppState>,
+    Path(type_name): Path<String>,
+    RawQuery(query): RawQuery,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, AppError> {
+    let resource_type = served_here(&state, &type_name)?;
+    allowed(
+        &state,
+        &headers,
+        DataAction::Read,
+        Some(resource_type),
+        None,
+    )
+    .await?;
+    let asked = merged_query(query, &body)?;
+    let path = format!("/{resource_type}/_search");
+    respond_search(&state, Some(resource_type), path, asked, &headers).await
+}
+
+pub async fn search_system_form(
+    State(state): State<AppState>,
+    RawQuery(query): RawQuery,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, AppError> {
+    allowed(&state, &headers, DataAction::Read, None, None).await?;
+    let asked = merged_query(query, &body)?;
+    respond_search(&state, None, "/_search".to_owned(), asked, &headers).await
+}
+
+fn merged_query(query: Option<String>, body: &[u8]) -> Result<Option<String>, Error> {
+    let form = std::str::from_utf8(body)
+        .map_err(|_| Error::InvalidEnvelope("the form is not utf-8".to_owned()))?
+        .trim();
+    let held: Vec<&str> = [query.as_deref().unwrap_or_default(), form]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect();
+    Ok(match held.is_empty() {
+        true => None,
+        false => Some(held.join("&")),
+    })
 }
 
 pub async fn search_system(
@@ -968,7 +1240,7 @@ pub async fn search_system(
         "/",
         None,
         query.as_deref(),
-        host_from(&headers),
+        addressed(&state, &headers),
     );
     if let Some(answered) = crate::job::deferred(&state, &asked, &headers).await {
         return Ok(answered);
@@ -1006,14 +1278,14 @@ pub async fn compartment_search(
             (Some(one), vec![one])
         }
     };
-    let mut request = SearchRequest::parse(&state.registry, base_type, query.as_deref())?;
+    let (mut request, kept) = parsed_search(&state, base_type, query.as_deref(), &headers)?;
     request.query.types = types;
     request.query.compartment = Some(Compartment {
         kind: root_type,
         id: root,
     });
     let path = format!("/{}/{}/{}", root_type.as_str(), id, target);
-    respond_page(&state, request, path, query, &headers).await
+    respond_page(&state, request, path, kept, &headers).await
 }
 
 pub async fn parameter_status(
@@ -1023,6 +1295,42 @@ pub async fn parameter_status(
 ) -> Result<Response, AppError> {
     allowed(&state, &headers, DataAction::Read, None, None).await?;
     let wanted = param(query.as_deref(), "url");
+    Ok(rendered(
+        parameter::status_report(&state, wanted.as_deref()).await?,
+    ))
+}
+
+pub async fn parameter_status_of(
+    State(state): State<AppState>,
+    Path(id_text): Path<String>,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    allowed(&state, &headers, DataAction::Read, None, None).await?;
+    let id = id_text.parse::<ResourceId>()?;
+    let stored = state
+        .store
+        .read(&key(SEARCH_PARAMETER.parse()?, &id))
+        .await?;
+    if stored.resource_type().as_str() != SEARCH_PARAMETER || stored.is_deleted() {
+        return Err(Error::NotFound.into());
+    }
+    let body: Value = serde_json::from_slice(stored.raw())
+        .map_err(|error| Error::InvalidJson(error.to_string()))?;
+    let url = body.get("url").and_then(Value::as_str).ok_or_else(|| {
+        Error::InvalidEnvelope(format!("{SEARCH_PARAMETER} {id_text} has no url"))
+    })?;
+    Ok(rendered(parameter::status_report(&state, Some(url)).await?))
+}
+
+pub async fn parameter_status_form(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, AppError> {
+    allowed(&state, &headers, DataAction::Read, None, None).await?;
+    let raw = std::str::from_utf8(&body)
+        .map_err(|_| Error::InvalidEnvelope("the form is not utf-8".to_owned()))?;
+    let wanted = param(Some(raw), "url");
     Ok(rendered(
         parameter::status_report(&state, wanted.as_deref()).await?,
     ))
@@ -1085,6 +1393,9 @@ pub async fn parameter_reindex(
     )
     .await?;
     let wanted = param(query.as_deref(), "url");
+    
+    
+    let _held = state.busy.during("a reindex");
     Ok(rendered(
         parameter::reindex(&state, wanted.as_deref()).await?,
     ))
@@ -1125,7 +1436,7 @@ pub async fn compartment_definitions(
     RawQuery(query): RawQuery,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
-    let base = format!("http://{}", host_from(&headers));
+    let base = addressed(&state, &headers);
     let self_url = match query.as_deref() {
         Some(raw) if !raw.is_empty() => format!("{base}/CompartmentDefinition?{raw}"),
         _ => format!("{base}/CompartmentDefinition"),
@@ -1142,7 +1453,7 @@ pub async fn compartment_definition(
     Path(code): Path<String>,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
-    let base = format!("http://{}", host_from(&headers));
+    let base = addressed(&state, &headers);
     let def = fhir_core::search::compartment::definition_in(state.version, &code)
         .ok_or(Error::NotFound)?;
     let body = serde_json::to_vec(&definition_json(&def, &base))
@@ -1150,7 +1461,7 @@ pub async fn compartment_definition(
     Ok(rendered(body))
 }
 
-fn rendered(body: Vec<u8>) -> Response {
+pub(crate) fn rendered(body: Vec<u8>) -> Response {
     (
         StatusCode::OK,
         [
@@ -1190,8 +1501,73 @@ async fn respond_search(
     query: Option<String>,
     headers: &HeaderMap,
 ) -> Result<Response, AppError> {
-    let request = SearchRequest::parse(&state.registry, base_type, query.as_deref())?;
-    respond_page(state, request, path, query, headers).await
+    let (request, kept) = parsed_search(state, base_type, query.as_deref(), headers)?;
+    respond_page(state, request, path, kept, headers).await
+}
+
+
+
+
+fn paged(state: &AppState, request: &mut SearchRequest) -> Result<(), Error> {
+    let paging = &state.paging;
+    request.query.count = match request.named.count {
+        true => paging.count_of(Some(request.query.count)),
+        false => paging.count_of(None),
+    };
+    if !request.named.total {
+        request.query.total = match paging.total() {
+            crate::paging::Counting::None => fhir_store::TotalMode::None,
+            crate::paging::Counting::Accurate => fhir_store::TotalMode::Accurate,
+        };
+    }
+    
+    
+    if matches!(request.summary, crate::history::Summary::Count) {
+        request.query.total = fhir_store::TotalMode::Accurate;
+        request.query.count = 0;
+    }
+    if !request.named.sort {
+        if let Some(sort) = paging.sort() {
+            let base = request.query.types.first().copied();
+            request.query.sort = crate::search::sort_keys(&state.registry, base, sort)?;
+        }
+    }
+    Ok(())
+}
+
+
+
+
+pub(crate) fn parsed_search(
+    state: &AppState,
+    base_type: Option<ResourceType>,
+    raw: Option<&str>,
+    headers: &HeaderMap,
+) -> Result<(SearchRequest, Option<String>), Error> {
+    let (request, kept) = match crate::preference::Handling::asked_for(headers)?.is_lenient() {
+        true => SearchRequest::parse_leniently(&state.registry, base_type, raw)?,
+        false => (
+            SearchRequest::parse(&state.registry, base_type, raw)?,
+            raw.map(str::to_owned),
+        ),
+    };
+    
+    
+    
+    if state.restricted.is_on() {
+        if let Some(refused) = request
+            .query
+            .filters
+            .iter()
+            .find(|filter| !state.restricted.answers(&filter.name))
+        {
+            return Err(Error::UnsupportedParameter(format!(
+                "{:?} is not among the search parameters this instance answers",
+                refused.name
+            )));
+        }
+    }
+    Ok((request, kept))
 }
 
 pub(crate) async fn respond_page(
@@ -1202,6 +1578,8 @@ pub(crate) async fn respond_page(
     headers: &HeaderMap,
 ) -> Result<Response, AppError> {
     let access = crate::access::access_of(state, headers).await?;
+    request.query.include_depth = state.capabilities.include_depth;
+    paged(state, &mut request)?;
     confine(
         &mut request.query,
         confining(state, &access, headers, DataAction::Read)?,
@@ -1209,12 +1587,19 @@ pub(crate) async fn respond_page(
     crate::terminology::resolve(state.terminology.as_ref(), &mut request.query).await?;
     crate::membership::resolve(&state.store, &mut request.query).await?;
     let page = state.store.search(&request.query).await?;
-    let base = format!("http://{}", host_from(headers));
+    let base = addressed(state, headers);
     let self_url = match query.as_deref() {
         Some(raw) if !raw.is_empty() => format!("{base}{path}?{raw}"),
         _ => format!("{base}{path}"),
     };
-    let body = search_bundle(&base, &self_url, &page, request.summary, &request.elements);
+    let body = search_bundle(
+        &base,
+        &self_url,
+        &page,
+        request.summary,
+        &request.elements,
+        &request.dropped,
+    );
     Ok((
         StatusCode::OK,
         [
@@ -1265,7 +1650,23 @@ pub(crate) async fn judged(
     resource_type: Option<ResourceType>,
     id: Option<&ResourceId>,
 ) -> Result<(), Error> {
-    let decision = access.require(action, resource_type);
+    
+    
+    
+    
+    let mut decision = access
+        .require(action, resource_type)
+        .and_then(|()| state.roles.require(access, action, resource_type));
+    if decision.is_ok() {
+        decision = crate::policy::require(
+            state.policies,
+            state.store.as_ref(),
+            access,
+            action,
+            resource_type,
+        )
+        .await;
+    }
     let event = AuditEvent::allowed(&access.actor, action)
         .doing(interaction)
         .by(access.client.clone())
@@ -1291,10 +1692,59 @@ pub(crate) fn confining(
     headers: &HeaderMap,
     action: DataAction,
 ) -> Result<Option<Grant>, Error> {
-    match access.secured {
-        true => crate::access::granted(&state.registry, access, action),
-        false => grant_of(headers),
+    let grant = match access.secured {
+        true => crate::access::granted(&state.registry, access, action)?,
+        false => grant_of(headers)?,
+    };
+    
+    
+    
+    state.tenancy.confining(grant, access, headers)
+}
+
+
+
+
+
+
+
+async fn over_current(
+    state: &AppState,
+    access: &Access,
+    headers: &HeaderMap,
+    resource_type: ResourceType,
+    id: &ResourceId,
+) -> Result<(), Error> {
+    let Ok(current) = state.store.read(&key(resource_type, id)).await else {
+        return Ok(());
+    };
+    if current.is_deleted() {
+        return Ok(());
     }
+    within(state, access, headers, DataAction::Write, &current)
+}
+
+
+
+fn shortened(state: &AppState, headers: &HeaderMap, value: &mut Value) {
+    if state.references.is_on() {
+        let base = addressed(state, headers);
+        state.references.stored(value, &base);
+    }
+}
+
+
+
+fn tenanted(
+    state: &AppState,
+    access: &Access,
+    headers: &HeaderMap,
+    value: &mut Value,
+) -> Result<(), Error> {
+    if let Some(tenant) = state.tenancy.of(access, headers)? {
+        state.tenancy.labelled(value, &tenant);
+    }
+    Ok(())
 }
 
 pub(crate) fn within(
@@ -1342,4 +1792,29 @@ pub(crate) fn served(version: fhir_core::FhirVersion, name: &str) -> Result<Reso
             "{name} is not a resource type of {version}"
         ))),
     }
+}
+
+
+
+
+pub(crate) fn served_here(state: &AppState, name: &str) -> Result<ResourceType, Error> {
+    let held = served(state.version, name)?;
+    match state.restricted.serves(held) {
+        true => Ok(held),
+        false => Err(state.restricted.refuse(held)),
+    }
+}
+
+
+
+pub async fn description(State(state): State<AppState>) -> Result<Response, AppError> {
+    let held = crate::openapi::document(state.version, &crate::app::served());
+    let body = serde_json::to_vec(&held)
+        .map_err(|error| Error::Internal(format!("the description does not serialise: {error}")))?;
+    let mut response = Response::new(Body::from(body));
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
+    Ok(response)
 }

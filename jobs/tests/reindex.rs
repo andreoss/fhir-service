@@ -90,7 +90,15 @@ async fn a_reindex_naming_nothing_backfills_every_parameter() {
     let failures = outcome["failures"].as_array().expect("failures are listed");
     assert_eq!(failures.len(), 1, "{failures:?}");
     assert!(failures[0].as_str().unwrap().contains("t2"), "{failures:?}");
-    assert_eq!(store.index_report("urn:p:when").await.unwrap().unwrap().indexed, 1);
+    assert_eq!(
+        store
+            .index_report("urn:p:when")
+            .await
+            .unwrap()
+            .unwrap()
+            .indexed,
+        1
+    );
 }
 
 #[tokio::test]

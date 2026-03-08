@@ -41,7 +41,9 @@ fn ids(page: &fhir_store::SearchPage) -> Vec<String> {
 
 #[tokio::test]
 async fn a_query_over_an_indexed_parameter_draws_from_the_index() {
-    let Some((store, pool, namespace)) = support::fresh("planned").await else { return };
+    let Some((store, pool, namespace)) = support::fresh("planned").await else {
+        return;
+    };
     store.create(patient("p1", "Stone", true)).await.unwrap();
     store.create(patient("p2", "Rivers", false)).await.unwrap();
     let indexed = SearchQuery {
@@ -54,8 +56,15 @@ async fn a_query_over_an_indexed_parameter_draws_from_the_index() {
     assert!(plans[0].indexed, "{plans:?}");
     assert_eq!(plans[0].baseline, 1);
 
-    store.search(&SearchQuery::of_type(kind("Patient"))).await.unwrap();
-    let scans: Vec<_> = store.plans().into_iter().filter(|plan| !plan.indexed).collect();
+    store
+        .search(&SearchQuery::of_type(kind("Patient")))
+        .await
+        .unwrap();
+    let scans: Vec<_> = store
+        .plans()
+        .into_iter()
+        .filter(|plan| !plan.indexed)
+        .collect();
     assert_eq!(scans.len(), 1);
     assert_eq!(scans[0].baseline, 2);
     support::drop_namespace(&pool, &namespace).await;
@@ -63,7 +72,9 @@ async fn a_query_over_an_indexed_parameter_draws_from_the_index() {
 
 #[tokio::test]
 async fn a_plan_that_stops_paying_for_itself_is_withdrawn() {
-    let Some((store, pool, namespace)) = support::fresh("withdrawn").await else { return };
+    let Some((store, pool, namespace)) = support::fresh("withdrawn").await else {
+        return;
+    };
     store.create(patient("w1", "Stone", true)).await.unwrap();
     let query = SearchQuery {
         filters: vec![filter("Patient", "active", "true")],
@@ -84,13 +95,23 @@ async fn a_plan_that_stops_paying_for_itself_is_withdrawn() {
 
 #[tokio::test]
 async fn a_custom_parameter_answers_only_once_its_index_is_backfilled() {
-    let Some((store, pool, namespace)) = support::fresh("custom").await else { return };
+    let Some((store, pool, namespace)) = support::fresh("custom").await else {
+        return;
+    };
     store.create(banded("b1", "high")).await.unwrap();
     store.create(banded("b2", "low")).await.unwrap();
     let spec = spec();
     let report = store.index_parameter(&spec).await.unwrap();
     assert!(!report.backfilled);
-    assert_eq!(store.index_report("urn:p:band").await.unwrap().unwrap().indexed, 0);
+    assert_eq!(
+        store
+            .index_report("urn:p:band")
+            .await
+            .unwrap()
+            .unwrap()
+            .indexed,
+        0
+    );
 
     let custom = |code: &str| SearchQuery {
         filters: vec![Filter {
@@ -103,23 +124,38 @@ async fn a_custom_parameter_answers_only_once_its_index_is_backfilled() {
         }],
         ..SearchQuery::of_type(kind("Patient"))
     };
-    assert!(store.search(&custom("high")).await.unwrap().entries.is_empty());
+    assert!(store
+        .search(&custom("high"))
+        .await
+        .unwrap()
+        .entries
+        .is_empty());
 
     let reports = store.reindex(std::slice::from_ref(&spec)).await.unwrap();
     assert_eq!(reports.len(), 1);
     assert!(reports[0].backfilled);
     assert_eq!(reports[0].indexed, 2);
-    assert_eq!(ids(&store.search(&custom("high")).await.unwrap()), vec!["b1"]);
+    assert_eq!(
+        ids(&store.search(&custom("high")).await.unwrap()),
+        vec!["b1"]
+    );
 
     store.drop_parameter("urn:p:band").await.unwrap();
     assert!(store.index_report("urn:p:band").await.unwrap().is_none());
-    assert!(store.search(&custom("high")).await.unwrap().entries.is_empty());
+    assert!(store
+        .search(&custom("high"))
+        .await
+        .unwrap()
+        .entries
+        .is_empty());
     support::drop_namespace(&pool, &namespace).await;
 }
 
 #[tokio::test]
 async fn a_resource_carrying_a_malformed_value_is_reported_and_skipped() {
-    let Some((store, pool, namespace)) = support::fresh("failed").await else { return };
+    let Some((store, pool, namespace)) = support::fresh("failed").await else {
+        return;
+    };
     store.create(banded("f1", "high")).await.unwrap();
     let dated = ParameterSpec::parse(&json!({
         "resourceType": "SearchParameter",
@@ -141,7 +177,9 @@ async fn a_resource_carrying_a_malformed_value_is_reported_and_skipped() {
 
 #[tokio::test]
 async fn many_alternatives_are_bound_in_one_batch() {
-    let Some((store, pool, namespace)) = support::fresh("batched").await else { return };
+    let Some((store, pool, namespace)) = support::fresh("batched").await else {
+        return;
+    };
     for index in 0..30 {
         store
             .create(patient(&format!("m{index}"), "Stone", true))
@@ -159,7 +197,9 @@ async fn many_alternatives_are_bound_in_one_batch() {
 
 #[tokio::test]
 async fn a_resource_without_an_ordering_value_sorts_last_ascending() {
-    let Some((store, pool, namespace)) = support::fresh("ordered").await else { return };
+    let Some((store, pool, namespace)) = support::fresh("ordered").await else {
+        return;
+    };
     store.create(patient("o1", "Stone", true)).await.unwrap();
     store
         .create(envelope("Patient", "o2", r#""active":true"#))
@@ -176,14 +216,28 @@ async fn a_resource_without_an_ordering_value_sorts_last_ascending() {
         }],
         ..SearchQuery::of_type(kind("Patient"))
     };
-    assert_eq!(ids(&store.search(&sorted(SortDirection::Ascending)).await.unwrap()), vec!["o1", "o2"]);
-    assert_eq!(ids(&store.search(&sorted(SortDirection::Descending)).await.unwrap()), vec!["o2", "o1"]);
+    assert_eq!(
+        ids(&store
+            .search(&sorted(SortDirection::Ascending))
+            .await
+            .unwrap()),
+        vec!["o1", "o2"]
+    );
+    assert_eq!(
+        ids(&store
+            .search(&sorted(SortDirection::Descending))
+            .await
+            .unwrap()),
+        vec!["o2", "o1"]
+    );
     support::drop_namespace(&pool, &namespace).await;
 }
 
 #[tokio::test]
 async fn a_search_reads_no_body_to_decide_what_matches() {
-    let Some((store, pool, namespace)) = support::fresh("indexonly").await else { return };
+    let Some((store, pool, namespace)) = support::fresh("indexonly").await else {
+        return;
+    };
     store
         .create(observation("q1", "code-1", 4.5, "Patient/p1"))
         .await
@@ -216,7 +270,9 @@ async fn count(pool: &PgPool, namespace: &str, table: &str) -> i64 {
 
 #[tokio::test]
 async fn dropping_a_parameter_takes_its_index_rows_with_it() {
-    let Some((store, pool, namespace)) = support::fresh("dropped").await else { return };
+    let Some((store, pool, namespace)) = support::fresh("dropped").await else {
+        return;
+    };
     store.create(banded("d1", "high")).await.unwrap();
     let spec = spec();
     store.index_parameter(&spec).await.unwrap();
@@ -225,10 +281,18 @@ async fn dropping_a_parameter_takes_its_index_rows_with_it() {
         "select count(*) as total from {}.index_token where param = 'urn:p:band'",
         namespace.as_str()
     );
-    let before: i64 = sqlx::query(&statement).fetch_one(&pool).await.unwrap().get("total");
+    let before: i64 = sqlx::query(&statement)
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+        .get("total");
     assert!(before > 0);
     store.drop_parameter("urn:p:band").await.unwrap();
-    let after: i64 = sqlx::query(&statement).fetch_one(&pool).await.unwrap().get("total");
+    let after: i64 = sqlx::query(&statement)
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+        .get("total");
     assert_eq!(after, 0);
     assert!(count(&pool, namespace.as_str(), "index_token").await > 0);
     let _ = id("d1");

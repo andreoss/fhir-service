@@ -42,8 +42,8 @@ impl Key {
 }
 
 fn digest(secret: &[u8], message: &[u8]) -> [u8; 32] {
-    let mut keyed =
-        <Hmac<Sha256> as Mac>::new_from_slice(secret).unwrap_or_else(|_| Hmac::new_from_slice(&[0u8; 32]).expect("a fixed key is accepted"));
+    let mut keyed = <Hmac<Sha256> as Mac>::new_from_slice(secret)
+        .unwrap_or_else(|_| Hmac::new_from_slice(&[0u8; 32]).expect("a fixed key is accepted"));
     keyed.update(message);
     let mut held = [0u8; 32];
     held.copy_from_slice(&keyed.finalize().into_bytes());
@@ -124,23 +124,35 @@ mod tests {
     fn one_secret_gives_every_instance_the_same_tokens() {
         let here = Key::of("a-shared-continuation-key-value");
         let there = Key::of("a-shared-continuation-key-value");
-        assert_eq!(issued(&here, 25, "_count=2"), issued(&there, 25, "_count=2"));
+        assert_eq!(
+            issued(&here, 25, "_count=2"),
+            issued(&there, 25, "_count=2")
+        );
 
         let elsewhere = Key::of("another-key-entirely");
-        assert_ne!(issued(&here, 25, "_count=2"), issued(&elsewhere, 25, "_count=2"));
+        assert_ne!(
+            issued(&here, 25, "_count=2"),
+            issued(&elsewhere, 25, "_count=2")
+        );
     }
 
     #[test]
     fn an_instance_without_a_secret_keeps_its_tokens_to_itself() {
         let here = Key::generated();
         let there = Key::generated();
-        assert_ne!(issued(&here, 25, "_count=2"), issued(&there, 25, "_count=2"));
+        assert_ne!(
+            issued(&here, 25, "_count=2"),
+            issued(&there, 25, "_count=2")
+        );
     }
 
     #[test]
     fn a_token_round_trips_inside_its_own_query() {
         for offset in [0usize, 1, 25, 4096] {
-            assert_eq!(decode(&encode(offset, "_count=2"), "_count=2").unwrap(), offset);
+            assert_eq!(
+                decode(&encode(offset, "_count=2"), "_count=2").unwrap(),
+                offset
+            );
         }
     }
 
@@ -174,7 +186,10 @@ mod tests {
     fn the_scope_of_a_page_drops_its_own_token() {
         assert_eq!(scope(Some("_count=2&ct=abc")), "_count=2".to_owned());
         assert_eq!(scope(None), String::new());
-        assert_eq!(scope_of("http://localhost/Patient?_count=2&ct=abc"), "_count=2".to_owned());
+        assert_eq!(
+            scope_of("http://localhost/Patient?_count=2&ct=abc"),
+            "_count=2".to_owned()
+        );
         assert_eq!(scope_of("http://localhost/Patient"), String::new());
     }
 
@@ -182,6 +197,9 @@ mod tests {
     fn a_next_link_replaces_an_existing_token() {
         let url = with_token("http://localhost/_history?_count=2&ct=abc", "ff10");
         assert_eq!(url, "http://localhost/_history?_count=2&ct=ff10");
-        assert_eq!(with_token("http://localhost/_history", "ff10"), "http://localhost/_history?ct=ff10");
+        assert_eq!(
+            with_token("http://localhost/_history", "ff10"),
+            "http://localhost/_history?ct=ff10"
+        );
     }
 }

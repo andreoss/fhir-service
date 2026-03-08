@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use fhir_core::search::ParameterSpec;
-use fhir_core::{Error, ResourceEnvelope, ResourceId, VersionId};
+use fhir_core::{Error, ResourceEnvelope, ResourceKey, VersionId};
 
 use crate::history::{HistoryPage, HistoryQuery, HistoryScope};
 use crate::parameter::IndexReport;
@@ -16,9 +16,17 @@ pub type SearchParams = Vec<SearchParam>;
 pub trait ResourceStore: Send + Sync {
     async fn create(&self, envelope: ResourceEnvelope) -> Result<ResourceEnvelope, Error>;
 
-    async fn read(&self, id: &ResourceId) -> Result<ResourceEnvelope, Error>;
+    
+    
+    
+    
+    async fn read(&self, key: &ResourceKey) -> Result<ResourceEnvelope, Error>;
 
-    async fn vread(&self, id: &ResourceId, version: &VersionId) -> Result<ResourceEnvelope, Error>;
+    async fn vread(
+        &self,
+        key: &ResourceKey,
+        version: &VersionId,
+    ) -> Result<ResourceEnvelope, Error>;
 
     async fn update(
         &self,
@@ -28,11 +36,37 @@ pub trait ResourceStore: Send + Sync {
 
     async fn search(&self, query: &SearchQuery) -> Result<SearchPage, Error>;
 
-    async fn delete(&self, id: &ResourceId) -> Result<ResourceEnvelope, Error>;
+    async fn delete(&self, key: &ResourceKey) -> Result<ResourceEnvelope, Error>;
 
-    async fn hard_delete(&self, id: &ResourceId) -> Result<(), Error>;
+    async fn hard_delete(&self, key: &ResourceKey) -> Result<(), Error>;
 
-    async fn purge_history(&self, id: &ResourceId) -> Result<usize, Error>;
+    async fn purge_history(&self, key: &ResourceKey) -> Result<usize, Error>;
+
+    
+    
+    
+    
+    
+    
+    async fn erase_versions(&self, key: &ResourceKey, through: &VersionId) -> Result<usize, Error> {
+        let _ = (key, through);
+        Err(Error::UnsupportedParameter(
+            "this store cannot erase a version".to_owned(),
+        ))
+    }
+
+    
+    
+    
+    
+    
+    
+    
+    async fn empty(&self) -> Result<usize, Error> {
+        Err(Error::UnsupportedParameter(
+            "this store cannot be emptied".to_owned(),
+        ))
+    }
 
     async fn restore_version(&self, _envelope: ResourceEnvelope) -> Result<bool, Error> {
         Err(Error::UnsupportedParameter(
@@ -70,9 +104,9 @@ pub trait ResourceStore: Send + Sync {
     async fn reindex_resource(
         &self,
         specs: &[ParameterSpec],
-        id: &ResourceId,
+        key: &ResourceKey,
     ) -> Result<Vec<IndexReport>, Error> {
-        let _ = (specs, id);
+        let _ = (specs, key);
         Err(Error::UnsupportedParameter(
             "this store holds no parameter index".to_owned(),
         ))
@@ -108,13 +142,13 @@ mod tests {
             Err(Error::NotFound)
         }
 
-        async fn read(&self, _id: &ResourceId) -> Result<ResourceEnvelope, Error> {
+        async fn read(&self, _key: &ResourceKey) -> Result<ResourceEnvelope, Error> {
             Err(Error::NotFound)
         }
 
         async fn vread(
             &self,
-            _id: &ResourceId,
+            _key: &ResourceKey,
             _version: &VersionId,
         ) -> Result<ResourceEnvelope, Error> {
             Err(Error::NotFound)
@@ -132,15 +166,15 @@ mod tests {
             Err(Error::NotFound)
         }
 
-        async fn delete(&self, _id: &ResourceId) -> Result<ResourceEnvelope, Error> {
+        async fn delete(&self, _key: &ResourceKey) -> Result<ResourceEnvelope, Error> {
             Err(Error::NotFound)
         }
 
-        async fn hard_delete(&self, _id: &ResourceId) -> Result<(), Error> {
+        async fn hard_delete(&self, _key: &ResourceKey) -> Result<(), Error> {
             Err(Error::NotFound)
         }
 
-        async fn purge_history(&self, _id: &ResourceId) -> Result<usize, Error> {
+        async fn purge_history(&self, _key: &ResourceKey) -> Result<usize, Error> {
             Err(Error::NotFound)
         }
 
@@ -177,7 +211,10 @@ mod tests {
     #[tokio::test]
     async fn a_store_without_an_index_says_so_rather_than_pretending() {
         let store = Bare;
-        let id = ResourceId::parse("one").expect("a valid id");
+        let key = ResourceKey::new(
+            "Patient".parse().expect("a served type"),
+            fhir_core::ResourceId::parse("one").expect("a valid id"),
+        );
         assert!(unsupported(
             store.index_parameter(&spec()).await.unwrap_err()
         ));
@@ -186,7 +223,7 @@ mod tests {
         ));
         assert!(unsupported(store.reindex(&[spec()]).await.unwrap_err()));
         assert!(unsupported(
-            store.reindex_resource(&[spec()], &id).await.unwrap_err()
+            store.reindex_resource(&[spec()], &key).await.unwrap_err()
         ));
         assert_eq!(store.index_report("urn:p:a").await.unwrap(), None);
         assert!(store.adopt_parameter(&spec()).await.is_ok());

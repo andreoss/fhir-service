@@ -368,7 +368,10 @@ pub async fn ordering(store: &dyn fhir_store::ResourceStore) {
     };
     assert!(store.search(&estimated).await.unwrap().total.is_some());
 
-    let deleted = store.delete(&id("p1")).await.unwrap();
+    let deleted = store
+        .delete(&crate::fixture::key("Patient", "p1"))
+        .await
+        .unwrap();
     assert!(deleted.is_deleted());
     let after = store
         .search(&SearchQuery::of_type(kind("Patient")))
@@ -383,10 +386,6 @@ pub async fn linking(store: &dyn fhir_store::ResourceStore) {
 
     let chained = SearchQuery {
         chains: vec![Chain {
-            
-            
-            
-            
             name: "subject.name".to_owned(),
             link: "subject".to_owned(),
             target: lookup(Some(kind("Observation")), "subject")
@@ -475,6 +474,7 @@ pub async fn linking(store: &dyn fhir_store::ResourceStore) {
                 id: id("p2"),
             }],
             filters: Vec::new(),
+            every: Vec::new(),
         }),
         ..SearchQuery::default()
     };
@@ -485,6 +485,7 @@ pub async fn linking(store: &dyn fhir_store::ResourceStore) {
             types: vec![kind("Observation")],
             compartments: Vec::new(),
             filters: Vec::new(),
+            every: Vec::new(),
         }),
         ..SearchQuery::of_type(kind("Patient"))
     };
@@ -497,6 +498,7 @@ pub async fn linking(store: &dyn fhir_store::ResourceStore) {
             resource_type: kind("Observation"),
             filter: filter("Observation", "code", "code-1"),
         }],
+        every: Vec::new(),
     };
     let narrowed = SearchQuery {
         grant: Some(narrowing.clone()),
@@ -625,7 +627,10 @@ pub async fn targeted_index(store: &dyn fhir_store::ResourceStore) {
 
     store.update(band("t1", "low"), None).await.unwrap();
     let reports = store
-        .reindex_resource(std::slice::from_ref(&spec), &crate::fixture::id("t1"))
+        .reindex_resource(
+            std::slice::from_ref(&spec),
+            &crate::fixture::key("Patient", "t1"),
+        )
         .await
         .unwrap();
     assert_eq!(reports.len(), 1);
@@ -647,7 +652,10 @@ pub async fn targeted_index(store: &dyn fhir_store::ResourceStore) {
     let other = crate::fixture::observation("t3", "code-1", 3.0, "Patient/t1");
     store.create(other).await.unwrap();
     let untouched = store
-        .reindex_resource(std::slice::from_ref(&spec), &crate::fixture::id("t3"))
+        .reindex_resource(
+            std::slice::from_ref(&spec),
+            &crate::fixture::key("Observation", "t3"),
+        )
         .await
         .unwrap();
     assert_eq!(untouched[0].indexed, 0);
@@ -658,10 +666,183 @@ pub async fn targeted_index(store: &dyn fhir_store::ResourceStore) {
     );
 
     let missing = store
-        .reindex_resource(std::slice::from_ref(&spec), &crate::fixture::id("nobody"))
+        .reindex_resource(
+            std::slice::from_ref(&spec),
+            &crate::fixture::key("Patient", "nobody"),
+        )
         .await;
     assert!(
         matches!(missing, Err(fhir_core::Error::NotFound)),
         "{missing:?}"
     );
+}
+
+
+
+
+pub async fn exempted(store: &dyn fhir_store::ResourceStore) {
+    let dated = |id: &str, effective: &str| {
+        envelope(
+            "Observation",
+            id,
+            &format!(
+                r#""status":"final","code":{{"text":"probe"}},"effectiveDateTime":"{effective}""#
+            ),
+        )
+    };
+    store.create(dated("x-dated", "2020-01-01")).await.unwrap();
+    store.create(dated("x-later", "2024-06-01")).await.unwrap();
+    store
+        .create(patient("x-plain", "Stone", true))
+        .await
+        .unwrap();
+
+    let windowed = |exempt: Vec<ResourceType>| SearchQuery {
+        types: vec![kind("Observation"), kind("Patient")],
+        filters: vec![
+            qualified("Observation", "date", Modifier::None, "ge2023-01-01").exempting(exempt),
+        ],
+        ..SearchQuery::default()
+    };
+
+    let mut narrowed = ids(&store.search(&windowed(Vec::new())).await.unwrap());
+    narrowed.sort();
+    assert_eq!(narrowed, vec!["x-later".to_owned()]);
+
+    let mut carried = ids(&store
+        .search(&windowed(vec![kind("Patient")]))
+        .await
+        .unwrap());
+    carried.sort();
+    assert_eq!(
+        carried,
+        vec!["x-later".to_owned(), "x-plain".to_owned()],
+        "the exempt type is carried and the judged one is still narrowed"
+    );
+}
+
+
+
+
+
+
+pub async fn converted_quantities(store: &dyn fhir_store::ResourceStore) {
+    let weighed = |id: &str, value: f64, code: &str| {
+        envelope(
+            "Observation",
+            id,
+            &format!(
+                r#""status":"final","code":{{"coding":[{{"system":"urn:s","code":"mass"}}]}},"valueQuantity":{{"value":{value},"system":"http://unitsofmeasure.org","code":"{code}"}}"#
+            ),
+        )
+    };
+    store.create(weighed("q-kg", 2.0, "kg")).await.unwrap();
+    store.create(weighed("q-g", 2000.0, "g")).await.unwrap();
+    store.create(weighed("q-m", 2.0, "m")).await.unwrap();
+
+    let asked = |raw: &str| SearchQuery {
+        filters: vec![qualified(
+            "Observation",
+            "value-quantity",
+            Modifier::None,
+            raw,
+        )],
+        ..SearchQuery::of_type(kind("Observation"))
+    };
+
+    let mut held = ids(&store
+        .search(&asked("2|http://unitsofmeasure.org|kg"))
+        .await
+        .unwrap());
+    held.sort();
+    assert_eq!(
+        held,
+        vec!["q-g".to_owned(), "q-kg".to_owned()],
+        "kilograms finds the value recorded in grams"
+    );
+
+    let mut held = ids(&store
+        .search(&asked("2000|http://unitsofmeasure.org|g"))
+        .await
+        .unwrap());
+    held.sort();
+    assert_eq!(held, vec!["q-g".to_owned(), "q-kg".to_owned()]);
+
+    let held = ids(&store
+        .search(&asked("2|http://unitsofmeasure.org|m"))
+        .await
+        .unwrap());
+    assert_eq!(
+        held,
+        vec!["q-m".to_owned()],
+        "and finds nothing of another dimension"
+    );
+
+    let held = ids(&store
+        .search(&asked("gt1|http://unitsofmeasure.org|kg"))
+        .await
+        .unwrap());
+    assert_eq!(held.len(), 2, "a comparator holds across the conversion");
+}
+
+
+
+
+
+
+
+pub async fn narrowed_everywhere(store: &dyn fhir_store::ResourceStore) {
+    let observed = |id: &str, tenant: &str| {
+        crate::fixture::secured(
+            "Observation",
+            id,
+            r#""status":"final","code":{"text":"probe"}"#,
+            "urn:t",
+            tenant,
+        )
+    };
+    store.create(observed("t-one-ob", "one")).await.unwrap();
+    store.create(observed("t-two-ob", "two")).await.unwrap();
+    store
+        .create(crate::fixture::secured(
+            "Patient",
+            "t-one-pt",
+            r#""active":true"#,
+            "urn:t",
+            "one",
+        ))
+        .await
+        .unwrap();
+    store
+        .create(envelope("Patient", "t-none-pt", r#""active":true"#))
+        .await
+        .unwrap();
+
+    let confined = |tenant: &str| SearchQuery {
+        types: vec![kind("Observation"), kind("Patient")],
+        grant: Some(Grant {
+            types: Vec::new(),
+            compartments: Vec::new(),
+            filters: Vec::new(),
+            every: vec![filter(
+                "Observation",
+                "_security",
+                &format!("urn:t|{tenant}"),
+            )],
+        }),
+        ..SearchQuery::default()
+    };
+
+    let mut one = ids(&store.search(&confined("one")).await.unwrap());
+    one.sort();
+    assert_eq!(
+        one,
+        vec!["t-one-ob".to_owned(), "t-one-pt".to_owned()],
+        "every type is narrowed by the one filter, and a row carrying no label \
+         is not reached"
+    );
+
+    let mut two = ids(&store.search(&confined("two")).await.unwrap());
+    two.sort();
+    assert_eq!(two, vec!["t-two-ob".to_owned()]);
 }

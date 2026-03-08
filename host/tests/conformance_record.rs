@@ -7,7 +7,9 @@ use std::path::PathBuf;
 const VERSIONS: [&str; 4] = ["STU3", "R4", "R4B", "R5"];
 const RECORD: &str = "FHIR_CONFORMANCE_RECORD";
 
-const AUTHORIZED: [(&str, &str); 5] = [
+const AUTHORIZED: [(&str, &str); 7] = [
+    ("FHIR_AUTH_AUDIENCE", "https://service.example.org"),
+    ("FHIR_AUTH_JWKS", "https://issuer.example.org/certs"),
     (
         "FHIR_AUTH_CAPABILITIES",
         "launch-standalone,client-public,sso-openid-connect,permission-v2",
@@ -23,7 +25,6 @@ const AUTHORIZED: [(&str, &str); 5] = [
 
 fn folder() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
         .join("..")
         .join("doc")
         .join("conformance")

@@ -1,4 +1,3 @@
-
 pub mod access;
 pub mod dimension;
 pub mod event;
@@ -9,8 +8,8 @@ use std::sync::Arc;
 
 pub use access::{Admission, Scrape};
 pub use dimension::{Dimensions, Operation, Outcome};
+pub use event::{Alarm, Event, Held, Recorded, Silent, Sink, Stream, Traced, Traces};
 pub use fhir_core::CorrelationId;
-pub use event::{Event, Held, Silent, Sink, Stream};
 pub use limit::{Limiter, Ticker, BUDGET, WINDOW_MS};
 pub use metric::{Metrics, BUCKETS};
 
@@ -18,6 +17,8 @@ pub struct Telemetry {
     sink: Arc<dyn Sink>,
     limiter: Limiter,
     metrics: Metrics,
+    alarm: Option<Arc<dyn Alarm>>,
+    traces: Option<Arc<dyn Traces>>,
 }
 
 impl Telemetry {
@@ -26,6 +27,25 @@ impl Telemetry {
             sink,
             limiter: Limiter::new(ticker),
             metrics: Metrics::new(),
+            alarm: None,
+            traces: None,
+        }
+    }
+
+    
+    
+    pub fn tracing(self, traces: Arc<dyn Traces>) -> Telemetry {
+        Telemetry {
+            traces: Some(traces),
+            ..self
+        }
+    }
+
+    
+    pub fn alarming(self, alarm: Arc<dyn Alarm>) -> Telemetry {
+        Telemetry {
+            alarm: Some(alarm),
+            ..self
         }
     }
 
@@ -48,8 +68,34 @@ impl Telemetry {
 
     fn emit(&self, event: Event) {
         self.metrics.observe(event.dimensions, event.millis);
+        let line = event.line();
         if self.limiter.admits(event.dimensions) {
-            self.sink.write(&event.line());
+            self.sink.write(&line);
+        }
+        
+        
+        
+        
+        
+        if event.dimensions.outcome == Outcome::ServerFault {
+            self.alert(&line);
+        }
+        
+        
+        if let Some(traces) = &self.traces {
+            traces.span(&event);
+        }
+    }
+
+    fn alert(&self, line: &str) {
+        let Some(alarm) = &self.alarm else {
+            return;
+        };
+        if let Err(reason) = alarm.raise(line) {
+            
+            
+            self.sink
+                .write(&format!("alert=failed reason={reason:?} for {line}"));
         }
     }
 

@@ -9,14 +9,14 @@ use crate::handlers::AppError;
 
 const JSON: &str = "application/json";
 
-const OAUTH_URIS: &str =
-    "http://fhir-registry.smarthealthit.org/StructureDefinition/oauth-uris";
-const SECURITY_SERVICE: &str =
-    "http://terminology.hl7.org/CodeSystem/restful-security-service";
+const OAUTH_URIS: &str = "http://fhir-registry.smarthealthit.org/StructureDefinition/oauth-uris";
+const SECURITY_SERVICE: &str = "http://terminology.hl7.org/CodeSystem/restful-security-service";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Authorization {
     pub issuer: String,
+    pub audience: Option<String>,
+    pub jwks: Option<String>,
     pub authorize: String,
     pub token: String,
     pub introspect: Option<String>,
@@ -28,11 +28,27 @@ impl Authorization {
     pub fn new(issuer: &str, authorize: &str, token: &str) -> Authorization {
         Authorization {
             issuer: issuer.to_owned(),
+            audience: None,
+            jwks: None,
             authorize: authorize.to_owned(),
             token: token.to_owned(),
             introspect: None,
             scopes: Vec::new(),
             capabilities: Vec::new(),
+        }
+    }
+
+    pub fn with_audience(self, audience: &str) -> Authorization {
+        Authorization {
+            audience: Some(audience.to_owned()),
+            ..self
+        }
+    }
+
+    pub fn with_jwks(self, jwks: &str) -> Authorization {
+        Authorization {
+            jwks: Some(jwks.to_owned()),
+            ..self
         }
     }
 
@@ -62,6 +78,9 @@ impl Authorization {
         if let Some(endpoint) = &self.introspect {
             found.insert("introspection_endpoint".to_owned(), json!(endpoint));
         }
+        if let Some(address) = &self.jwks {
+            found.insert("jwks_uri".to_owned(), json!(address));
+        }
         found.insert("scopes_supported".to_owned(), json!(self.scopes));
         found.insert("capabilities".to_owned(), json!(self.capabilities));
         found.insert("response_types_supported".to_owned(), json!(["code"]));
@@ -69,7 +88,10 @@ impl Authorization {
             "grant_types_supported".to_owned(),
             json!(["authorization_code", "client_credentials"]),
         );
-        found.insert("code_challenge_methods_supported".to_owned(), json!(["S256"]));
+        found.insert(
+            "code_challenge_methods_supported".to_owned(),
+            json!(["S256"]),
+        );
         Value::Object(found)
     }
 }
@@ -124,7 +146,10 @@ mod tests {
             document["authorization_endpoint"],
             "https://issuer.example.org/authorize"
         );
-        assert_eq!(document["token_endpoint"], "https://issuer.example.org/token");
+        assert_eq!(
+            document["token_endpoint"],
+            "https://issuer.example.org/token"
+        );
         assert_eq!(document["scopes_supported"][0], "system/*.read");
         assert!(document.get("introspection_endpoint").is_none());
     }
@@ -133,5 +158,23 @@ mod tests {
     fn introspection_is_published_when_it_is_offered() {
         let active = Authorization::new("i", "a", "t").with_introspection("x");
         assert_eq!(active.document()["introspection_endpoint"], "x");
+    }
+
+    #[test]
+    fn the_key_set_address_is_published_when_it_is_held() {
+        let active =
+            Authorization::new("i", "a", "t").with_jwks("https://issuer.example.org/certs");
+        assert_eq!(
+            active.document()["jwks_uri"],
+            "https://issuer.example.org/certs"
+        );
+    }
+
+    #[test]
+    fn a_document_without_a_key_set_address_carries_no_field_for_it() {
+        assert!(Authorization::new("i", "a", "t")
+            .document()
+            .get("jwks_uri")
+            .is_none());
     }
 }

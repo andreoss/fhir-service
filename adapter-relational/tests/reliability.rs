@@ -9,7 +9,9 @@ use std::sync::Arc;
 
 #[tokio::test]
 async fn a_violated_constraint_is_permanent_and_is_not_repeated() {
-    let Some((store, pool, namespace)) = support::fresh("permanent").await else { return };
+    let Some((store, pool, namespace)) = support::fresh("permanent").await else {
+        return;
+    };
     let statement = format!(
         "insert into {}.schema_version (version, name) values (1, 'again')",
         namespace.as_str()
@@ -23,7 +25,9 @@ async fn a_violated_constraint_is_permanent_and_is_not_repeated() {
 
 #[tokio::test]
 async fn a_malformed_statement_is_permanent() {
-    let Some(pool) = support::engine().await else { return };
+    let Some(pool) = support::engine().await else {
+        return;
+    };
     let failure = sqlx::query("select sideways from nowhere")
         .execute(&pool)
         .await
@@ -33,18 +37,28 @@ async fn a_malformed_statement_is_permanent() {
 
 #[tokio::test]
 async fn a_store_that_lost_its_engine_fails_fast() {
-    let Some((store, pool, namespace)) = support::fresh("closed").await else { return };
+    let Some((store, pool, namespace)) = support::fresh("closed").await else {
+        return;
+    };
     store.create(patient("f1", "Stone", true)).await.unwrap();
     let store = fhir_adapter_relational::RelationalStore::new(pool.clone(), namespace.clone())
         .with_policy(Policy::once());
     assert_eq!(store.policy().attempts, 1);
-    assert!(store.read(&id("f1")).await.is_ok());
+    assert!(store
+        .read(&fhir_core::ResourceKey::new(
+            "Patient".parse().unwrap(),
+            id("f1")
+        ))
+        .await
+        .is_ok());
     support::drop_namespace(&pool, &namespace).await;
 }
 
 #[tokio::test]
 async fn no_more_work_reaches_the_engine_at_once_than_the_limit_allows() {
-    let Some((_store, pool, namespace)) = support::fresh("throttled").await else { return };
+    let Some((_store, pool, namespace)) = support::fresh("throttled").await else {
+        return;
+    };
     let store = Arc::new(
         fhir_adapter_relational::RelationalStore::new(pool.clone(), namespace.clone())
             .with_throttle(Throttle::new(2)),
@@ -74,7 +88,9 @@ async fn no_more_work_reaches_the_engine_at_once_than_the_limit_allows() {
 
 #[tokio::test]
 async fn reclaiming_space_leaves_the_records_readable() {
-    let Some((store, pool, namespace)) = support::fresh("reclaimed").await else { return };
+    let Some((store, pool, namespace)) = support::fresh("reclaimed").await else {
+        return;
+    };
     for index in 0..20 {
         store
             .create(patient(&format!("r{index}"), "Stone", true))
@@ -82,20 +98,34 @@ async fn reclaiming_space_leaves_the_records_readable() {
             .unwrap();
     }
     for index in 0..10 {
-        store.hard_delete(&id(&format!("r{index}"))).await.unwrap();
+        store
+            .hard_delete(&fhir_core::ResourceKey::new(
+                "Patient".parse().unwrap(),
+                id(&format!("r{index}")),
+            ))
+            .await
+            .unwrap();
     }
     assert_eq!(store.defragment().await.unwrap(), 9);
     assert_eq!(
         store.search(&SearchQuery::default()).await.unwrap().total,
         Some(10)
     );
-    assert!(store.read(&id("r19")).await.is_ok());
+    assert!(store
+        .read(&fhir_core::ResourceKey::new(
+            "Patient".parse().unwrap(),
+            id("r19")
+        ))
+        .await
+        .is_ok());
     support::drop_namespace(&pool, &namespace).await;
 }
 
 #[tokio::test]
 async fn a_schema_that_lacks_only_tuning_is_still_served() {
-    let Some(pool) = support::engine().await else { return };
+    let Some(pool) = support::engine().await else {
+        return;
+    };
     let namespace = support::namespace("tuned");
     let migrator = Migrator::new(pool.clone(), namespace.clone());
     assert!(lowest_compatible() < latest());
@@ -125,7 +155,9 @@ async fn health_asks_the_engine_not_the_handle() {
 
 #[tokio::test]
 async fn health_answers_when_the_engine_answers() {
-    let Some((store, pool, namespace)) = support::fresh("healthy").await else { return };
+    let Some((store, pool, namespace)) = support::fresh("healthy").await else {
+        return;
+    };
     assert!(store.health().await.is_ok());
     support::drop_namespace(&pool, &namespace).await;
 }

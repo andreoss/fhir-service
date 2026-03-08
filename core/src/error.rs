@@ -16,11 +16,19 @@ pub enum Error {
     NotFound,
     VersionConflict,
     StaleVersion,
+    VersionRequired(String),
     UnsupportedFormat(String),
     Duplicate(String),
     Internal(String),
     Deleted,
     MethodNotAllowed,
+    
+    
+    NotServed(String),
+    
+    TooLarge(String),
+    
+    Unprocessable(String),
     MultipleMatches,
     InvalidPatch(String),
     InvalidParameter(String),
@@ -90,6 +98,9 @@ impl Error {
                 IssueCode::StaleVersion,
                 "the version named by if-match is not the current version",
             ),
+            Error::VersionRequired(message) => {
+                OperationOutcome::error(IssueCode::StaleVersion, message.clone())
+            }
             Error::UnsupportedFormat(value) => OperationOutcome::error(
                 IssueCode::NotAcceptable,
                 format!("unsupported format: {value:?}"),
@@ -100,6 +111,11 @@ impl Error {
             ),
             Error::Internal(_) => OperationOutcome::error(IssueCode::Processing, CONTAINED),
             Error::Deleted => OperationOutcome::error(IssueCode::Deleted, "resource deleted"),
+            Error::NotServed(message) => OperationOutcome::error(IssueCode::NotAllowed, message),
+            Error::TooLarge(message) => OperationOutcome::error(IssueCode::TooLarge, message),
+            Error::Unprocessable(message) => {
+                OperationOutcome::error(IssueCode::BusinessRule, message)
+            }
             Error::MethodNotAllowed => {
                 OperationOutcome::error(IssueCode::NotAllowed, "method not allowed")
             }
@@ -154,11 +170,15 @@ impl fmt::Display for Error {
             Error::NotFound => write!(f, "resource not found"),
             Error::VersionConflict => write!(f, "version conflict"),
             Error::StaleVersion => write!(f, "stale version"),
+            Error::VersionRequired(message) => write!(f, "{message}"),
             Error::UnsupportedFormat(value) => write!(f, "unsupported format: {value:?}"),
             Error::Duplicate(value) => write!(f, "duplicate resource: {value:?}"),
             Error::Internal(message) => write!(f, "internal error: {message}"),
             Error::Deleted => write!(f, "resource deleted"),
             Error::MethodNotAllowed => write!(f, "method not allowed"),
+            Error::NotServed(message) => write!(f, "{message}"),
+            Error::TooLarge(message) => write!(f, "{message}"),
+            Error::Unprocessable(message) => write!(f, "{message}"),
             Error::MultipleMatches => write!(f, "multiple matches for the conditional request"),
             Error::InvalidPatch(message) => write!(f, "invalid patch: {message}"),
             Error::InvalidParameter(message) => write!(f, "invalid parameter: {message}"),

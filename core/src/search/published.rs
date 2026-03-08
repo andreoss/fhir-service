@@ -122,7 +122,6 @@ pub fn all() -> Vec<Published> {
             }
         }
     }
-    
     held.into_values()
         .map(|mut entry| {
             if entry.until == Some(FhirVersion::R5) {
@@ -130,6 +129,14 @@ pub fn all() -> Vec<Published> {
             }
             entry
         })
+        
+        
+        .filter_map(
+            |mut entry| match crate::search::errata::corrected(&mut entry) {
+                true => Some(entry),
+                false => None,
+            },
+        )
         .collect()
 }
 
@@ -170,7 +177,6 @@ mod tests {
     #[test]
     fn a_span_closes_only_where_a_release_stopped_publishing() {
         let held = all();
-        
         let gender = held
             .iter()
             .find(|entry| entry.kind == "Patient" && entry.name == "gender")

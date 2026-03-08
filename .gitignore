@@ -2,3 +2,7 @@
 /scratch
 /doc/review/*.log
 /doc/Confidential.adoc
+/bill-of-materials.json
+**/bill-of-materials.json
+/fhir-server
+/references

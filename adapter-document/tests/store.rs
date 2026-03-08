@@ -34,11 +34,25 @@ async fn preparing_a_namespace_twice_leaves_it_as_it_was() {
     let Some((store, client, namespace)) = support::fresh("prepared").await else {
         return;
     };
-    let again = store.initialise().await.expect("the namespace prepares again");
+    let again = store
+        .initialise()
+        .await
+        .expect("the namespace prepares again");
     assert!(again > 0);
     store.create(patient("i1", "Stone", true)).await.unwrap();
     store.initialise().await.expect("preparing keeps the data");
-    assert_eq!(store.read(&id("i1")).await.unwrap().version_id().as_str(), "1");
+    assert_eq!(
+        store
+            .read(&fhir_core::ResourceKey::new(
+                "Patient".parse().unwrap(),
+                id("i1")
+            ))
+            .await
+            .unwrap()
+            .version_id()
+            .as_str(),
+        "1"
+    );
     support::drop_namespace(&client, &namespace).await;
 }
 
@@ -74,9 +88,17 @@ async fn only_the_current_version_answers_a_search() {
         .await
         .unwrap();
     let name = namespace.as_str();
-    assert_eq!(documents(&client, name, doc! {"resource_id": "m1"}).await, 2);
     assert_eq!(
-        documents(&client, name, doc! {"resource_id": "m1", "is_current": true}).await,
+        documents(&client, name, doc! {"resource_id": "m1"}).await,
+        2
+    );
+    assert_eq!(
+        documents(
+            &client,
+            name,
+            doc! {"resource_id": "m1", "is_current": true}
+        )
+        .await,
         1
     );
     let stale = store
@@ -100,11 +122,25 @@ async fn a_delete_marker_carries_no_indexed_value() {
         return;
     };
     store.create(patient("k1", "Stone", true)).await.unwrap();
-    store.delete(&id("k1")).await.unwrap();
+    store
+        .delete(&fhir_core::ResourceKey::new(
+            "Patient".parse().unwrap(),
+            id("k1"),
+        ))
+        .await
+        .unwrap();
     let name = namespace.as_str();
-    let held = one(&client, name, doc! {"resource_id": "k1", "is_current": true}).await;
+    let held = one(
+        &client,
+        name,
+        doc! {"resource_id": "k1", "is_current": true},
+    )
+    .await;
     assert!(held.get_array("text").unwrap().is_empty());
-    assert_eq!(documents(&client, name, doc! {"resource_id": "k1"}).await, 2);
+    assert_eq!(
+        documents(&client, name, doc! {"resource_id": "k1"}).await,
+        2
+    );
     support::drop_namespace(&client, &namespace).await;
 }
 
@@ -121,7 +157,13 @@ async fn removing_a_resource_takes_every_version_with_it() {
         .update(observation("r1", "code-2", 1.0, "Patient/p1"), None)
         .await
         .unwrap();
-    store.hard_delete(&id("r1")).await.unwrap();
+    store
+        .hard_delete(&fhir_core::ResourceKey::new(
+            "Observation".parse().unwrap(),
+            id("r1"),
+        ))
+        .await
+        .unwrap();
     assert_eq!(
         documents(&client, namespace.as_str(), doc! {"resource_id": "r1"}).await,
         0
@@ -138,7 +180,13 @@ async fn two_namespaces_hold_separate_records() {
         return;
     };
     first.create(patient("n1", "Stone", true)).await.unwrap();
-    assert!(second.read(&id("n1")).await.is_err());
+    assert!(second
+        .read(&fhir_core::ResourceKey::new(
+            "Patient".parse().unwrap(),
+            id("n1")
+        ))
+        .await
+        .is_err());
     assert_eq!(documents(&client, one.as_str(), Document::new()).await, 1);
     assert_eq!(documents(&client, two.as_str(), Document::new()).await, 0);
     support::drop_namespace(&client, &one).await;

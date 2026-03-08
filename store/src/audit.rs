@@ -1,4 +1,3 @@
-
 use async_trait::async_trait;
 use fhir_core::security::scope::DataAction;
 use fhir_core::{Error, ResourceId, ResourceType};
@@ -92,10 +91,17 @@ impl AuditEvent {
     }
 
     pub fn doing(self, interaction: Interaction) -> AuditEvent {
-        AuditEvent { interaction, ..self }
+        AuditEvent {
+            interaction,
+            ..self
+        }
     }
 
-    pub fn of(self, resource_type: Option<ResourceType>, resource_id: Option<ResourceId>) -> AuditEvent {
+    pub fn of(
+        self,
+        resource_type: Option<ResourceType>,
+        resource_id: Option<ResourceId>,
+    ) -> AuditEvent {
         AuditEvent {
             resource_type,
             resource_id,

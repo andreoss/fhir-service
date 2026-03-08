@@ -34,7 +34,14 @@ pub struct SearchQuery {
     pub offset: usize,
     pub count: usize,
     pub total: TotalMode,
+    
+    
+    
+    pub include_depth: usize,
 }
+
+
+pub const DEFAULT_INCLUDE_DEPTH: usize = 5;
 
 impl Default for SearchQuery {
     fn default() -> SearchQuery {
@@ -50,6 +57,7 @@ impl Default for SearchQuery {
             offset: 0,
             count: usize::MAX,
             total: TotalMode::Accurate,
+            include_depth: DEFAULT_INCLUDE_DEPTH,
         }
     }
 }
@@ -95,4 +103,9 @@ pub struct SearchPage {
     pub included: Vec<ResourceEnvelope>,
     pub total: Option<usize>,
     pub offset: usize,
+    
+    
+    
+    
+    pub bounded: bool,
 }

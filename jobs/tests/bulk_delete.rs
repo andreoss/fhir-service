@@ -85,9 +85,30 @@ async fn a_bulk_delete_marks_the_named_type_and_leaves_the_rest() {
     let outcome = outcome_of(&record);
     assert_eq!(outcome["handled"], 2);
     assert_eq!(outcome["Patient"]["deleted"], 2);
-    assert!(store.read(&id("p1")).await.unwrap().is_deleted());
-    assert!(store.read(&id("p2")).await.unwrap().is_deleted());
-    assert!(!store.read(&id("o1")).await.unwrap().is_deleted());
+    assert!(store
+        .read(&fhir_core::ResourceKey::new(
+            "Patient".parse().unwrap(),
+            id("p1")
+        ))
+        .await
+        .unwrap()
+        .is_deleted());
+    assert!(store
+        .read(&fhir_core::ResourceKey::new(
+            "Patient".parse().unwrap(),
+            id("p2")
+        ))
+        .await
+        .unwrap()
+        .is_deleted());
+    assert!(!store
+        .read(&fhir_core::ResourceKey::new(
+            "Observation".parse().unwrap(),
+            id("o1")
+        ))
+        .await
+        .unwrap()
+        .is_deleted());
 }
 
 #[tokio::test]
@@ -103,7 +124,15 @@ async fn a_hard_delete_leaves_no_version_behind() {
     .await;
 
     assert_eq!(outcome_of(&record)["handled"], 2);
-    assert!(matches!(store.read(&id("p1")).await, Err(Error::NotFound)));
+    assert!(matches!(
+        store
+            .read(&fhir_core::ResourceKey::new(
+                "Patient".parse().unwrap(),
+                id("p1")
+            ))
+            .await,
+        Err(Error::NotFound)
+    ));
     assert_eq!(versions(store.as_ref(), "Patient", "p1").await, 0);
     assert_eq!(versions(store.as_ref(), "Observation", "o1").await, 1);
 }
@@ -129,7 +158,14 @@ async fn a_purge_alongside_a_delete_leaves_only_the_marker() {
     assert_eq!(outcome["handled"], 1);
     assert_eq!(outcome["Patient"]["purged"], 2);
     assert_eq!(versions(store.as_ref(), "Patient", "p1").await, 1);
-    assert!(store.read(&id("p1")).await.unwrap().is_deleted());
+    assert!(store
+        .read(&fhir_core::ResourceKey::new(
+            "Patient".parse().unwrap(),
+            id("p1")
+        ))
+        .await
+        .unwrap()
+        .is_deleted());
 }
 
 #[tokio::test]
@@ -171,7 +207,13 @@ async fn an_excluded_type_is_not_touched() {
 #[tokio::test]
 async fn only_the_already_deleted_go_when_the_soft_deleted_are_asked_for() {
     let store = seeded().await;
-    store.delete(&id("p1")).await.unwrap();
+    store
+        .delete(&fhir_core::ResourceKey::new(
+            "Patient".parse().unwrap(),
+            id("p1"),
+        ))
+        .await
+        .unwrap();
 
     let record = ran(
         Arc::clone(&store) as Arc<dyn ResourceStore>,
@@ -183,9 +225,24 @@ async fn only_the_already_deleted_go_when_the_soft_deleted_are_asked_for() {
 
     let outcome = outcome_of(&record);
     assert_eq!(outcome["handled"], 1);
-    assert!(matches!(store.read(&id("p1")).await, Err(Error::NotFound)));
+    assert!(matches!(
+        store
+            .read(&fhir_core::ResourceKey::new(
+                "Patient".parse().unwrap(),
+                id("p1")
+            ))
+            .await,
+        Err(Error::NotFound)
+    ));
     assert_eq!(versions(store.as_ref(), "Patient", "p1").await, 0);
-    assert!(!store.read(&id("p2")).await.unwrap().is_deleted());
+    assert!(!store
+        .read(&fhir_core::ResourceKey::new(
+            "Patient".parse().unwrap(),
+            id("p2")
+        ))
+        .await
+        .unwrap()
+        .is_deleted());
 }
 
 #[tokio::test]
@@ -196,7 +253,13 @@ async fn a_soft_deleted_purge_keeps_the_marker_it_found() {
         .update(patient("p1", "Rivers", true), None)
         .await
         .unwrap();
-    store.delete(&id("p1")).await.unwrap();
+    store
+        .delete(&fhir_core::ResourceKey::new(
+            "Patient".parse().unwrap(),
+            id("p1"),
+        ))
+        .await
+        .unwrap();
 
     let record = ran(
         Arc::clone(&store) as Arc<dyn ResourceStore>,
@@ -208,7 +271,14 @@ async fn a_soft_deleted_purge_keeps_the_marker_it_found() {
 
     assert_eq!(outcome_of(&record)["handled"], 1);
     assert_eq!(versions(store.as_ref(), "Patient", "p1").await, 1);
-    assert!(store.read(&id("p1")).await.unwrap().is_deleted());
+    assert!(store
+        .read(&fhir_core::ResourceKey::new(
+            "Patient".parse().unwrap(),
+            id("p1")
+        ))
+        .await
+        .unwrap()
+        .is_deleted());
 }
 
 #[tokio::test]

@@ -2,9 +2,7 @@ use async_trait::async_trait;
 use fhir_adapter_memory::MemoryJobStore;
 use fhir_core::Error;
 use fhir_jobs::{JobContext, JobHandler, Orchestrator, Unit, UnitOutcome, Worker};
-use fhir_store::{
-    JobId, JobKind, JobRequest, JobState, JobStore, StepTicker,
-};
+use fhir_store::{JobId, JobKind, JobRequest, JobState, JobStore, StepTicker};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -54,7 +52,12 @@ async fn a_stop_asked_for_mid_flight_ends_the_job_at_the_next_heartbeat() {
         stop_after: 3,
     });
     let orchestrator = Arc::new(Orchestrator::new().with(handler));
-    let worker = Worker::new(Arc::clone(&jobs) as Arc<dyn JobStore>, orchestrator, "one", 5_000);
+    let worker = Worker::new(
+        Arc::clone(&jobs) as Arc<dyn JobStore>,
+        orchestrator,
+        "one",
+        5_000,
+    );
 
     worker.poll().await.unwrap();
 
@@ -86,7 +89,12 @@ async fn a_job_not_stopped_runs_every_unit() {
         stop_after: usize::MAX,
     });
     let orchestrator = Arc::new(Orchestrator::new().with(handler));
-    let worker = Worker::new(Arc::clone(&jobs) as Arc<dyn JobStore>, orchestrator, "one", 5_000);
+    let worker = Worker::new(
+        Arc::clone(&jobs) as Arc<dyn JobStore>,
+        orchestrator,
+        "one",
+        5_000,
+    );
 
     worker.poll().await.unwrap();
 

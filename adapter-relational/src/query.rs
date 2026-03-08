@@ -16,7 +16,6 @@ use sqlx::query::Query;
 use sqlx::{Postgres, Row};
 use std::collections::HashSet;
 
-const ROUNDS: usize = 5;
 const INDEX_TABLES: [&str; 7] = [
     "index_token",
     "index_text",
@@ -122,7 +121,9 @@ async fn code_set(store: &RelationalStore, url: &str) -> Result<Vec<SearchValue>
             return Ok(fhir_core::search::code_set(&body));
         }
     }
-    Err(Error::InvalidParameter(format!("code set {url:?} is unknown")))
+    Err(Error::InvalidParameter(format!(
+        "code set {url:?} is unknown"
+    )))
 }
 
 async fn expanded(store: &RelationalStore, filter: &Filter) -> Result<Filter, Error> {
@@ -137,14 +138,21 @@ async fn expanded(store: &RelationalStore, filter: &Filter) -> Result<Filter, Er
     Ok(filter.resolved(&values))
 }
 
-async fn members(store: &RelationalStore, id: &fhir_core::ResourceId) -> Result<Vec<String>, Error> {
+async fn members(
+    store: &RelationalStore,
+    id: &fhir_core::ResourceId,
+) -> Result<Vec<String>, Error> {
     let statement = format!(
         "select {COLUMNS} from {} where resource_id = $1 and is_current and not is_deleted",
         store.table("resource")
     );
     let binds = [Bind::Text(id.as_str().to_owned())];
-    let row = store.perhaps(&statement, &binds, "reading list membership").await?;
-    let Some(row) = row else { return Ok(Vec::new()) };
+    let row = store
+        .perhaps(&statement, &binds, "reading list membership")
+        .await?;
+    let Some(row) = row else {
+        return Ok(Vec::new());
+    };
     let body = body_of(&envelope_of(&row)?)?;
     Ok(select(&body, "entry.item.reference")
         .into_iter()
@@ -156,6 +164,7 @@ fn driving(query: &SearchQuery) -> Option<&Filter> {
     query.filters.iter().find(|filter| {
         matches!(filter.target, Target::Path(_))
             && filter.modifier == Modifier::None
+            && filter.exempt.is_empty()
             && !filter.values.is_empty()
             && filter.values.iter().all(|value| !value.is_negated())
             && !filter
@@ -186,7 +195,11 @@ async fn selection(
 ) -> Result<Vec<String>, Error> {
     let mut conditions = vec!["r.is_current".to_owned(), "not r.is_deleted".to_owned()];
     if !query.types.is_empty() {
-        let names = query.types.iter().map(|kind| kind.as_str().to_owned()).collect();
+        let names = query
+            .types
+            .iter()
+            .map(|kind| kind.as_str().to_owned())
+            .collect();
         let bound = compiler.place(Bind::Texts(names));
         conditions.push(format!("r.resource_type = any({bound})"));
     }
@@ -231,11 +244,7 @@ fn drive(store: &RelationalStore, filter: &Filter, compiler: &mut Compiler<'_>) 
     ))
 }
 
-async fn examined(
-    store: &RelationalStore,
-    query: &SearchQuery,
-    plan: &Plan,
-) -> Result<u64, Error> {
+async fn examined(store: &RelationalStore, query: &SearchQuery, plan: &Plan) -> Result<u64, Error> {
     let mut compiler = Compiler::new(store);
     let statement = match plan {
         Plan::Indexed { .. } => match driving(query).and_then(|filter| drive(store, filter, &mut compiler)) {
@@ -268,9 +277,15 @@ async fn examined(
     Ok(total.max(0) as u64)
 }
 
-async fn estimated(store: &RelationalStore, statement: &str, binds: &[Bind]) -> Result<usize, Error> {
+async fn estimated(
+    store: &RelationalStore,
+    statement: &str,
+    binds: &[Bind],
+) -> Result<usize, Error> {
     let explained = format!("explain {statement}");
-    let rows = store.listed(&explained, binds, "estimating a total").await?;
+    let rows = store
+        .listed(&explained, binds, "estimating a total")
+        .await?;
     for row in &rows {
         let line: String = row.try_get(0).unwrap_or_default();
         if let Some(rest) = line.split("rows=").nth(1) {
@@ -375,14 +390,18 @@ async fn pulled_in(
     store: &RelationalStore,
     query: &SearchQuery,
     entries: &[ResourceEnvelope],
-) -> Result<Vec<ResourceEnvelope>, Error> {
+) -> Result<(Vec<ResourceEnvelope>, bool), Error> {
     let mut seen: HashSet<String> = entries.iter().map(reference_of).collect();
     let mut included: Vec<ResourceEnvelope> = Vec::new();
     let mut frontier: Vec<ResourceEnvelope> = entries.to_vec();
     let mut round = 0;
-    while !frontier.is_empty() && round < ROUNDS {
+    while !frontier.is_empty() && round < query.include_depth {
         let mut found: Vec<ResourceEnvelope> = Vec::new();
-        for rule in query.includes.iter().filter(|rule| round == 0 || rule.iterate) {
+        for rule in query
+            .includes
+            .iter()
+            .filter(|rule| round == 0 || rule.iterate)
+        {
             let reached = match rule.direction {
                 IncludeDirection::Forward => {
                     let mut texts = Vec::new();
@@ -398,7 +417,8 @@ async fn pulled_in(
                     let texts: Vec<String> = frontier
                         .iter()
                         .filter(|envelope| {
-                            rule.target.is_none_or(|kind| kind == envelope.resource_type())
+                            rule.target
+                                .is_none_or(|kind| kind == envelope.resource_type())
                         })
                         .map(reference_of)
                         .collect();
@@ -415,7 +435,7 @@ async fn pulled_in(
         frontier = found;
         round += 1;
     }
-    Ok(included)
+    Ok((included, !frontier.is_empty()))
 }
 
 pub async fn run(store: &RelationalStore, query: &SearchQuery) -> Result<SearchPage, Error> {
@@ -425,7 +445,8 @@ pub async fn run(store: &RelationalStore, query: &SearchQuery) -> Result<SearchP
     let mut compiler = Compiler::new(store);
     let mut conditions = selection(store, &query, &mut compiler).await?;
     if plan.is_indexed() {
-        if let Some(clause) = driving(&query).and_then(|filter| drive(store, filter, &mut compiler)) {
+        if let Some(clause) = driving(&query).and_then(|filter| drive(store, filter, &mut compiler))
+        {
             conditions.push(clause);
         }
     }
@@ -483,13 +504,16 @@ pub async fn run(store: &RelationalStore, query: &SearchQuery) -> Result<SearchP
         }
     };
 
-    store.cache().observed(&key, examined(store, &query, &plan).await?);
-    let included = pulled_in(store, &query, &entries).await?;
+    store
+        .cache()
+        .observed(&key, examined(store, &query, &plan).await?);
+    let (included, bounded) = pulled_in(store, &query, &entries).await?;
     Ok(SearchPage {
         entries,
         included,
         total,
         offset: query.offset,
+        bounded,
     })
 }
 
@@ -510,7 +534,11 @@ pub async fn reindex(
     for spec in specs {
         drop_index(store, &spec.url).await?;
         let mut report = IndexReport::empty(&spec.url);
-        let names: Vec<String> = spec.base.iter().map(|kind| kind.as_str().to_owned()).collect();
+        let names: Vec<String> = spec
+            .base
+            .iter()
+            .map(|kind| kind.as_str().to_owned())
+            .collect();
         let statement = format!(
             "select {COLUMNS} from {} where is_current and not is_deleted
              and resource_type = any($1) order by surrogate_id",
@@ -533,11 +561,7 @@ pub async fn reindex(
                 }),
                 Ok(()) => {
                     let rows = rows_of(&envelope, &body, &[std::sync::Arc::clone(&spec.def)]);
-                    let values = rows
-                        .tokens
-                        .iter()
-                        .filter(|row| row.slot == MAIN)
-                        .count()
+                    let values = rows.tokens.iter().filter(|row| row.slot == MAIN).count()
                         + rows.texts.iter().filter(|row| row.slot == MAIN).count()
                         + rows.numbers.len()
                         + rows.dates.len()
@@ -573,7 +597,8 @@ fn checked(spec: &ParameterSpec, body: &Value) -> Result<(), String> {
             let mut found = Vec::new();
             flatten(element, &mut found);
             for text in found {
-                SearchValue::parse(spec.def.value_type, &text).map_err(|error| error.to_string())?;
+                SearchValue::parse(spec.def.value_type, &text)
+                    .map_err(|error| error.to_string())?;
             }
         }
     }
@@ -593,13 +618,16 @@ fn flatten(element: &Value, out: &mut Vec<String>) {
 pub async fn reindex_resource(
     store: &RelationalStore,
     specs: &[ParameterSpec],
-    id: &fhir_core::ResourceId,
+    key: &fhir_core::ResourceKey,
 ) -> Result<Vec<IndexReport>, Error> {
     let statement = format!(
-        "select {COLUMNS} from {} where resource_id = $1 and is_current",
+        "select {COLUMNS} from {} where resource_type = $1 and resource_id = $2 and is_current",
         store.table("resource")
     );
-    let binds = [Bind::Text(id.as_str().to_owned())];
+    let binds = [
+        Bind::Text(key.resource_type().as_str().to_owned()),
+        Bind::Text(key.id().as_str().to_owned()),
+    ];
     let row = store
         .perhaps(&statement, &binds, "reading a resource to index")
         .await?

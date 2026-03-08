@@ -146,7 +146,10 @@ async fn a_deleted_resource_leaves_the_export() {
     store.create(patient("p1", "Stone", true)).await.unwrap();
     store.create(patient("p2", "Rivers", true)).await.unwrap();
     store
-        .delete(&fhir_store_contract::fixture::id("p2"))
+        .delete(&fhir_core::ResourceKey::new(
+            "Patient".parse().unwrap(),
+            fhir_store_contract::fixture::id("p2"),
+        ))
         .await
         .unwrap();
     let sink = Arc::new(MemoryBulkStore::new());
@@ -201,10 +204,6 @@ async fn a_patient_export_carries_the_compartment_and_a_group_export_its_members
         .into_iter()
         .map(|file| file.name)
         .collect();
-    
-    
-    
-    
     assert_eq!(
         listed,
         vec!["Group.ndjson", "Observation.ndjson", "Patient.ndjson"]
@@ -664,7 +663,7 @@ async fn a_container_carries_the_failure_file_beside_the_rows() {
         .collect();
     assert_eq!(
         names,
-vec![
+        vec![
             "nightly/Group.ndjson",
             "nightly/Patient-failures.ndjson",
             "nightly/Patient.ndjson"

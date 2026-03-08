@@ -1,4 +1,3 @@
-
 pub(crate) mod compile;
 pub use fhir_store::body;
 pub use fhir_store::index as extract;
@@ -12,11 +11,11 @@ pub mod row;
 pub mod store;
 pub mod throttle;
 
-pub use migration::{latest, Migration, MIGRATIONS};
-pub use fhir_store::Namespace;
-pub use fault::{Fault, Policy};
 pub use bulk::RelationalBulkStore;
+pub use fault::{Fault, Policy};
+pub use fhir_store::Namespace;
 pub use jobs::RelationalJobStore;
+pub use migration::{latest, Migration, MIGRATIONS};
 pub use store::RelationalStore;
 pub use throttle::Throttle;
 

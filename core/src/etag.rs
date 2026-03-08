@@ -73,12 +73,18 @@ mod tests {
     #[test]
     fn rejects_malformed_etags() {
         for value in ["\"9\"", "W/", "W/\"\"", "9", "W/\"1\"x"] {
-            assert!(matches!(value.parse::<WeakEtag>(), Err(Error::InvalidEtag(_))));
+            assert!(matches!(
+                value.parse::<WeakEtag>(),
+                Err(Error::InvalidEtag(_))
+            ));
         }
     }
 
     #[test]
     fn rejects_empty_inner_value() {
-        assert!(matches!("W/\"\"".parse::<WeakEtag>(), Err(Error::InvalidEtag(_))));
+        assert!(matches!(
+            "W/\"\"".parse::<WeakEtag>(),
+            Err(Error::InvalidEtag(_))
+        ));
     }
 }

@@ -54,7 +54,17 @@ fn outcome_of(record: &JobRecord) -> Value {
 }
 
 async fn body_of(store: &dyn ResourceStore, held: &str) -> Value {
-    let entry = store.read(&id(held)).await.expect("the resource is held");
+    let kind = match held.starts_with('o') {
+        true => "Observation",
+        false => "Patient",
+    };
+    let entry = store
+        .read(&fhir_core::ResourceKey::new(
+            kind.parse().unwrap(),
+            id(held),
+        ))
+        .await
+        .expect("the resource is held");
     serde_json::from_slice(entry.raw()).expect("a stored resource is json")
 }
 
@@ -78,7 +88,15 @@ async fn a_patch_reaches_every_resource_of_the_named_type() {
     assert_eq!(body_of(store.as_ref(), "p2").await["active"], false);
     assert_eq!(body_of(store.as_ref(), "o1").await["status"], "final");
     assert_eq!(
-        store.read(&id("p1")).await.unwrap().version_id().as_str(),
+        store
+            .read(&fhir_core::ResourceKey::new(
+                "Patient".parse().unwrap(),
+                id("p1")
+            ))
+            .await
+            .unwrap()
+            .version_id()
+            .as_str(),
         "2"
     );
 }
@@ -120,7 +138,15 @@ async fn a_patch_that_changes_nothing_creates_no_version() {
     assert_eq!(outcome["unchanged"], 2);
     assert_eq!(outcome["Patient"]["unchanged"], 2);
     assert_eq!(
-        store.read(&id("p1")).await.unwrap().version_id().as_str(),
+        store
+            .read(&fhir_core::ResourceKey::new(
+                "Patient".parse().unwrap(),
+                id("p1")
+            ))
+            .await
+            .unwrap()
+            .version_id()
+            .as_str(),
         "1"
     );
 }
@@ -207,10 +233,16 @@ async fn a_maximum_count_caps_what_one_update_patches() {
     let first = body_of(store.as_ref(), "p1").await;
     let second = body_of(store.as_ref(), "p2").await;
     assert_eq!(first["active"], false, "the patched one is the first held");
-    assert_eq!(second["active"], true, "the one beyond the cap is untouched");
+    assert_eq!(
+        second["active"], true,
+        "the one beyond the cap is untouched"
+    );
     assert_eq!(
         store
-            .read(&id("p2"))
+            .read(&fhir_core::ResourceKey::new(
+                "Patient".parse().unwrap(),
+                id("p2")
+            ))
             .await
             .unwrap()
             .version_id()
@@ -254,7 +286,11 @@ async fn an_update_carrying_no_patch_is_rejected() {
 
     assert_eq!(record.state, JobState::Failed);
     assert!(
-        record.outcome.as_deref().unwrap_or_default().contains("patch"),
+        record
+            .outcome
+            .as_deref()
+            .unwrap_or_default()
+            .contains("patch"),
         "{:?}",
         record.outcome
     );

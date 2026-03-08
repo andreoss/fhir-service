@@ -1,8 +1,6 @@
 mod support;
 
-use fhir_store::{
-    ChangeFeed, ChangeKind, ChangeRecord, Continuation, FeedRange, ResourceStore,
-};
+use fhir_store::{ChangeFeed, ChangeKind, ChangeRecord, Continuation, FeedRange, ResourceStore};
 use fhir_store_contract::fixture::{id, patient};
 
 fn kinds(records: &[ChangeRecord]) -> Vec<ChangeKind> {
@@ -30,13 +28,26 @@ async fn one_record_is_written_per_create_update_and_delete() {
         return;
     };
     store.create(patient("c1", "Stone", true)).await.unwrap();
-    store.update(patient("c1", "Rivers", true), None).await.unwrap();
-    store.delete(&id("c1")).await.unwrap();
+    store
+        .update(patient("c1", "Rivers", true), None)
+        .await
+        .unwrap();
+    store
+        .delete(&fhir_core::ResourceKey::new(
+            "Patient".parse().unwrap(),
+            id("c1"),
+        ))
+        .await
+        .unwrap();
 
     let records = every(&store).await;
     assert_eq!(
         kinds(&records),
-        vec![ChangeKind::Created, ChangeKind::Updated, ChangeKind::Deleted]
+        vec![
+            ChangeKind::Created,
+            ChangeKind::Updated,
+            ChangeKind::Deleted
+        ]
     );
     assert_eq!(ids(&records), vec!["c1", "c1", "c1"]);
     let versions: Vec<&str> = records
@@ -55,9 +66,15 @@ async fn an_update_that_changes_nothing_records_nothing() {
         return;
     };
     store.create(patient("u1", "Stone", true)).await.unwrap();
-    store.update(patient("u1", "Stone", true), None).await.unwrap();
+    store
+        .update(patient("u1", "Stone", true), None)
+        .await
+        .unwrap();
     assert_eq!(every(&store).await.len(), 1);
-    store.update(patient("u1", "Rivers", true), None).await.unwrap();
+    store
+        .update(patient("u1", "Rivers", true), None)
+        .await
+        .unwrap();
     assert_eq!(every(&store).await.len(), 2);
     support::drop_namespace(&client, &namespace).await;
 }
@@ -68,8 +85,20 @@ async fn a_delete_is_recorded_once_and_never_twice() {
         return;
     };
     store.create(patient("d1", "Stone", true)).await.unwrap();
-    store.delete(&id("d1")).await.unwrap();
-    assert!(store.delete(&id("d1")).await.is_err());
+    store
+        .delete(&fhir_core::ResourceKey::new(
+            "Patient".parse().unwrap(),
+            id("d1"),
+        ))
+        .await
+        .unwrap();
+    assert!(store
+        .delete(&fhir_core::ResourceKey::new(
+            "Patient".parse().unwrap(),
+            id("d1")
+        ))
+        .await
+        .is_err());
     let records = every(&store).await;
     let deletions = records
         .iter()
@@ -142,13 +171,25 @@ async fn a_discarded_scope_records_nothing() {
         return;
     };
     let scope = store.begin().await.expect("the store opens a scope");
-    scope.store().create(patient("s1", "Stone", true)).await.unwrap();
+    scope
+        .store()
+        .create(patient("s1", "Stone", true))
+        .await
+        .unwrap();
     scope.rollback().await.unwrap();
     assert!(every(&store).await.is_empty());
 
     let scope = store.begin().await.unwrap();
-    scope.store().create(patient("s2", "Rivers", true)).await.unwrap();
-    scope.store().update(patient("s2", "Fields", true), None).await.unwrap();
+    scope
+        .store()
+        .create(patient("s2", "Rivers", true))
+        .await
+        .unwrap();
+    scope
+        .store()
+        .update(patient("s2", "Fields", true), None)
+        .await
+        .unwrap();
     scope.commit().await.unwrap();
     assert_eq!(
         kinds(&every(&store).await),
@@ -163,10 +204,34 @@ async fn removing_a_resource_leaves_the_record_of_the_writes_it_took() {
         return;
     };
     store.create(patient("h1", "Stone", true)).await.unwrap();
-    store.update(patient("h1", "Rivers", true), None).await.unwrap();
-    assert_eq!(store.purge_history(&id("h1")).await.unwrap(), 1);
-    store.hard_delete(&id("h1")).await.unwrap();
-    assert!(store.read(&id("h1")).await.is_err());
+    store
+        .update(patient("h1", "Rivers", true), None)
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .purge_history(&fhir_core::ResourceKey::new(
+                "Patient".parse().unwrap(),
+                id("h1")
+            ))
+            .await
+            .unwrap(),
+        1
+    );
+    store
+        .hard_delete(&fhir_core::ResourceKey::new(
+            "Patient".parse().unwrap(),
+            id("h1"),
+        ))
+        .await
+        .unwrap();
+    assert!(store
+        .read(&fhir_core::ResourceKey::new(
+            "Patient".parse().unwrap(),
+            id("h1")
+        ))
+        .await
+        .is_err());
     assert_eq!(
         kinds(&every(&store).await),
         vec![ChangeKind::Created, ChangeKind::Updated]

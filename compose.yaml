@@ -10,7 +10,7 @@ services:
       POSTGRES_PASSWORD: fhir
       POSTGRES_DB: fhir
     ports:
-      - "5432:5432"
+      - "${FHIR_RELATIONAL_PORT:-5432}:5432"
     tmpfs:
       - /var/lib/postgresql/data
     healthcheck:
@@ -28,7 +28,7 @@ services:
         hard: 64000
     command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
     ports:
-      - "27017:27017"
+      - "${FHIR_DOCUMENT_PORT:-27017}:27017"
     tmpfs:
       - /data/db
     healthcheck:

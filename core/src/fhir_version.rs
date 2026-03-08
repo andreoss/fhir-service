@@ -11,7 +11,12 @@ pub enum FhirVersion {
 }
 
 impl FhirVersion {
-    pub const ALL: [FhirVersion; 4] = [FhirVersion::Stu3, FhirVersion::R4, FhirVersion::R4b, FhirVersion::R5];
+    pub const ALL: [FhirVersion; 4] = [
+        FhirVersion::Stu3,
+        FhirVersion::R4,
+        FhirVersion::R4b,
+        FhirVersion::R5,
+    ];
 
     pub fn as_str(&self) -> &str {
         match self {
@@ -84,7 +89,10 @@ mod tests {
     #[test]
     fn rejects_unknown_version_codes() {
         for value in ["", "2", "4.1", "FHIR_R4", "R3", "x", "   "] {
-            assert!(matches!(value.parse::<FhirVersion>(), Err(Error::InvalidFhirVersion(_))));
+            assert!(matches!(
+                value.parse::<FhirVersion>(),
+                Err(Error::InvalidFhirVersion(_))
+            ));
         }
     }
 

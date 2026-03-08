@@ -1,4 +1,3 @@
-
 use crate::search::select;
 use crate::Error;
 use serde_json::{Map, Value};
@@ -6,9 +5,13 @@ use std::str::FromStr;
 
 pub const DEFAULT_COLLECTION: &str = "urn:template-collection:default";
 
+
+const CLINICAL_DOCUMENT: &str = "ClinicalDocument";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputType {
     Hl7v2,
+    Ccda,
     Json,
     Fhir,
 }
@@ -19,6 +22,7 @@ impl FromStr for InputType {
     fn from_str(text: &str) -> Result<InputType, Error> {
         match text {
             "hl7v2" => Ok(InputType::Hl7v2),
+            "ccda" => Ok(InputType::Ccda),
             "json" => Ok(InputType::Json),
             "fhir" => Ok(InputType::Fhir),
             other => Err(Error::UnsupportedParameter(format!(
@@ -104,6 +108,22 @@ impl Default for ApprovedTemplates {
                     "code": {"coding": [{"system": "{{OBX.3.3}}", "code": "{{OBX.3.1}}"}]},
                     "valueString": "{{OBX.5}}"
                 }),
+            )
+            .with(
+                "ClinicalDocument",
+                serde_json::json!({
+                    "resourceType": "Patient",
+                    "identifier": [{
+                        "system": "{{ClinicalDocument.recordTarget.patientRole.id.root}}",
+                        "value": "{{ClinicalDocument.recordTarget.patientRole.id.extension}}"
+                    }],
+                    "name": [{
+                        "family": "{{ClinicalDocument.recordTarget.patientRole.patient.name.family}}",
+                        "given": ["{{ClinicalDocument.recordTarget.patientRole.patient.name.given}}"]
+                    }],
+                    "gender": "{{ClinicalDocument.recordTarget.patientRole.patient.administrativeGenderCode.code}}",
+                    "birthDate": "{{date(ClinicalDocument.recordTarget.patientRole.patient.birthTime.value)}}"
+                }),
             )])
     }
 }
@@ -157,6 +177,15 @@ pub fn convert(templates: &dyn Templates, request: &Conversion) -> Result<Value,
 fn source(input_type: InputType, data: &str) -> Result<Value, Error> {
     match input_type {
         InputType::Hl7v2 => Ok(delimited(data)),
+        InputType::Ccda => {
+            let value = crate::xml::tree(data)?;
+            match value.get(CLINICAL_DOCUMENT) {
+                Some(_) => Ok(value),
+                None => Err(Error::InvalidEnvelope(format!(
+                    "the submitted document is no C-CDA: its root is not {CLINICAL_DOCUMENT}"
+                ))),
+            }
+        }
         InputType::Json | InputType::Fhir => {
             let value: Value = serde_json::from_str(data)
                 .map_err(|error| Error::InvalidJson(error.to_string()))?;
@@ -179,7 +208,10 @@ fn source(input_type: InputType, data: &str) -> Result<Value, Error> {
 
 fn delimited(data: &str) -> Value {
     let mut root = Map::new();
-    for line in data.split(['\r', '\n']).filter(|line| !line.trim().is_empty()) {
+    for line in data
+        .split(['\r', '\n'])
+        .filter(|line| !line.trim().is_empty())
+    {
         let mut fields = line.split('|');
         let name = fields.next().unwrap_or_default().trim();
         if name.is_empty() {
@@ -252,7 +284,9 @@ fn substituted(text: &str, source: &Value) -> Value {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
     while let Some(start) = rest.find("{{") {
-        let Some(end) = rest[start..].find("}}") else { break };
+        let Some(end) = rest[start..].find("}}") else {
+            break;
+        };
         let path = &rest[start + 2..start + end];
         let Some(found) = bound(source, path.trim()) else {
             return Value::Null;
@@ -269,22 +303,28 @@ fn substituted(text: &str, source: &Value) -> Value {
 }
 
 fn bound(source: &Value, path: &str) -> Option<String> {
-    if let Some(inner) = path.strip_prefix("date(").and_then(|rest| rest.strip_suffix(')')) {
+    if let Some(inner) = path
+        .strip_prefix("date(")
+        .and_then(|rest| rest.strip_suffix(')'))
+    {
         return dated(&bound(source, inner.trim())?);
     }
     if let Some(found) = scalar(source, path) {
         return Some(found);
     }
-    path.strip_suffix(".1").and_then(|field| scalar(source, field))
+    path.strip_suffix(".1")
+        .and_then(|field| scalar(source, field))
 }
 
 fn scalar(source: &Value, path: &str) -> Option<String> {
-    select(source, path).into_iter().find_map(|found| match found {
-        Value::String(text) if !text.is_empty() => Some(text.clone()),
-        Value::Number(number) => Some(number.to_string()),
-        Value::Bool(flag) => Some(flag.to_string()),
-        _ => None,
-    })
+    select(source, path)
+        .into_iter()
+        .find_map(|found| match found {
+            Value::String(text) if !text.is_empty() => Some(text.clone()),
+            Value::Number(number) => Some(number.to_string()),
+            Value::Bool(flag) => Some(flag.to_string()),
+            _ => None,
+        })
 }
 
 fn dated(field: &str) -> Option<String> {
@@ -309,6 +349,99 @@ fn dated(field: &str) -> Option<String> {
 mod tests {
     use super::*;
 
+    const DOCUMENT: &str = r#"<?xml version="1.0"?>
+<ClinicalDocument xmlns="urn:hl7-org:v3">
+  <recordTarget>
+    <patientRole>
+      <id root="2.16.840.1.113883.19.5" extension="pt-77"/>
+      <patient>
+        <name><given>Ada</given><family>Stone</family></name>
+        <administrativeGenderCode code="female"/>
+        <birthTime value="19800506"/>
+      </patient>
+    </patientRole>
+  </recordTarget>
+</ClinicalDocument>"#;
+
+    #[test]
+    fn a_ccda_document_is_read_as_a_tree_a_template_selects_over() {
+        let held = source(InputType::Ccda, DOCUMENT).unwrap();
+        assert_eq!(
+            held["ClinicalDocument"]["recordTarget"]["patientRole"]["id"]["extension"],
+            "pt-77"
+        );
+        assert_eq!(
+            held["ClinicalDocument"]["recordTarget"]["patientRole"]["patient"]["name"]["family"],
+            "Stone"
+        );
+    }
+
+    #[test]
+    fn a_ccda_document_converts_element_by_element() {
+        let templates = ApprovedTemplates::default();
+        let rendered = convert(
+            &templates,
+            &Conversion {
+                input_type: InputType::Ccda,
+                data: DOCUMENT,
+                collection: DEFAULT_COLLECTION,
+                root_template: "ClinicalDocument",
+            },
+        )
+        .unwrap();
+        assert_eq!(rendered["resourceType"], "Patient");
+        assert_eq!(rendered["identifier"][0]["value"], "pt-77");
+        assert_eq!(
+            rendered["identifier"][0]["system"],
+            "2.16.840.1.113883.19.5"
+        );
+        assert_eq!(rendered["name"][0]["family"], "Stone");
+        assert_eq!(rendered["name"][0]["given"][0], "Ada");
+        assert_eq!(rendered["gender"], "female");
+        assert_eq!(rendered["birthDate"], "1980-05-06");
+    }
+
+    #[test]
+    fn a_body_that_is_no_ccda_document_is_refused() {
+        let error = source(InputType::Ccda, "<Bundle><entry/></Bundle>").unwrap_err();
+        assert!(error.to_string().contains("ClinicalDocument"), "{error}");
+    }
+
+    #[test]
+    fn a_body_that_is_not_xml_at_all_is_refused() {
+        let error = source(InputType::Ccda, "MSH|^~\\&|").unwrap_err();
+        assert!(matches!(error, Error::InvalidXml(_)), "{error:?}");
+    }
+
+    #[test]
+    fn a_root_template_the_collection_does_not_hold_is_refused() {
+        let templates = ApprovedTemplates::default();
+        let error = convert(
+            &templates,
+            &Conversion {
+                input_type: InputType::Ccda,
+                data: DOCUMENT,
+                collection: DEFAULT_COLLECTION,
+                root_template: "Nonesuch",
+            },
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("Nonesuch"), "{error}");
+    }
+
+    #[test]
+    fn the_four_input_types_the_reference_registers_are_read() {
+        for (spelling, expected) in [
+            ("hl7v2", InputType::Hl7v2),
+            ("ccda", InputType::Ccda),
+            ("json", InputType::Json),
+            ("fhir", InputType::Fhir),
+        ] {
+            assert_eq!(spelling.parse::<InputType>().unwrap(), expected);
+        }
+        assert!("xml".parse::<InputType>().is_err());
+    }
+
     #[test]
     fn a_repeated_segment_becomes_a_list() {
         let value = delimited("OBX|1|a\rOBX|2|b\rOBX|3|c");
@@ -327,9 +460,9 @@ mod tests {
 
     #[test]
     fn a_template_rendering_nothing_is_an_error() {
-        let templates = ApprovedTemplates::new(vec![
-            TemplateCollection::new("urn:c").with("Empty", serde_json::json!({"id": "{{X.1}}"})),
-        ]);
+        let templates =
+            ApprovedTemplates::new(vec![TemplateCollection::new("urn:c")
+                .with("Empty", serde_json::json!({"id": "{{X.1}}"}))]);
         let error = convert(
             &templates,
             &Conversion {
@@ -350,6 +483,9 @@ mod tests {
             substituted("urn:{{a.b}}:{{n}}:{{f}}", &source),
             Value::String("urn:x:2:true".to_owned())
         );
-        assert_eq!(substituted("{{a.b", &source), Value::String("{{a.b".to_owned()));
+        assert_eq!(
+            substituted("{{a.b", &source),
+            Value::String("{{a.b".to_owned())
+        );
     }
 }

@@ -22,6 +22,10 @@ fn envelope(version: FhirVersion, id: &str, active: bool) -> ResourceEnvelope {
     ResourceEnvelope::parse(version, &bytes).unwrap()
 }
 
+fn key(resource_type: &str, value: &str) -> fhir_core::ResourceKey {
+    fhir_core::ResourceKey::new(resource_type.parse().unwrap(), id(value))
+}
+
 fn id(value: &str) -> ResourceId {
     ResourceId::parse(value).unwrap()
 }
@@ -81,7 +85,7 @@ async fn create_read_round_trip_over_every_version() {
         assert_eq!(created.version_id().as_str(), "1");
         assert_eq!(created.version(), version);
 
-        let read = store.read(&id("pt-1")).await.unwrap();
+        let read = store.read(&key("Patient", "pt-1")).await.unwrap();
         assert_eq!(read.version_id().as_str(), "1");
         assert_eq!(read.raw(), created.raw());
         assert_eq!(read.version(), version);
@@ -106,7 +110,7 @@ async fn create_rejects_duplicate_id() {
 #[tokio::test]
 async fn read_unknown_id_rejected() {
     let store = store();
-    let error = store.read(&id("nobody")).await.unwrap_err();
+    let error = store.read(&key("Patient", "nobody")).await.unwrap_err();
     assert!(matches!(error, Error::NotFound));
     assert_eq!(error.http_status(), 404);
 }
@@ -127,18 +131,24 @@ async fn vread_returns_every_historical_version() {
         .unwrap();
     assert_eq!(updated.version_id().as_str(), "2");
 
-    let v1 = store.vread(&id("pt-2"), &version("1")).await.unwrap();
+    let v1 = store
+        .vread(&key("Patient", "pt-2"), &version("1"))
+        .await
+        .unwrap();
     assert_eq!(v1.version_id().as_str(), "1");
     let old = std::str::from_utf8(v1.raw()).unwrap();
     assert!(old.contains("\"active\":true"));
 
-    let v2 = store.vread(&id("pt-2"), &version("2")).await.unwrap();
+    let v2 = store
+        .vread(&key("Patient", "pt-2"), &version("2"))
+        .await
+        .unwrap();
     assert_eq!(v2.version_id().as_str(), "2");
     assert!(std::str::from_utf8(v2.raw())
         .unwrap()
         .contains("\"active\":false"));
 
-    let current = store.read(&id("pt-2")).await.unwrap();
+    let current = store.read(&key("Patient", "pt-2")).await.unwrap();
     assert_eq!(current.version_id().as_str(), "2");
 }
 
@@ -150,10 +160,16 @@ async fn vread_unknown_id_and_version_rejected() {
         .await
         .unwrap();
 
-    let missing_id = store.vread(&id("nobody"), &version("1")).await.unwrap_err();
+    let missing_id = store
+        .vread(&key("Patient", "nobody"), &version("1"))
+        .await
+        .unwrap_err();
     assert!(matches!(missing_id, Error::NotFound));
 
-    let missing_version = store.vread(&id("pt-3"), &version("99")).await.unwrap_err();
+    let missing_version = store
+        .vread(&key("Patient", "pt-3"), &version("99"))
+        .await
+        .unwrap_err();
     assert!(matches!(missing_version, Error::NotFound));
     assert_eq!(missing_version.http_status(), 404);
 }
@@ -173,7 +189,7 @@ async fn update_with_expected_version_creates_new_version() {
         .await
         .unwrap();
     assert_eq!(updated.version_id().as_str(), "2");
-    let current = store.read(&id("pt-4")).await.unwrap();
+    let current = store.read(&key("Patient", "pt-4")).await.unwrap();
     assert_eq!(current.version_id().as_str(), "2");
 }
 
@@ -209,7 +225,7 @@ async fn noop_update_creates_no_version() {
         .create(envelope(FhirVersion::R4, "pt-6", true))
         .await
         .unwrap();
-    let current = store.read(&id("pt-6")).await.unwrap();
+    let current = store.read(&key("Patient", "pt-6")).await.unwrap();
 
     let first = store
         .update(current.clone(), Some(current.version_id()))
@@ -224,7 +240,7 @@ async fn noop_update_creates_no_version() {
     assert_eq!(second.version_id().as_str(), "1");
     assert_eq!(second.raw(), current.raw());
 
-    let read = store.read(&id("pt-6")).await.unwrap();
+    let read = store.read(&key("Patient", "pt-6")).await.unwrap();
     assert_eq!(read.version_id().as_str(), "1");
 }
 
@@ -318,7 +334,7 @@ async fn history_reaches_final_state_after_update_chain() {
     assert_eq!(v3.version_id().as_str(), "3");
     assert_eq!(
         store
-            .vread(&id("pt-9"), &version("3"))
+            .vread(&key("Patient", "pt-9"), &version("3"))
             .await
             .unwrap()
             .version_id()
@@ -327,7 +343,7 @@ async fn history_reaches_final_state_after_update_chain() {
     );
     assert_eq!(
         store
-            .vread(&id("pt-9"), &version("2"))
+            .vread(&key("Patient", "pt-9"), &version("2"))
             .await
             .unwrap()
             .version_id()
@@ -336,7 +352,7 @@ async fn history_reaches_final_state_after_update_chain() {
     );
     assert_eq!(
         store
-            .vread(&id("pt-9"), &version("1"))
+            .vread(&key("Patient", "pt-9"), &version("1"))
             .await
             .unwrap()
             .version_id()
@@ -500,7 +516,7 @@ async fn a_deleted_list_selects_nothing() {
         .await
         .unwrap();
     store.create(list("ls-2", &["Patient/pt-1"])).await.unwrap();
-    store.delete(&id("ls-2")).await.unwrap();
+    store.delete(&key("List", "ls-2")).await.unwrap();
     let mut selection = SearchQuery::of_type("Patient".parse().unwrap());
     selection.list = Some(id("ls-2"));
     assert!(store.search(&selection).await.unwrap().entries.is_empty());
@@ -513,10 +529,10 @@ async fn delete_appends_a_marker_version() {
         .create(envelope(FhirVersion::R4, "pt-d1", true))
         .await
         .unwrap();
-    let marker = store.delete(&id("pt-d1")).await.unwrap();
+    let marker = store.delete(&key("Patient", "pt-d1")).await.unwrap();
     assert!(marker.is_deleted());
     assert_eq!(marker.version_id().as_str(), "2");
-    let current = store.read(&id("pt-d1")).await.unwrap();
+    let current = store.read(&key("Patient", "pt-d1")).await.unwrap();
     assert!(current.is_deleted());
 }
 
@@ -527,8 +543,11 @@ async fn delete_leaves_earlier_versions_readable() {
         .create(envelope(FhirVersion::R4, "pt-d2", true))
         .await
         .unwrap();
-    store.delete(&id("pt-d2")).await.unwrap();
-    let first = store.vread(&id("pt-d2"), &version("1")).await.unwrap();
+    store.delete(&key("Patient", "pt-d2")).await.unwrap();
+    let first = store
+        .vread(&key("Patient", "pt-d2"), &version("1"))
+        .await
+        .unwrap();
     assert!(!first.is_deleted());
     assert_eq!(first.version_id().as_str(), "1");
 }
@@ -537,7 +556,7 @@ async fn delete_leaves_earlier_versions_readable() {
 async fn delete_of_an_unknown_id_is_not_found() {
     let store = store();
     assert_eq!(
-        store.delete(&id("pt-none")).await.unwrap_err(),
+        store.delete(&key("Patient", "pt-none")).await.unwrap_err(),
         Error::NotFound
     );
 }
@@ -549,9 +568,9 @@ async fn deleting_twice_reports_the_resource_as_deleted() {
         .create(envelope(FhirVersion::R4, "pt-d3", true))
         .await
         .unwrap();
-    store.delete(&id("pt-d3")).await.unwrap();
+    store.delete(&key("Patient", "pt-d3")).await.unwrap();
     assert_eq!(
-        store.delete(&id("pt-d3")).await.unwrap_err(),
+        store.delete(&key("Patient", "pt-d3")).await.unwrap_err(),
         Error::Deleted
     );
 }
@@ -563,7 +582,7 @@ async fn a_deleted_resource_is_invisible_to_search() {
         .create(envelope(FhirVersion::R4, "pt-d4", true))
         .await
         .unwrap();
-    store.delete(&id("pt-d4")).await.unwrap();
+    store.delete(&key("Patient", "pt-d4")).await.unwrap();
     assert!(store
         .search(&SearchQuery::default())
         .await
@@ -579,7 +598,7 @@ async fn updating_a_deleted_resource_restores_it() {
         .create(envelope(FhirVersion::R4, "pt-d5", true))
         .await
         .unwrap();
-    store.delete(&id("pt-d5")).await.unwrap();
+    store.delete(&key("Patient", "pt-d5")).await.unwrap();
     let restored = store
         .update(envelope(FhirVersion::R4, "pt-d5", true), None)
         .await
@@ -608,10 +627,16 @@ async fn hard_delete_removes_every_version() {
         .update(envelope(FhirVersion::R4, "pt-d6", false), None)
         .await
         .unwrap();
-    store.hard_delete(&id("pt-d6")).await.unwrap();
-    assert_eq!(store.read(&id("pt-d6")).await.unwrap_err(), Error::NotFound);
+    store.hard_delete(&key("Patient", "pt-d6")).await.unwrap();
     assert_eq!(
-        store.vread(&id("pt-d6"), &version("1")).await.unwrap_err(),
+        store.read(&key("Patient", "pt-d6")).await.unwrap_err(),
+        Error::NotFound
+    );
+    assert_eq!(
+        store
+            .vread(&key("Patient", "pt-d6"), &version("1"))
+            .await
+            .unwrap_err(),
         Error::NotFound
     );
 }
@@ -620,7 +645,10 @@ async fn hard_delete_removes_every_version() {
 async fn hard_delete_of_an_unknown_id_is_not_found() {
     let store = store();
     assert_eq!(
-        store.hard_delete(&id("pt-none")).await.unwrap_err(),
+        store
+            .hard_delete(&key("Patient", "pt-none"))
+            .await
+            .unwrap_err(),
         Error::NotFound
     );
 }
@@ -636,11 +664,11 @@ async fn purge_history_keeps_the_current_version_only() {
         .update(envelope(FhirVersion::R4, "pt-d7", false), None)
         .await
         .unwrap();
-    let purged = store.purge_history(&id("pt-d7")).await.unwrap();
+    let purged = store.purge_history(&key("Patient", "pt-d7")).await.unwrap();
     assert_eq!(purged, 1);
     assert_eq!(
         store
-            .read(&id("pt-d7"))
+            .read(&key("Patient", "pt-d7"))
             .await
             .unwrap()
             .version_id()
@@ -648,17 +676,26 @@ async fn purge_history_keeps_the_current_version_only() {
         "2"
     );
     assert_eq!(
-        store.vread(&id("pt-d7"), &version("1")).await.unwrap_err(),
+        store
+            .vread(&key("Patient", "pt-d7"), &version("1"))
+            .await
+            .unwrap_err(),
         Error::NotFound
     );
-    assert_eq!(store.purge_history(&id("pt-d7")).await.unwrap(), 0);
+    assert_eq!(
+        store.purge_history(&key("Patient", "pt-d7")).await.unwrap(),
+        0
+    );
 }
 
 #[tokio::test]
 async fn purge_history_of_an_unknown_id_is_not_found() {
     let store = store();
     assert_eq!(
-        store.purge_history(&id("pt-none")).await.unwrap_err(),
+        store
+            .purge_history(&key("Patient", "pt-none"))
+            .await
+            .unwrap_err(),
         Error::NotFound
     );
 }
@@ -688,7 +725,7 @@ async fn seeded() -> MemoryStore {
         .update(envelope(FhirVersion::R4, "pt-h1", false), None)
         .await
         .unwrap();
-    store.delete(&id("pt-h1")).await.unwrap();
+    store.delete(&key("Patient", "pt-h1")).await.unwrap();
     store.create(observation("ob-h1")).await.unwrap();
     store
 }
@@ -882,6 +919,7 @@ fn coded_query(modifier: fhir_core::search::Modifier, url: &str) -> SearchQuery 
         values: vec![def.value_with(&modifier, url).unwrap()],
         modifier,
         index: None,
+        exempt: Vec::new(),
     };
     SearchQuery {
         types: vec![resource_type],
@@ -1028,4 +1066,9 @@ async fn the_shared_search_contract_holds_over_this_adapter() {
     fhir_store_contract::search::linking(&store()).await;
     fhir_store_contract::search::composites(&store()).await;
     fhir_store_contract::search::targeted_index(&store()).await;
+    fhir_store_contract::search::exempted(&store()).await;
+    fhir_store_contract::search::converted_quantities(&store()).await;
+    fhir_store_contract::search::narrowed_everywhere(&store()).await;
+    fhir_store_contract::shared_ids(&store()).await;
+    fhir_store_contract::erased_versions(&store()).await;
 }

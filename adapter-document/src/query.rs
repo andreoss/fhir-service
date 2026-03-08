@@ -17,7 +17,6 @@ use serde_json::Value;
 use std::collections::HashSet;
 use std::sync::Arc;
 
-const ROUNDS: usize = 5;
 const ARRAYS: [&str; 7] = [
     "token",
     "text",
@@ -85,7 +84,11 @@ fn from_body(rule: &Include, envelope: &ResourceEnvelope) -> Result<Vec<String>,
     Ok(found)
 }
 
-fn linked(rule: &Include, held: &Document, envelope: &ResourceEnvelope) -> Result<Vec<String>, Error> {
+fn linked(
+    rule: &Include,
+    held: &Document,
+    envelope: &ResourceEnvelope,
+) -> Result<Vec<String>, Error> {
     match rule.is_wildcard() || !held.contains_key("reference") {
         true => from_body(rule, envelope),
         false => Ok(pointers_of(held, &rule.name)),
@@ -105,7 +108,9 @@ async fn code_set(store: &DocumentStore, url: &str) -> Result<Vec<SearchValue>, 
             return Ok(fhir_core::search::code_set(&body));
         }
     }
-    Err(Error::InvalidParameter(format!("code set {url:?} is unknown")))
+    Err(Error::InvalidParameter(format!(
+        "code set {url:?} is unknown"
+    )))
 }
 
 async fn expanded(store: &DocumentStore, filter: &Filter) -> Result<Filter, Error> {
@@ -137,6 +142,7 @@ fn driving(query: &SearchQuery) -> Option<&Filter> {
     query.filters.iter().find(|filter| {
         matches!(filter.target, Target::Path(_))
             && filter.modifier == Modifier::None
+            && filter.exempt.is_empty()
             && !filter.values.is_empty()
             && filter.values.iter().all(|value| !value.is_negated())
             && !filter
@@ -340,7 +346,7 @@ async fn pulled_in(
     store: &DocumentStore,
     query: &SearchQuery,
     entries: &[(Document, ResourceEnvelope)],
-) -> Result<Vec<ResourceEnvelope>, Error> {
+) -> Result<(Vec<ResourceEnvelope>, bool), Error> {
     let mut seen: HashSet<String> = entries
         .iter()
         .map(|(_, envelope)| reference_of(envelope))
@@ -348,9 +354,13 @@ async fn pulled_in(
     let mut included: Vec<ResourceEnvelope> = Vec::new();
     let mut frontier: Vec<(Document, ResourceEnvelope)> = entries.to_vec();
     let mut round = 0;
-    while !frontier.is_empty() && round < ROUNDS {
+    while !frontier.is_empty() && round < query.include_depth {
         let mut found: Vec<(Document, ResourceEnvelope)> = Vec::new();
-        for rule in query.includes.iter().filter(|rule| round == 0 || rule.iterate) {
+        for rule in query
+            .includes
+            .iter()
+            .filter(|rule| round == 0 || rule.iterate)
+        {
             let reached = match rule.direction {
                 IncludeDirection::Forward => {
                     let mut texts = Vec::new();
@@ -366,7 +376,8 @@ async fn pulled_in(
                     let texts: Vec<String> = frontier
                         .iter()
                         .filter(|(_, envelope)| {
-                            rule.target.is_none_or(|kind| kind == envelope.resource_type())
+                            rule.target
+                                .is_none_or(|kind| kind == envelope.resource_type())
                         })
                         .map(|(_, envelope)| reference_of(envelope))
                         .collect();
@@ -384,7 +395,7 @@ async fn pulled_in(
         frontier = found;
         round += 1;
     }
-    Ok(included)
+    Ok((included, !frontier.is_empty()))
 }
 
 pub async fn run(store: &DocumentStore, query: &SearchQuery) -> Result<SearchPage, Error> {
@@ -437,12 +448,13 @@ pub async fn run(store: &DocumentStore, query: &SearchQuery) -> Result<SearchPag
         TotalMode::Estimate => Some(drawn as usize),
     };
     store.cache().observed(&key, drawn);
-    let included = pulled_in(store, &query, &entries).await?;
+    let (included, bounded) = pulled_in(store, &query, &entries).await?;
     Ok(SearchPage {
         entries: entries.into_iter().map(|(_, envelope)| envelope).collect(),
         included,
         total,
         offset: query.offset,
+        bounded,
     })
 }
 
@@ -555,11 +567,15 @@ pub async fn reindex(
 pub async fn reindex_resource(
     store: &DocumentStore,
     specs: &[ParameterSpec],
-    id: &fhir_core::ResourceId,
+    key: &fhir_core::ResourceKey,
 ) -> Result<Vec<IndexReport>, Error> {
     let held = store
         .perhaps(
-            doc! {"resource_id": id.as_str(), "is_current": true},
+            doc! {
+                "resource_type": key.resource_type().as_str(),
+                "resource_id": key.id().as_str(),
+                "is_current": true
+            },
             "reading a resource to index",
         )
         .await?
@@ -650,7 +666,10 @@ mod tests {
         let query = SearchQuery {
             sort: vec![fhir_store::SortKey {
                 name: "name".to_owned(),
-                target: lookup(Some(kind("Patient")), "name").unwrap().target.clone(),
+                target: lookup(Some(kind("Patient")), "name")
+                    .unwrap()
+                    .target
+                    .clone(),
                 direction: SortDirection::Descending,
             }],
             ..SearchQuery::of_type(kind("Patient"))

@@ -675,11 +675,6 @@ fn definitions() -> &'static Definitions {
                 });
             }
         }
-        
-        
-        
-        
-        
         for entry in crate::search::published::all() {
             let already = all.iter().any(|held| {
                 held.def.name == entry.name && held.kind.as_deref() == Some(entry.kind.as_str())
@@ -755,7 +750,8 @@ pub fn references(resource_type: ResourceType) -> Vec<Arc<ParamDef>> {
     definitions()
         .iter()
         .filter(|held| {
-            held.kind.as_deref() == Some(resource_type.as_str()) && held.def.value_type == ValueType::Reference
+            held.kind.as_deref() == Some(resource_type.as_str())
+                && held.def.value_type == ValueType::Reference
         })
         .map(|held| Arc::clone(&held.def))
         .collect()
@@ -1192,9 +1188,6 @@ mod tests {
 
     #[test]
     fn a_parameter_belongs_to_the_type_that_publishes_it() {
-        
-        
-        
         assert!(lookup(Some(kind("Device")), "patient").is_some());
         assert!(lookup(Some(kind("Device")), "_id").is_some());
         assert!(lookup(Some(kind("Observation")), "family").is_none());

@@ -6,7 +6,7 @@ pub mod search;
 use fhir_core::{Error, FhirVersion, ResourceEnvelope};
 use fhir_store::{HistoryOrder, HistoryQuery, HistoryScope, ResourceStore};
 
-use fixture::{id, observation, patient, version};
+use fixture::{id, key, observation, patient, version};
 
 fn assert_not_found(result: Result<impl std::fmt::Debug, Error>) {
     assert!(matches!(result, Err(Error::NotFound)), "{result:?}");
@@ -19,7 +19,7 @@ pub async fn lifecycle(store: &dyn ResourceStore) {
     assert_eq!(created.resource_type().as_str(), "Patient");
     assert!(!created.is_deleted());
 
-    let read = store.read(&id("a1")).await.unwrap();
+    let read = store.read(&key("Patient", "a1")).await.unwrap();
     assert_eq!(read.version_id(), created.version_id());
     assert_eq!(read.raw(), created.raw());
     assert_eq!(read.last_updated(), created.last_updated());
@@ -30,8 +30,8 @@ pub async fn lifecycle(store: &dyn ResourceStore) {
         "{duplicate:?}"
     );
 
-    assert_not_found(store.read(&id("nobody")).await);
-    assert_not_found(store.vread(&id("nobody"), &version("1")).await);
+    assert_not_found(store.read(&key("Patient", "nobody")).await);
+    assert_not_found(store.vread(&key("Patient", "nobody"), &version("1")).await);
 }
 
 pub async fn versioning(store: &dyn ResourceStore) {
@@ -43,11 +43,17 @@ pub async fn versioning(store: &dyn ResourceStore) {
         .unwrap();
     assert_eq!(updated.version_id().as_str(), "2");
 
-    let first = store.vread(&id("b1"), &version("1")).await.unwrap();
+    let first = store
+        .vread(&key("Patient", "b1"), &version("1"))
+        .await
+        .unwrap();
     assert_eq!(first.version_id().as_str(), "1");
-    let second = store.vread(&id("b1"), &version("2")).await.unwrap();
+    let second = store
+        .vread(&key("Patient", "b1"), &version("2"))
+        .await
+        .unwrap();
     assert_eq!(second.raw(), updated.raw());
-    assert_not_found(store.vread(&id("b1"), &version("3")).await);
+    assert_not_found(store.vread(&key("Patient", "b1"), &version("3")).await);
 
     let repeated = store
         .update(patient("b1", "Stone", false), None)
@@ -66,7 +72,12 @@ pub async fn versioning(store: &dyn ResourceStore) {
         .await;
     assert!(matches!(stale, Err(Error::VersionConflict)), "{stale:?}");
     assert_eq!(
-        store.read(&id("b1")).await.unwrap().version_id().as_str(),
+        store
+            .read(&key("Patient", "b1"))
+            .await
+            .unwrap()
+            .version_id()
+            .as_str(),
         "3"
     );
 
@@ -80,17 +91,21 @@ pub async fn removal(store: &dyn ResourceStore) {
         .await
         .unwrap();
 
-    let marker = store.delete(&id("c1")).await.unwrap();
+    let marker = store.delete(&key("Patient", "c1")).await.unwrap();
     assert!(marker.is_deleted());
     assert_eq!(marker.version_id().as_str(), "3");
-    assert!(store.read(&id("c1")).await.unwrap().is_deleted());
+    assert!(store
+        .read(&key("Patient", "c1"))
+        .await
+        .unwrap()
+        .is_deleted());
     assert!(!store
-        .vread(&id("c1"), &version("1"))
+        .vread(&key("Patient", "c1"), &version("1"))
         .await
         .unwrap()
         .is_deleted());
 
-    let again = store.delete(&id("c1")).await;
+    let again = store.delete(&key("Patient", "c1")).await;
     assert!(matches!(again, Err(Error::Deleted)), "{again:?}");
 
     let restored = store
@@ -100,17 +115,22 @@ pub async fn removal(store: &dyn ResourceStore) {
     assert_eq!(restored.version_id().as_str(), "4");
     assert!(!restored.is_deleted());
 
-    assert_eq!(store.purge_history(&id("c1")).await.unwrap(), 3);
+    assert_eq!(store.purge_history(&key("Patient", "c1")).await.unwrap(), 3);
     assert_eq!(
-        store.read(&id("c1")).await.unwrap().version_id().as_str(),
+        store
+            .read(&key("Patient", "c1"))
+            .await
+            .unwrap()
+            .version_id()
+            .as_str(),
         "4"
     );
-    assert_not_found(store.vread(&id("c1"), &version("1")).await);
+    assert_not_found(store.vread(&key("Patient", "c1"), &version("1")).await);
 
-    store.hard_delete(&id("c1")).await.unwrap();
-    assert_not_found(store.read(&id("c1")).await);
-    assert_not_found(store.hard_delete(&id("c1")).await);
-    assert_not_found(store.purge_history(&id("absent")).await);
+    store.hard_delete(&key("Patient", "c1")).await.unwrap();
+    assert_not_found(store.read(&key("Patient", "c1")).await);
+    assert_not_found(store.hard_delete(&key("Patient", "c1")).await);
+    assert_not_found(store.purge_history(&key("Patient", "absent")).await);
 }
 
 pub async fn record(store: &dyn ResourceStore) {
@@ -119,7 +139,7 @@ pub async fn record(store: &dyn ResourceStore) {
         .update(patient("d1", "Rivers", true), None)
         .await
         .unwrap();
-    store.delete(&id("d1")).await.unwrap();
+    store.delete(&key("Patient", "d1")).await.unwrap();
     store
         .create(observation("d2", "code-1", 3.0, "Patient/d1"))
         .await
@@ -208,7 +228,7 @@ pub async fn restore(store: &dyn ResourceStore) {
         ResourceEnvelope::parse(FhirVersion::R4, &bytes).expect("a restored body is valid")
     }
 
-    let id = fixture::id("m1");
+    let id = fixture::key("Patient", "m1");
     let first = restored("m1", "3", r#""active":true,"name":[{"family":"Mig"}]"#);
     let second = restored("m1", "5", r#""active":true,"name":[{"family":"Rivers"}]"#);
 
@@ -239,7 +259,7 @@ pub async fn restore(store: &dyn ResourceStore) {
     let marker = ResourceEnvelope::deleted_marker(
         FhirVersion::R4,
         "Patient".parse().unwrap(),
-        id.clone(),
+        id.id().clone(),
         fixture::version("7"),
         fixture::instant("2026-09-06T04:00:00.000Z"),
     );
@@ -268,12 +288,17 @@ pub async fn atomicity(store: &dyn ResourceStore) {
     scoped.create(patient("f1", "Stone", true)).await.unwrap();
     scoped.create(patient("f2", "Rivers", true)).await.unwrap();
     assert_eq!(
-        scoped.read(&id("f1")).await.unwrap().version_id().as_str(),
+        scoped
+            .read(&key("Patient", "f1"))
+            .await
+            .unwrap()
+            .version_id()
+            .as_str(),
         "1"
     );
     scope.rollback().await.unwrap();
-    assert_not_found(store.read(&id("f1")).await);
-    assert_not_found(store.read(&id("f2")).await);
+    assert_not_found(store.read(&key("Patient", "f1")).await);
+    assert_not_found(store.read(&key("Patient", "f2")).await);
 
     let scope = store.begin().await.unwrap();
     let scoped = scope.store();
@@ -284,16 +309,29 @@ pub async fn atomicity(store: &dyn ResourceStore) {
         .unwrap();
     scope.commit().await.unwrap();
     assert_eq!(
-        store.read(&id("f3")).await.unwrap().version_id().as_str(),
+        store
+            .read(&key("Patient", "f3"))
+            .await
+            .unwrap()
+            .version_id()
+            .as_str(),
         "2"
     );
 
     let scope = store.begin().await.unwrap();
     let scoped = scope.store();
-    scoped.delete(&id("f3")).await.unwrap();
-    assert!(scoped.read(&id("f3")).await.unwrap().is_deleted());
+    scoped.delete(&key("Patient", "f3")).await.unwrap();
+    assert!(scoped
+        .read(&key("Patient", "f3"))
+        .await
+        .unwrap()
+        .is_deleted());
     scope.rollback().await.unwrap();
-    assert!(!store.read(&id("f3")).await.unwrap().is_deleted());
+    assert!(!store
+        .read(&key("Patient", "f3"))
+        .await
+        .unwrap()
+        .is_deleted());
     assert_eq!(
         store
             .history(
@@ -305,7 +343,7 @@ pub async fn atomicity(store: &dyn ResourceStore) {
             .total,
         2
     );
-    store.hard_delete(&id("f3")).await.unwrap();
+    store.hard_delete(&key("Patient", "f3")).await.unwrap();
 }
 
 pub async fn scoped_search(store: &dyn ResourceStore) {
@@ -326,4 +364,157 @@ pub async fn scoped_search(store: &dyn ResourceStore) {
         .unwrap()
         .entries
         .is_empty());
+}
+
+
+
+
+
+
+
+pub async fn shared_ids(store: &dyn ResourceStore) {
+    let shared = "shared-across-types";
+    store.create(patient(shared, "Stone", true)).await.unwrap();
+    store
+        .create(observation(shared, "code-1", 3.0, "Patient/other"))
+        .await
+        .expect("a second type may carry the same id");
+
+    let held = store.read(&key("Patient", shared)).await.unwrap();
+    assert_eq!(held.resource_type().as_str(), "Patient");
+    let other = store.read(&key("Observation", shared)).await.unwrap();
+    assert_eq!(other.resource_type().as_str(), "Observation");
+    assert_ne!(held.raw(), other.raw());
+
+    assert_not_found(store.read(&key("Encounter", shared)).await);
+
+    store
+        .update(patient(shared, "Rivers", true), None)
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .read(&key("Patient", shared))
+            .await
+            .unwrap()
+            .version_id()
+            .as_str(),
+        "2",
+        "the update reached the patient"
+    );
+    assert_eq!(
+        store
+            .read(&key("Observation", shared))
+            .await
+            .unwrap()
+            .version_id()
+            .as_str(),
+        "1",
+        "and left the observation of the same id alone"
+    );
+
+    store.delete(&key("Patient", shared)).await.unwrap();
+    assert!(store
+        .read(&key("Patient", shared))
+        .await
+        .unwrap()
+        .is_deleted());
+    assert!(
+        !store
+            .read(&key("Observation", shared))
+            .await
+            .unwrap()
+            .is_deleted(),
+        "deleting one leaves the other"
+    );
+
+    store.hard_delete(&key("Patient", shared)).await.unwrap();
+    assert_not_found(store.read(&key("Patient", shared)).await);
+    store
+        .read(&key("Observation", shared))
+        .await
+        .expect("removing one leaves the other");
+
+    let instance = HistoryScope::Instance("Observation".parse().unwrap(), id(shared));
+    let held = store
+        .history(&instance, &HistoryQuery::default())
+        .await
+        .unwrap();
+    assert_eq!(held.total, 1, "the history of one is not the other's");
+
+    store
+        .hard_delete(&key("Observation", shared))
+        .await
+        .unwrap();
+}
+
+
+
+
+
+
+pub async fn erased_versions(store: &dyn ResourceStore) {
+    let held = "erased";
+    store.create(patient(held, "One", true)).await.unwrap();
+    store
+        .update(patient(held, "Two", true), None)
+        .await
+        .unwrap();
+    store
+        .update(patient(held, "Three", true), None)
+        .await
+        .unwrap();
+    let instance = HistoryScope::Instance("Patient".parse().unwrap(), id(held));
+    assert_eq!(
+        store
+            .history(&instance, &HistoryQuery::default())
+            .await
+            .unwrap()
+            .total,
+        3
+    );
+
+    let taken = store
+        .erase_versions(&key("Patient", held), &fixture::version("2"))
+        .await
+        .unwrap();
+    assert_eq!(taken, 2, "the named version and the one before it");
+    assert_not_found(
+        store
+            .vread(&key("Patient", held), &fixture::version("1"))
+            .await,
+    );
+    assert_not_found(
+        store
+            .vread(&key("Patient", held), &fixture::version("2"))
+            .await,
+    );
+    let current = store.read(&key("Patient", held)).await.unwrap();
+    assert_eq!(current.version_id().as_str(), "3", "the rest is untouched");
+    assert_eq!(
+        store
+            .history(&instance, &HistoryQuery::default())
+            .await
+            .unwrap()
+            .total,
+        1
+    );
+
+    assert_not_found(
+        store
+            .erase_versions(&key("Patient", held), &fixture::version("9"))
+            .await,
+    );
+    assert_not_found(
+        store
+            .erase_versions(&key("Patient", "nobody"), &fixture::version("1"))
+            .await,
+    );
+
+    let taken = store
+        .erase_versions(&key("Patient", held), &fixture::version("3"))
+        .await
+        .unwrap();
+    assert_eq!(taken, 1);
+    assert_not_found(store.read(&key("Patient", held)).await);
 }

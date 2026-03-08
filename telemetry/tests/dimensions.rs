@@ -104,7 +104,10 @@ fn an_event_line_carries_only_names_and_numbers() {
     );
     let lines = sink.lines();
     assert_eq!(lines.len(), 1);
-    assert_eq!(lines[0], "operation=read outcome=client_fault duration_ms=42");
+    assert_eq!(
+        lines[0],
+        "operation=read outcome=client_fault duration_ms=42"
+    );
 }
 
 #[test]

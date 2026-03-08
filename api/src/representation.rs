@@ -74,6 +74,14 @@ pub struct Asked {
 
 impl Asked {
     pub fn read(request: &Request) -> Result<Asked, Error> {
+        Asked::read_defaulting(request, MediaType::DEFAULT)
+    }
+
+    
+    
+    
+    
+    pub fn read_defaulting(request: &Request, fallback: MediaType) -> Result<Asked, Error> {
         let query = request.uri().query();
         let pretty = match param(query, "_pretty").as_deref() {
             None => false,
@@ -88,7 +96,7 @@ impl Asked {
             ),
             None => match accepted(request.headers())? {
                 Some(media) => (media, true),
-                None => (MediaType::DEFAULT, false),
+                None => (fallback, false),
             },
         };
         Ok(Asked {
@@ -141,13 +149,23 @@ fn accepted(headers: &HeaderMap) -> Result<Option<MediaType>, Error> {
 }
 
 pub async fn negotiated(State(state): State<AppState>, request: Request, next: Next) -> Response {
-    let asked = match Asked::read(&request) {
+    
+    
+    
+    if crate::binary::is_artifact(request.uri().path(), request.headers()) {
+        return next.run(request).await;
+    }
+    let asked = match Asked::read_defaulting(&request, state.default_format) {
         Err(error) => {
             return finished(&state, AppError::from(error).into_response(), None, false).await
         }
         Ok(asked) => asked,
     };
-    let media = asked.named.then_some(asked.media);
+    
+    
+    
+    
+    let media = Some(asked.media);
     match translated(&state, request).await {
         Err(error) => {
             finished(

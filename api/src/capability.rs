@@ -219,6 +219,9 @@ fn parameter_entries(state: &AppState, kind: ResourceType) -> Value {
         if !seen.insert(def.name.clone()) {
             continue;
         }
+        if !state.restricted.answers(&def.name) {
+            continue;
+        }
         let mut entry = Map::new();
         entry.insert("name".to_owned(), json!(def.name));
         entry.insert("type".to_owned(), json!(def.value_type.as_str()));
@@ -230,9 +233,9 @@ fn parameter_entries(state: &AppState, kind: ResourceType) -> Value {
     Value::Array(listed)
 }
 
-fn common_entries() -> Value {
+fn common_entries(version: FhirVersion) -> Value {
     Value::Array(
-        fhir_core::search::common()
+        fhir_core::search::common_in(version)
             .iter()
             .map(|def| json!({"name": def.name, "type": def.value_type.as_str()}))
             .collect(),
@@ -292,12 +295,15 @@ fn resource_entry(
         "type": name,
         "profile": profile_of(&name, state.version),
         "interaction": coded(&codes),
-        "versioning": "versioned",
+        "versioning": state.versioning.of(kind).as_str(),
         "readHistory": true,
-        "updateCreate": true,
+        "updateCreate": state.capabilities.create_on_update,
         "conditionalCreate": surface.conditional.contains(&Verb::Post),
         "conditionalUpdate": surface.conditional.contains(&Verb::Put),
-        "conditionalDelete": if surface.conditional.contains(&Verb::Delete) { "single" } else { "not-supported" },
+        "conditionalDelete": match surface.conditional.contains(&Verb::Delete) {
+            true => state.capabilities.conditional_delete.as_str(),
+            false => "not-supported",
+        },
         "referencePolicy": ["literal", "local"],
         "searchInclude": includes,
         "searchRevInclude": reverses.into_iter().collect::<Vec<String>>(),
@@ -344,8 +350,15 @@ pub fn statement(state: &AppState, base: &str) -> Value {
     let surface = surface();
     let operations = operations();
     let reverse = reverse_includes(state);
+    
+    
+    
     let resources: Vec<Value> = ResourceType::served(state.version)
         .into_iter()
+        .filter(|kind| !kind.is_custom())
+        
+        
+        .filter(|kind| state.restricted.serves(*kind))
         .map(|kind| resource_entry(state, kind, &surface, &operations, &reverse, base))
         .collect();
     let system: Vec<Value> = operations
@@ -361,7 +374,7 @@ pub fn statement(state: &AppState, base: &str) -> Value {
         rest.insert("security".to_owned(), security);
     }
     rest.insert("interaction".to_owned(), coded(&system_interactions()));
-    rest.insert("searchParam".to_owned(), common_entries());
+    rest.insert("searchParam".to_owned(), common_entries(state.version));
     rest.insert("operation".to_owned(), Value::Array(system));
     rest.insert("resource".to_owned(), Value::Array(resources));
     let mut held = json!({
@@ -384,19 +397,15 @@ pub fn statement(state: &AppState, base: &str) -> Value {
     held
 }
 
-pub(crate) fn base_of(headers: &HeaderMap) -> String {
-    let host = headers
-        .get(header::HOST)
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or("localhost");
-    format!("http://{host}")
+pub(crate) fn base_of(state: &AppState, headers: &HeaderMap) -> String {
+    state.forwarding.base(headers)
 }
 
 pub async fn capability(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
-    let body = statement(&state, &base_of(&headers));
+    let body = statement(&state, &base_of(&state, &headers));
     Ok((
         [(header::CONTENT_TYPE, FHIR_JSON)],
         serde_json::to_vec(&body).map_err(|error| fhir_core::Error::Internal(error.to_string()))?,

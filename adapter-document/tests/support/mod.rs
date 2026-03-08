@@ -55,9 +55,10 @@ pub async fn drop_namespace(client: &Client, namespace: &Namespace) {
 pub async fn fresh(name: &str) -> Option<(DocumentStore, Client, Namespace)> {
     let client = engine().await?;
     let namespace = namespace(name);
-    let store = DocumentStore::new(client.clone(), namespace.clone()).with_clock(std::sync::Arc::new(
-        || fhir_core::FhirInstant::parse("2026-09-06T04:00:00.000Z").expect("fixed instant"),
-    ));
+    let store =
+        DocumentStore::new(client.clone(), namespace.clone()).with_clock(std::sync::Arc::new(
+            || fhir_core::FhirInstant::parse("2026-09-06T04:00:00.000Z").expect("fixed instant"),
+        ));
     store.initialise().await.expect("the namespace prepares");
     Some((store, client, namespace))
 }

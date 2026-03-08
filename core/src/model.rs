@@ -312,6 +312,14 @@ impl Model {
             return;
         };
         if !self.resources.contains(name) {
+            
+            
+            
+            
+            
+            if crate::resource_type::is_registered(name) {
+                return;
+            }
             findings.push(Finding {
                 rule: Rule::Structure,
                 path: "resourceType".to_owned(),
@@ -841,7 +849,10 @@ mod tests {
         let subject = model
             .field("Observation", "subject")
             .expect("Observation carries a subject");
-        assert!(!subject.required(), "the definitions leave subject optional");
+        assert!(
+            !subject.required(),
+            "the definitions leave subject optional"
+        );
         assert!(
             subject.codes().is_empty(),
             "an unbound element admits no code list"

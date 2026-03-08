@@ -191,7 +191,10 @@ mod tests {
             ("system/*.reindex", DataAction::Reindex),
             ("system/*.bulk-delete", DataAction::BulkDelete),
             ("system/*.bulk-update", DataAction::BulkUpdate),
-            ("system/*.parameter-management", DataAction::ParameterManagement),
+            (
+                "system/*.parameter-management",
+                DataAction::ParameterManagement,
+            ),
         ] {
             let scope = Scope::parse(raw).unwrap();
             assert!(scope.permits(action, None), "{raw}");
@@ -202,7 +205,8 @@ mod tests {
 
     #[test]
     fn a_scope_may_carry_a_search_parameter_grant() {
-        let scope = Scope::parse("patient/Observation.rs?category=laboratory&status=final").unwrap();
+        let scope =
+            Scope::parse("patient/Observation.rs?category=laboratory&status=final").unwrap();
         assert_eq!(
             scope.filters,
             vec![

@@ -1,27 +1,29 @@
+use crate::preference::Handling;
 use axum::body::Bytes;
 use axum::extract::{Path, RawQuery, State};
 use axum::http::header::{self, HeaderMap};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use fhir_core::convert::{convert, Conversion, InputType};
+use fhir_core::search::{Compartment, Filter, Target};
 use fhir_core::terminology::{expansion_json, ExpansionRequest, Stamp};
 use fhir_core::validate::{validate, Mode, Request as ValidationRequest};
-use fhir_core::search::{Compartment, Filter};
 use fhir_core::{Error, ResourceId, ResourceType};
 use fhir_store::SearchQuery;
-use serde_json::Value;
+use serde_json::{json, Value};
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::app::AppState;
+use crate::handlers::{allowed, AppError};
 use crate::query::param;
 use crate::search::{ResultControl, SearchRequest, CONTROL};
-use crate::handlers::{allowed, served, AppError};
 use fhir_core::security::scope::DataAction;
 
 const FHIR_JSON: &str = "application/fhir+json";
 
 pub fn value_of(body: &Value, name: &str) -> Option<String> {
     entries(body).find_map(|entry| match entry.get("name").and_then(Value::as_str) {
-        Some(held) if held == name => primitive(entry),
+        Some(held) if held == name => primitive_of(entry),
         _ => None,
     })
 }
@@ -29,7 +31,7 @@ pub fn value_of(body: &Value, name: &str) -> Option<String> {
 pub fn values_of(body: &Value, name: &str) -> Vec<String> {
     entries(body)
         .filter(|entry| entry.get("name").and_then(Value::as_str) == Some(name))
-        .filter_map(primitive)
+        .filter_map(primitive_of)
         .collect()
 }
 
@@ -47,7 +49,7 @@ fn entries(body: &Value) -> impl Iterator<Item = &Value> {
         .unwrap_or_else(|| [].iter())
 }
 
-fn primitive(entry: &Value) -> Option<String> {
+pub(crate) fn primitive_of(entry: &Value) -> Option<String> {
     let object = entry.as_object()?;
     object.iter().find_map(|(name, value)| {
         let named = name.starts_with("value") && name != "value";
@@ -107,8 +109,15 @@ pub async fn validate_type(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, AppError> {
-    let resource_type = served(state.version, &type_name)?;
-    allowed(&state, &headers, DataAction::Read, Some(resource_type), None).await?;
+    let resource_type = crate::handlers::served_here(&state, &type_name)?;
+    allowed(
+        &state,
+        &headers,
+        DataAction::Read,
+        Some(resource_type),
+        None,
+    )
+    .await?;
     validated(&state, Some(resource_type), None, query.as_deref(), &body).await
 }
 
@@ -119,10 +128,24 @@ pub async fn validate_instance(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, AppError> {
-    let resource_type = served(state.version, &type_name)?;
-    allowed(&state, &headers, DataAction::Read, Some(resource_type), None).await?;
+    let resource_type = crate::handlers::served_here(&state, &type_name)?;
+    allowed(
+        &state,
+        &headers,
+        DataAction::Read,
+        Some(resource_type),
+        None,
+    )
+    .await?;
     let id = id_text.parse::<ResourceId>()?;
-    validated(&state, Some(resource_type), Some(id), query.as_deref(), &body).await
+    validated(
+        &state,
+        Some(resource_type),
+        Some(id),
+        query.as_deref(),
+        &body,
+    )
+    .await
 }
 
 async fn validated(
@@ -136,7 +159,9 @@ async fn validated(
     let mut profile = param(query, "profile");
     let mut mode = param(query, "mode");
     let value = match submitted {
-        Some(Value::Object(ref object)) if object.get("resourceType") == Some(&Value::String("Parameters".to_owned())) => {
+        Some(Value::Object(ref object))
+            if object.get("resourceType") == Some(&Value::String("Parameters".to_owned())) =>
+        {
             let held = Value::Object(object.clone());
             profile = profile.or_else(|| value_of(&held, "profile"));
             mode = mode.or_else(|| value_of(&held, "mode"));
@@ -152,7 +177,13 @@ async fn validated(
     let body = match (value, &id) {
         (Some(value), _) => value,
         (None, Some(id)) => {
-            let stored = state.store.read(id).await?;
+            let held = resource_type.ok_or_else(|| {
+                Error::InvalidParameter("a stored resource is named by its type".to_owned())
+            })?;
+            let stored = state
+                .store
+                .read(&fhir_core::ResourceKey::new(held, id.clone()))
+                .await?;
             if stored.is_deleted() {
                 return Err(Error::Deleted.into());
             }
@@ -164,15 +195,41 @@ async fn validated(
             return Err(Error::InvalidParameter("no resource to validate".to_owned()).into())
         }
     };
+    let claimed = profile.as_deref().or_else(|| declared(&body));
+    let held = match claimed {
+        None => None,
+        Some(url) => crate::profile::resolve(&state.store, url).await?,
+    };
+    let codes = match &held {
+        None => None,
+        Some(profile) => {
+            Some(crate::profile::HeldCodes::for_profile(state.terminology.as_ref(), profile).await?)
+        }
+    };
+    let resolved = match (&held, &codes) {
+        (Some(profile), Some(codes)) => Some(fhir_core::validate::Resolved { profile, codes }),
+        _ => None,
+    };
     let report = validate(&ValidationRequest {
         version: state.version,
         resource_type,
         id,
-        profile: profile.as_deref(),
+        profile: claimed,
+        resolved,
         mode,
         body: &body,
     });
     Ok(rendered(report.to_fhir_json()))
+}
+
+
+
+fn declared(body: &Value) -> Option<&str> {
+    body.get("meta")?
+        .get("profile")?
+        .as_array()?
+        .iter()
+        .find_map(Value::as_str)
 }
 
 fn submitted(body: &[u8]) -> Result<Option<Value>, Error> {
@@ -184,7 +241,7 @@ fn submitted(body: &[u8]) -> Result<Option<Value>, Error> {
         .map_err(|error| Error::InvalidJson(error.to_string()))
 }
 
-pub(crate) const EVERYTHING_PARAMS: [&str; 3] = ["_since", "_till", "_type"];
+pub(crate) const EVERYTHING_PARAMS: [&str; 4] = ["_since", "_type", "start", "end"];
 
 pub async fn everything(
     State(state): State<AppState>,
@@ -195,13 +252,17 @@ pub async fn everything(
     allowed(&state, &headers, DataAction::Read, None, None).await?;
     let root = "Patient".parse::<ResourceType>()?;
     let id = id_text.parse::<ResourceId>()?;
-    let stored = state.store.read(&id).await?;
-    if stored.resource_type() != root || stored.is_deleted() {
+    let stored = state
+        .store
+        .read(&fhir_core::ResourceKey::new(root, id.clone()))
+        .await?;
+    if stored.is_deleted() {
         return Err(Error::NotFound.into());
     }
     let def = fhir_core::search::compartment::definition(root.as_str())
         .ok_or_else(|| Error::UnsupportedParameter("compartment \"Patient\"".to_owned()))?;
-    accepts(query.as_deref(), &EVERYTHING_PARAMS)?;
+    let handling = Handling::asked_for(&headers)?;
+    let (query, dropped) = accepted(query.as_deref(), &EVERYTHING_PARAMS, handling)?;
     let gathered = def
         .types()
         .iter()
@@ -224,8 +285,8 @@ pub async fn everything(
     let control = ResultControl::parse(query.as_deref())?;
     let request = SearchRequest {
         query: SearchQuery {
+            filters: window(&state, query.as_deref(), &types)?,
             types,
-            filters: window(&state, query.as_deref())?,
             compartment: Some(Compartment { kind: root, id }),
             count: control.count,
             offset: control.offset,
@@ -234,25 +295,94 @@ pub async fn everything(
         },
         summary: control.summary,
         elements: control.elements,
+        dropped,
+        named: crate::search::Named {
+            count: crate::search::param(query.as_deref(), "_count").is_some(),
+            sort: crate::search::param(query.as_deref(), "_sort").is_some(),
+            total: crate::search::param(query.as_deref(), "_total").is_some(),
+        },
     };
     let path = format!("/{}/{}/$everything", root.as_str(), id_text);
     crate::handlers::respond_page(&state, request, path, query, &headers).await
 }
 
-fn window(state: &AppState, query: Option<&str>) -> Result<Vec<Filter>, Error> {
+const CLINICAL_DATE: &str = "date";
+
+
+
+type DateGroup = (Vec<String>, Vec<ResourceType>);
+
+fn window(
+    state: &AppState,
+    query: Option<&str>,
+    types: &[ResourceType],
+) -> Result<Vec<Filter>, Error> {
     let mut filters = Vec::new();
-    for (name, comparator) in [("_since", "ge"), ("_till", "le")] {
-        let Some(text) = param(query, name) else { continue };
+    if let Some(text) = param(query, "_since") {
         let def = state
             .registry
             .searchable(None, "_lastUpdated")?
-            .ok_or_else(|| Error::UnsupportedParameter(format!("{name:?}")))?;
+            .ok_or_else(|| Error::UnsupportedParameter("\"_since\"".to_owned()))?;
         let value = def
-            .value_with(&fhir_core::search::Modifier::None, &format!("{comparator}{text}"))
-            .map_err(|_| Error::InvalidParameter(format!("{name} {text:?}")))?;
-        filters.push(Filter::new(name, def.target.clone(), vec![value]));
+            .value_with(&fhir_core::search::Modifier::None, &format!("ge{text}"))
+            .map_err(|_| Error::InvalidParameter(format!("_since {text:?}")))?;
+        filters.push(Filter::new("_since", def.target.clone(), vec![value]));
+    }
+    let start = param(query, "start");
+    let end = param(query, "end");
+    if let (Some(from), Some(till)) = (start.as_deref(), end.as_deref()) {
+        if from > till {
+            return Err(Error::InvalidParameter(format!(
+                "start {from:?} falls after end {till:?}"
+            )));
+        }
+    }
+    if start.is_none() && end.is_none() {
+        return Ok(filters);
+    }
+    for (name, text, comparator) in [("start", start, "ge"), ("end", end, "le")] {
+        let Some(text) = text else {
+            continue;
+        };
+        for (paths, kinds) in dated(state, types)? {
+            let def = state
+                .registry
+                .searchable(Some(kinds[0]), CLINICAL_DATE)?
+                .ok_or_else(|| Error::UnsupportedParameter(format!("{name:?}")))?;
+            let value = def
+                .value_with(
+                    &fhir_core::search::Modifier::None,
+                    &format!("{comparator}{text}"),
+                )
+                .map_err(|_| Error::InvalidParameter(format!("{name} {text:?}")))?;
+            let exempt = types
+                .iter()
+                .filter(|held| !kinds.contains(held))
+                .copied()
+                .collect();
+            filters.push(
+                Filter::new(CLINICAL_DATE, Target::Path(paths), vec![value]).exempting(exempt),
+            );
+        }
     }
     Ok(filters)
+}
+
+
+
+
+
+fn dated(state: &AppState, types: &[ResourceType]) -> Result<Vec<DateGroup>, Error> {
+    let mut groups: BTreeMap<Vec<String>, Vec<ResourceType>> = BTreeMap::new();
+    for kind in types {
+        let Some(def) = state.registry.searchable(Some(*kind), CLINICAL_DATE)? else {
+            continue;
+        };
+        if let Target::Path(paths) = &def.target {
+            groups.entry(paths.clone()).or_default().push(*kind);
+        }
+    }
+    Ok(groups.into_iter().collect())
 }
 
 fn listed(raw: &str) -> Result<Vec<ResourceType>, Error> {
@@ -260,6 +390,42 @@ fn listed(raw: &str) -> Result<Vec<ResourceType>, Error> {
         .filter(|part| !part.is_empty())
         .map(str::parse::<ResourceType>)
         .collect()
+}
+
+
+
+
+
+fn accepted(
+    query: Option<&str>,
+    allowed: &[&str],
+    handling: Handling,
+) -> Result<(Option<String>, Vec<String>), Error> {
+    let mut kept: Vec<&str> = Vec::new();
+    let mut dropped = Vec::new();
+    for segment in query
+        .unwrap_or_default()
+        .split('&')
+        .filter(|part| !part.is_empty())
+    {
+        let name = crate::query::decoded(
+            segment
+                .split_once('=')
+                .map(|(held, _)| held)
+                .unwrap_or(segment),
+        );
+        let known = allowed.contains(&name.as_str()) || CONTROL.contains(&name.as_str());
+        match (known, handling.is_lenient()) {
+            (true, _) => kept.push(segment),
+            (false, true) => dropped.push(name),
+            (false, false) => return Err(Error::UnsupportedParameter(format!("{name:?}"))),
+        }
+    }
+    let kept = match kept.is_empty() {
+        true => None,
+        false => Some(kept.join("&")),
+    };
+    Ok((kept, dropped))
 }
 
 fn accepts(query: Option<&str>, allowed: &[&str]) -> Result<(), Error> {
@@ -279,9 +445,8 @@ pub async fn member_match(
 ) -> Result<Response, AppError> {
     allowed(&state, &headers, DataAction::Read, None, None).await?;
     let input = parameters(&body)?;
-    let submitted = resource_of(&input, "MemberPatient").ok_or_else(|| {
-        Error::InvalidParameter("\"MemberPatient\" is missing".to_owned())
-    })?;
+    let submitted = resource_of(&input, "MemberPatient")
+        .ok_or_else(|| Error::InvalidParameter("\"MemberPatient\" is missing".to_owned()))?;
     let identifiers = identifiers(submitted);
     if identifiers.is_empty() {
         return Err(Error::InvalidParameter(
@@ -375,7 +540,7 @@ pub async fn includes_type(
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
     allowed(&state, &headers, DataAction::Read, None, None).await?;
-    let resource_type = served(state.version, &type_name)?;
+    let resource_type = crate::handlers::served_here(&state, &type_name)?;
     let path = format!("/{resource_type}/$includes");
     related(&state, Some(resource_type), path, query, &headers).await
 }
@@ -396,17 +561,16 @@ async fn related(
     query: Option<String>,
     headers: &HeaderMap,
 ) -> Result<Response, AppError> {
-    let request = SearchRequest::parse(&state.registry, base_type, query.as_deref())?;
+    let (request, query) =
+        crate::handlers::parsed_search(state, base_type, query.as_deref(), headers)?;
     if request.query.includes.is_empty() {
-        return Err(Error::InvalidParameter(
-            "the operation needs an include".to_owned(),
-        )
-        .into());
+        return Err(Error::InvalidParameter("the operation needs an include".to_owned()).into());
     }
     let control = ResultControl::parse(query.as_deref())?;
     let mut selection = SearchQuery {
         count: usize::MAX,
         offset: 0,
+        include_depth: state.capabilities.include_depth,
         ..request.query
     };
     crate::handlers::confine(&mut selection, crate::handlers::grant_of(headers)?)?;
@@ -424,8 +588,9 @@ async fn related(
         included: Vec::new(),
         total: Some(total),
         offset: control.offset,
+        bounded: found.bounded,
     };
-    let base = format!("http://{}", crate::handlers::host_from(headers));
+    let base = crate::handlers::addressed(state, headers);
     let self_url = match query.as_deref() {
         Some(raw) if !raw.is_empty() => format!("{base}{path}?{raw}"),
         _ => format!("{base}{path}"),
@@ -436,6 +601,7 @@ async fn related(
         &page,
         control.summary,
         &control.elements,
+        &request.dropped,
     )))
 }
 
@@ -496,10 +662,7 @@ async fn documents(
     let patient = held("patient")
         .ok_or_else(|| Error::InvalidParameter("\"patient\" is missing".to_owned()))?;
     if held("on-demand").is_some_and(|value| value.eq_ignore_ascii_case("true")) {
-        return Err(Error::UnsupportedParameter(
-            "\"on-demand\" generation".to_owned(),
-        )
-        .into());
+        return Err(Error::UnsupportedParameter("\"on-demand\" generation".to_owned()).into());
     }
     let mut selection: Vec<(String, String)> = vec![(
         "patient".to_owned(),
@@ -530,6 +693,378 @@ async fn documents(
     crate::handlers::respond_page(state, request, path, Some(raw), headers).await
 }
 
+pub(crate) const DOCUMENT_PARAMS: [&str; 2] = ["id", "persist"];
+
+const COMPOSITION: &str = "Composition";
+
+
+
+
+
+
+
+
+pub async fn document(
+    State(state): State<AppState>,
+    Path(id_text): Path<String>,
+    RawQuery(query): RawQuery,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    let composition = COMPOSITION.parse::<ResourceType>()?;
+    allowed(&state, &headers, DataAction::Read, Some(composition), None).await?;
+    let persist =
+        param(query.as_deref(), "persist").is_some_and(|held| held.eq_ignore_ascii_case("true"));
+    Ok(gathered_document(&state, &id_text, persist, &headers).await?)
+}
+
+pub async fn document_type(
+    State(state): State<AppState>,
+    RawQuery(query): RawQuery,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, AppError> {
+    let composition = COMPOSITION.parse::<ResourceType>()?;
+    allowed(&state, &headers, DataAction::Read, Some(composition), None).await?;
+    let asked: Value = match body.iter().all(u8::is_ascii_whitespace) {
+        true => Value::Null,
+        false => {
+            serde_json::from_slice(&body).map_err(|error| Error::InvalidJson(error.to_string()))?
+        }
+    };
+    let id = param(query.as_deref(), "id")
+        .or_else(|| value_of(&asked, "id"))
+        .ok_or_else(|| Error::InvalidParameter("no composition is named".to_owned()))?;
+    let persist = param(query.as_deref(), "persist")
+        .or_else(|| value_of(&asked, "persist"))
+        .is_some_and(|held| held.eq_ignore_ascii_case("true"));
+    Ok(gathered_document(&state, &id, persist, &headers).await?)
+}
+
+async fn gathered_document(
+    state: &AppState,
+    id_text: &str,
+    persist: bool,
+    headers: &HeaderMap,
+) -> Result<Response, Error> {
+    let composition = COMPOSITION.parse::<ResourceType>()?;
+    let id = id_text.parse::<ResourceId>()?;
+    let root = state
+        .store
+        .read(&fhir_core::ResourceKey::new(composition, id))
+        .await?;
+    if root.is_deleted() {
+        return Err(Error::Deleted);
+    }
+    let base = crate::handlers::addressed(state, headers);
+    let mut entries: Vec<Value> = Vec::new();
+    let mut issues: Vec<Value> = Vec::new();
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    let body: Value = serde_json::from_slice(root.raw())
+        .map_err(|error| Error::InvalidJson(error.to_string()))?;
+    seen.insert(format!("{COMPOSITION}/{id_text}"));
+    entries.push(json!({
+        "fullUrl": format!("{base}/{COMPOSITION}/{id_text}"),
+        "resource": body,
+    }));
+
+    let mut frontier: Vec<Value> = vec![entries[0]["resource"].clone()];
+    while let Some(held) = frontier.pop() {
+        for reference in references_of(&held) {
+            if reference.contains("://") {
+                issues.push(outcome_issue(&format!(
+                    "{reference} is outside this instance and was not followed"
+                )));
+                continue;
+            }
+            if !seen.insert(reference.clone()) {
+                continue;
+            }
+            let Ok(key) = reference.parse::<fhir_core::ResourceKey>() else {
+                issues.push(outcome_issue(&format!("{reference} names no resource")));
+                continue;
+            };
+            match state.store.read(&key).await {
+                Ok(found) if !found.is_deleted() => {
+                    let body: Value = serde_json::from_slice(found.raw())
+                        .map_err(|error| Error::InvalidJson(error.to_string()))?;
+                    entries.push(json!({
+                        "fullUrl": format!("{base}/{reference}"),
+                        "resource": body.clone(),
+                    }));
+                    frontier.push(body);
+                }
+                Ok(_) | Err(Error::NotFound) => issues.push(outcome_issue(&format!(
+                    "{reference} is not held by this instance"
+                ))),
+                Err(error) => return Err(error),
+            }
+        }
+    }
+    if !issues.is_empty() {
+        entries.push(json!({
+            "fullUrl": format!("{base}/OperationOutcome/document"),
+            "resource": {"resourceType": "OperationOutcome", "issue": issues},
+        }));
+    }
+    let bundle = json!({
+        "resourceType": "Bundle",
+        "id": uuid::Uuid::new_v4().to_string(),
+        "type": "document",
+        "timestamp": fhir_store::system_clock()().as_str(),
+        "entry": entries,
+    });
+    if persist {
+        let mut held = bundle.clone();
+        fhir_core::with_assigned_meta(&mut held)?;
+        let stored = fhir_core::ResourceEnvelope::parse(
+            state.version,
+            &serde_json::to_vec(&held).map_err(|error| Error::Internal(error.to_string()))?,
+        )?;
+        state.store.create(stored).await?;
+    }
+    Ok(crate::handlers::rendered(
+        serde_json::to_vec(&bundle).map_err(|error| Error::Internal(error.to_string()))?,
+    ))
+}
+
+fn outcome_issue(diagnostics: &str) -> Value {
+    json!({
+        "severity": "warning",
+        "code": "not-found",
+        "diagnostics": diagnostics,
+    })
+}
+
+
+fn references_of(body: &Value) -> Vec<String> {
+    let mut held = Vec::new();
+    gather_references(body, &mut held);
+    held
+}
+
+fn gather_references(value: &Value, held: &mut Vec<String>) {
+    match value {
+        Value::Object(object) => {
+            if let Some(reference) = object.get("reference").and_then(Value::as_str) {
+                if !reference.starts_with('#') {
+                    held.push(reference.to_owned());
+                }
+            }
+            for (name, inner) in object {
+                if name != "reference" {
+                    gather_references(inner, held);
+                }
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                gather_references(item, held);
+            }
+        }
+        _ => {}
+    }
+}
+
+pub(crate) const LASTN_PARAMS: [&str; 3] = ["patient", "subject", "category"];
+
+
+
+
+
+
+pub async fn last_n(
+    State(state): State<AppState>,
+    RawQuery(query): RawQuery,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    let observation = "Observation".parse::<ResourceType>()?;
+    allowed(&state, &headers, DataAction::Read, Some(observation), None).await?;
+    for refused in ["_sort", "_count", "ct"] {
+        if param(query.as_deref(), refused).is_some() {
+            return Err(Error::UnsupportedParameter(format!(
+                "{refused:?} is not a parameter of $lastn: the operation orders and bounds its own answer"
+            ))
+            .into());
+        }
+    }
+    let subject = param(query.as_deref(), "patient")
+        .or_else(|| param(query.as_deref(), "subject"))
+        .ok_or_else(|| Error::InvalidParameter("$lastn names a patient or a subject".to_owned()))?;
+    if param(query.as_deref(), "category").is_none() {
+        return Err(Error::InvalidParameter("$lastn names a category".to_owned()).into());
+    }
+    let most = match param(query.as_deref(), "max") {
+        None => 1,
+        Some(raw) => raw
+            .parse::<usize>()
+            .ok()
+            .filter(|held| *held > 0)
+            .ok_or_else(|| Error::InvalidParameter(format!("max {raw:?} is not a count")))?,
+    };
+    
+    
+    let mut narrowing: Vec<String> = Vec::new();
+    for (name, value) in crate::query::pairs(query.as_deref()) {
+        if name == "max" || LASTN_PARAMS.contains(&name.as_str()) {
+            continue;
+        }
+        narrowing.push(format!("{name}={value}"));
+    }
+    let held = subject.rsplit('/').next().unwrap_or(&subject).to_owned();
+    narrowing.push(format!("subject=Patient/{held}"));
+    if let Some(category) = param(query.as_deref(), "category") {
+        narrowing.push(format!("category={category}"));
+    }
+    let raw = narrowing.join("&");
+    let mut request = SearchRequest::parse(&state.registry, Some(observation), Some(&raw))?;
+    request.query.count = usize::MAX;
+    request.query.offset = 0;
+    request.query.sort = sorted_by_date(&state, observation)?;
+    crate::handlers::confine(&mut request.query, crate::handlers::grant_of(&headers)?)?;
+    let found = state.store.search(&request.query).await?;
+
+    let mut groups: BTreeMap<String, Vec<fhir_core::ResourceEnvelope>> = BTreeMap::new();
+    for entry in found.entries {
+        let body: Value = serde_json::from_slice(entry.raw())
+            .map_err(|error| Error::InvalidJson(error.to_string()))?;
+        let key = coded(&body);
+        let held = groups.entry(key).or_default();
+        if held.len() < most {
+            held.push(entry);
+        }
+    }
+    let entries: Vec<fhir_core::ResourceEnvelope> = groups.into_values().flatten().collect();
+    let total = entries.len();
+    let page = fhir_store::SearchPage {
+        entries,
+        included: Vec::new(),
+        total: Some(total),
+        offset: 0,
+        bounded: false,
+    };
+    let base = crate::handlers::addressed(&state, &headers);
+    let self_url = match query.as_deref() {
+        Some(raw) if !raw.is_empty() => format!("{base}/Observation/$lastn?{raw}"),
+        _ => format!("{base}/Observation/$lastn"),
+    };
+    Ok(crate::handlers::rendered(crate::search::search_bundle(
+        &base,
+        &self_url,
+        &page,
+        crate::history::Summary::Full,
+        &[],
+        &[],
+    )))
+}
+
+
+fn sorted_by_date(
+    state: &AppState,
+    observation: ResourceType,
+) -> Result<Vec<fhir_store::SortKey>, Error> {
+    let def = state
+        .registry
+        .searchable(Some(observation), CLINICAL_DATE)?
+        .ok_or_else(|| {
+            Error::UnsupportedParameter("this release gives an Observation no date".to_owned())
+        })?;
+    Ok(vec![fhir_store::SortKey {
+        name: CLINICAL_DATE.to_owned(),
+        target: def.target.clone(),
+        direction: fhir_store::SortDirection::Descending,
+    }])
+}
+
+
+fn coded(body: &Value) -> String {
+    let code = body.get("code");
+    let coding = code
+        .and_then(|held| held.get("coding"))
+        .and_then(Value::as_array)
+        .and_then(|items| items.first());
+    match coding {
+        Some(one) => format!(
+            "{}|{}",
+            one.get("system")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+            one.get("code").and_then(Value::as_str).unwrap_or_default()
+        ),
+        None => code
+            .and_then(|held| held.get("text"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned(),
+    }
+}
+
+
+
+
+
+
+
+pub async fn snapshot(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, AppError> {
+    allowed(&state, &headers, DataAction::Read, None, None).await?;
+    let definition: Value =
+        serde_json::from_slice(&body).map_err(|error| Error::InvalidJson(error.to_string()))?;
+    let held = fhir_core::snapshot::generate(state.version, &definition)?;
+    Ok(crate::handlers::rendered(
+        serde_json::to_vec(&held).map_err(|error| Error::Internal(error.to_string()))?,
+    ))
+}
+
+
+
+
+
+
+
+pub async fn represented(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, AppError> {
+    allowed(&state, &headers, DataAction::Read, None, None).await?;
+    if headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(crate::representation::MediaType::parse)
+        .is_none()
+    {
+        return Err(Error::UnsupportedFormat(
+            "the content type names no representation".to_owned(),
+        )
+        .into());
+    }
+    
+    
+    
+    
+    let value: Value =
+        serde_json::from_slice(&body).map_err(|error| Error::InvalidJson(error.to_string()))?;
+    let named = value
+        .get("resourceType")
+        .and_then(Value::as_str)
+        .ok_or_else(|| Error::InvalidEnvelope("the body names no resource type".to_owned()))?;
+    crate::handlers::served_here(&state, named)?;
+    let findings = fhir_core::Model::of(state.version).check(&value);
+    if let Some(first) = findings.first() {
+        return Err(Error::InvalidEnvelope(format!(
+            "{} at {}: {}",
+            first.rule, first.path, first.detail
+        ))
+        .into());
+    }
+    Ok(crate::handlers::rendered(
+        serde_json::to_vec(&value).map_err(|error| Error::Internal(error.to_string()))?,
+    ))
+}
+
 pub(crate) const EXPAND_PARAMS: [&str; 11] = [
     "url",
     "filter",
@@ -553,7 +1088,10 @@ pub async fn expand_query(
 ) -> Result<Response, AppError> {
     allowed(&state, &headers, DataAction::Read, None, None).await?;
     let asked = crate::query::pairs(query.as_deref());
-    accepts(query.as_deref(), &[&EXPAND_PARAMS[..], &[SYSTEM_VERSION]].concat())?;
+    accepts(
+        query.as_deref(),
+        &[&EXPAND_PARAMS[..], &[SYSTEM_VERSION]].concat(),
+    )?;
     expanded(&state, &asked).await
 }
 
@@ -580,7 +1118,8 @@ async fn expanded(state: &AppState, asked: &[(String, String)]) -> Result<Respon
             .find(|(held, _)| held == name)
             .map(|(_, value)| value.clone())
     };
-    let url = held("url").ok_or_else(|| Error::InvalidParameter("\"url\" is missing".to_owned()))?;
+    let url =
+        held("url").ok_or_else(|| Error::InvalidParameter("\"url\" is missing".to_owned()))?;
     let request = ExpansionRequest {
         filter: held("filter"),
         count: match held("count") {
@@ -666,7 +1205,10 @@ mod tests {
         assert_eq!(value_of(&body, "url"), Some("urn:x".to_owned()));
         assert_eq!(value_of(&body, "count"), Some("5".to_owned()));
         assert_eq!(value_of(&body, "active"), Some("true".to_owned()));
-        assert_eq!(values_of(&body, "code"), vec!["a".to_owned(), "b".to_owned()]);
+        assert_eq!(
+            values_of(&body, "code"),
+            vec!["a".to_owned(), "b".to_owned()]
+        );
         assert_eq!(value_of(&body, "empty"), None);
         assert_eq!(value_of(&body, "nonesuch"), None);
         assert_eq!(

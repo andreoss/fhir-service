@@ -50,15 +50,22 @@ pub fn spawn_with(extra: &[(&str, &str)]) -> (Child, u16) {
     }
 }
 
-
 pub fn stop(mut child: Child) {
     child.kill().expect("failed to kill server");
     child.wait().expect("failed to reap server");
 }
 
-pub fn request(port: u16, method: &str, path: &str, headers: &[(&str, &str)], body: &[u8]) -> Reply {
+pub fn request(
+    port: u16,
+    method: &str,
+    path: &str,
+    headers: &[(&str, &str)],
+    body: &[u8],
+) -> Reply {
     let stream = TcpStream::connect(("127.0.0.1", port)).expect("failed to connect");
-    stream.set_read_timeout(Some(Duration::from_secs(5))).expect("set read timeout");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("set read timeout");
     let mut stream = stream;
     let mut head = format!("{method} {path} HTTP/1.0\r\nHost: localhost\r\n");
     if !body.is_empty() {
@@ -84,12 +91,21 @@ fn parse_response(text: &str) -> Reply {
     let body = parts.next().unwrap_or("").to_owned();
     let mut lines = head.split("\r\n");
     let status_line = lines.next().expect("missing status line");
-    let status = status_line.split_whitespace().nth(1).expect("missing status code").parse().expect("bad status code");
+    let status = status_line
+        .split_whitespace()
+        .nth(1)
+        .expect("missing status code")
+        .parse()
+        .expect("bad status code");
     let headers = lines
         .map(|line| {
             let (name, value) = line.split_once(':').expect("malformed header");
             (name.to_ascii_lowercase(), value.trim().to_owned())
         })
         .collect();
-    Reply { status, headers, body }
+    Reply {
+        status,
+        headers,
+        body,
+    }
 }

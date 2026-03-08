@@ -1,5 +1,5 @@
-use crate::Error;
 use crate::resource_id::validate_id_chars;
+use crate::Error;
 use std::fmt;
 use std::str::FromStr;
 
@@ -51,13 +51,19 @@ mod tests {
 
     #[test]
     fn rejects_empty_version() {
-        assert!(matches!(VersionId::parse(""), Err(Error::InvalidVersion(_))));
+        assert!(matches!(
+            VersionId::parse(""),
+            Err(Error::InvalidVersion(_))
+        ));
     }
 
     #[test]
     fn rejects_invalid_version_characters() {
         for value in ["1:0", "with space", "v/2"] {
-            assert!(matches!(VersionId::parse(value), Err(Error::InvalidVersion(_))));
+            assert!(matches!(
+                VersionId::parse(value),
+                Err(Error::InvalidVersion(_))
+            ));
         }
     }
 

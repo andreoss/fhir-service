@@ -28,7 +28,10 @@ impl FhirInstant {
     }
 
     pub fn key(&self) -> InstantKey {
-        instant_key(&self.0).unwrap_or(InstantKey { seconds: 0, nanos: 0 })
+        instant_key(&self.0).unwrap_or(InstantKey {
+            seconds: 0,
+            nanos: 0,
+        })
     }
 }
 
@@ -122,7 +125,10 @@ fn instant_key(value: &str) -> Result<InstantKey, ()> {
 fn period_of(value: &str) -> Result<InstantPeriod, ()> {
     if value.contains('T') {
         let key = instant_key(value)?;
-        return Ok(InstantPeriod { low: key, high: key });
+        return Ok(InstantPeriod {
+            low: key,
+            high: key,
+        });
     }
     let parts: Vec<&str> = value.split('-').collect();
     let head = parts.first().copied().ok_or(())?;
@@ -326,21 +332,24 @@ mod tests {
         for value in [
             "",
             "text",
-            "2026-09-06",             
-            "2026-09-06 04:00:00Z",   
-            "2026-09-06T04:00:00",    
-            "2026-13-01T04:00:00Z",   
-            "2026-02-30T04:00:00Z",   
-            "2026-09-06T25:00:00Z",   
-            "2026-09-06T04:60:00Z",   
-            "2026-09-06T04:00:61Z",   
+            "2026-09-06",
+            "2026-09-06 04:00:00Z",
+            "2026-09-06T04:00:00",
+            "2026-13-01T04:00:00Z",
+            "2026-02-30T04:00:00Z",
+            "2026-09-06T25:00:00Z",
+            "2026-09-06T04:60:00Z",
+            "2026-09-06T04:00:61Z",
             "2026-09-06T04:00:00+15:00",
             "2026-09-06T04:00:00+14:01",
             "2026-09-06T04:00:00.123+",
             "0000-01-01T00:00:00Z",
             "2026-9-06T04:00:00Z",
         ] {
-            assert!(matches!(FhirInstant::parse(value), Err(Error::InvalidInstant(_))), "should reject {value:?}");
+            assert!(
+                matches!(FhirInstant::parse(value), Err(Error::InvalidInstant(_))),
+                "should reject {value:?}"
+            );
         }
     }
 
@@ -367,8 +376,14 @@ mod period_tests {
 
     #[test]
     fn keys_normalise_the_zone_offset() {
-        assert_eq!(key("2026-09-06T04:00:00Z"), key("2026-09-06T06:00:00+02:00"));
-        assert_eq!(key("2026-09-06T04:00:00Z"), key("2026-09-05T22:30:00-05:30"));
+        assert_eq!(
+            key("2026-09-06T04:00:00Z"),
+            key("2026-09-06T06:00:00+02:00")
+        );
+        assert_eq!(
+            key("2026-09-06T04:00:00Z"),
+            key("2026-09-05T22:30:00-05:30")
+        );
     }
 
     #[test]
@@ -403,8 +418,18 @@ mod period_tests {
 
     #[test]
     fn rejects_malformed_periods() {
-        for value in ["", "text", "2026-13", "2026-02-30", "2026-09-06T04:00:00", "20260906"] {
-            assert!(matches!(InstantPeriod::parse(value), Err(Error::InvalidInstant(_))), "should reject {value:?}");
+        for value in [
+            "",
+            "text",
+            "2026-13",
+            "2026-02-30",
+            "2026-09-06T04:00:00",
+            "20260906",
+        ] {
+            assert!(
+                matches!(InstantPeriod::parse(value), Err(Error::InvalidInstant(_))),
+                "should reject {value:?}"
+            );
         }
     }
 }
@@ -415,7 +440,9 @@ mod key_tests {
 
     #[test]
     fn a_key_reports_the_position_it_holds() {
-        let key = FhirInstant::parse("1970-01-01T00:00:10.500Z").unwrap().key();
+        let key = FhirInstant::parse("1970-01-01T00:00:10.500Z")
+            .unwrap()
+            .key();
         assert_eq!(key.seconds(), 10);
         assert_eq!(key.nanos(), 500_000_000);
     }

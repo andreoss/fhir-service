@@ -17,7 +17,8 @@ cargo run --bin fhir-host
 ----
 
 One binary in a minimal image: `docker build --file Containerfile .`. The
-cluster template is in `deploy/`.
+cluster template is in `deploy/`, the pipeline stages in `ci/`, the
+dependency policy in `deny.toml`.
 
 == Serving
 
@@ -67,7 +68,7 @@ types, `adapter-memory`, `adapter-relational` and `adapter-document` the
 engines, `jobs` the durable queue and the bulk handlers, `telemetry` the
 measurements, `api` the HTTP surface and the authorization, `shadow` a
 second engine run beside the first to compare their answers, `host` the
-binary.
+binary, `tools` the generators and the checks the pipeline runs.
 
 == License
 

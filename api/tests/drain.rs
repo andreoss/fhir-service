@@ -19,9 +19,10 @@ fn service() -> Service {
 
 fn answered(address: std::net::SocketAddr, path: &str) -> Option<String> {
     let mut socket = TcpStream::connect(address).ok()?;
-    socket.set_read_timeout(Some(Duration::from_secs(10))).ok()?;
-    let request =
-        format!("GET {path} HTTP/1.1\r\nhost: localhost\r\nconnection: close\r\n\r\n");
+    socket
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .ok()?;
+    let request = format!("GET {path} HTTP/1.1\r\nhost: localhost\r\nconnection: close\r\n\r\n");
     socket.write_all(request.as_bytes()).ok()?;
     socket.flush().ok()?;
     let mut raw = String::new();
@@ -54,7 +55,10 @@ async fn a_request_in_flight_is_answered_after_the_stop_is_asked_for() {
     );
 
     stop.send(()).expect("the stop is asked for");
-    serving.await.expect("the server task ended").expect("served");
+    serving
+        .await
+        .expect("the server task ended")
+        .expect("served");
 
     let after = tokio::task::spawn_blocking(move || answered(address, "/health"))
         .await

@@ -45,7 +45,10 @@ impl HistoryQuery {
         if self.before.is_some_and(|period| key >= period.low()) {
             return false;
         }
-        if self.at.is_some_and(|period| !period.contains(envelope.last_updated())) {
+        if self
+            .at
+            .is_some_and(|period| !period.contains(envelope.last_updated()))
+        {
             return false;
         }
         true

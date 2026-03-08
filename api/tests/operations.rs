@@ -76,6 +76,57 @@ async fn convert_data_renders_the_named_template() {
 }
 
 #[tokio::test]
+async fn convert_data_reads_a_ccda_document() {
+    let app = service();
+    let document = r#"<ClinicalDocument xmlns="urn:hl7-org:v3">
+  <recordTarget><patientRole>
+    <id root="urn:oid:2.16.840" extension="pt-9"/>
+    <patient>
+      <name><given>Ada</given><family>Stone</family></name>
+      <administrativeGenderCode code="female"/>
+      <birthTime value="19800506"/>
+    </patient>
+  </patientRole></recordTarget>
+</ClinicalDocument>"#;
+    let body = serde_json::to_vec(&serde_json::json!({
+        "resourceType": "Parameters",
+        "parameter": [
+            {"name": "inputData", "valueString": document},
+            {"name": "inputDataType", "valueString": "ccda"},
+            {"name": "templateCollectionReference", "valueString": fhir_core::convert::DEFAULT_COLLECTION},
+            {"name": "rootTemplate", "valueString": "ClinicalDocument"}
+        ]
+    }))
+    .unwrap();
+    let reply = request(&app, "POST", "/$convert-data", &body).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    let value = json(&reply);
+    assert_eq!(value["resourceType"], "Patient");
+    assert_eq!(value["name"][0]["family"], "Stone");
+    assert_eq!(value["name"][0]["given"][0], "Ada");
+    assert_eq!(value["identifier"][0]["value"], "pt-9");
+    assert_eq!(value["birthDate"], "1980-05-06");
+}
+
+#[tokio::test]
+async fn convert_data_refuses_a_body_that_is_no_ccda_document() {
+    let app = service();
+    let body = serde_json::to_vec(&serde_json::json!({
+        "resourceType": "Parameters",
+        "parameter": [
+            {"name": "inputData", "valueString": "<Bundle><entry/></Bundle>"},
+            {"name": "inputDataType", "valueString": "ccda"},
+            {"name": "templateCollectionReference", "valueString": fhir_core::convert::DEFAULT_COLLECTION},
+            {"name": "rootTemplate", "valueString": "ClinicalDocument"}
+        ]
+    }))
+    .unwrap();
+    let reply = request(&app, "POST", "/$convert-data", &body).await;
+    assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{}", reply.body);
+    assert!(reply.body.contains("ClinicalDocument"), "{}", reply.body);
+}
+
+#[tokio::test]
 async fn convert_data_persists_nothing() {
     let app = service();
     let body = conversion(
@@ -127,7 +178,7 @@ async fn an_unknown_template_and_input_form_are_refused() {
         "resourceType": "Parameters",
         "parameter": [
             {"name": "inputData", "valueString": "x"},
-            {"name": "inputDataType", "valueString": "ccda"},
+            {"name": "inputDataType", "valueString": "xml"},
             {"name": "templateCollectionReference", "valueString": fhir_core::convert::DEFAULT_COLLECTION},
             {"name": "rootTemplate", "valueString": "Patient"}
         ]
@@ -348,7 +399,100 @@ async fn everything_narrows_by_type_and_time() {
         &[],
     )
     .await;
-    assert_eq!(ids(&json(&till)), vec!["pt-e4".to_owned()]);
+    assert_eq!(
+        till.status,
+        StatusCode::BAD_REQUEST,
+        "_till names no parameter this operation publishes: {}",
+        till.body
+    );
+}
+
+#[tokio::test]
+async fn everything_narrows_by_the_clinical_window_the_operation_publishes() {
+    let app = stepping_service();
+    create(
+        &app,
+        serde_json::json!({"resourceType": "Patient", "id": "pt-e6"}),
+    )
+    .await;
+    create(&app, dated_observation("ob-old", "pt-e6", "2020-01-01")).await;
+    create(&app, dated_observation("ob-new", "pt-e6", "2024-06-01")).await;
+
+    let whole = request(&app, "GET", "/Patient/pt-e6/$everything", &[]).await;
+    assert_eq!(ids(&json(&whole)).len(), 3, "{}", whole.body);
+
+    let recent = request(
+        &app,
+        "GET",
+        "/Patient/pt-e6/$everything?start=2023-01-01",
+        &[],
+    )
+    .await;
+    let mut named = ids(&json(&recent));
+    named.sort();
+    assert_eq!(
+        named,
+        vec!["ob-new".to_owned(), "pt-e6".to_owned()],
+        "a type with no clinical date is gathered whatever the window says: {}",
+        recent.body
+    );
+
+    let early = request(
+        &app,
+        "GET",
+        "/Patient/pt-e6/$everything?end=2021-01-01",
+        &[],
+    )
+    .await;
+    let mut named = ids(&json(&early));
+    named.sort();
+    assert_eq!(
+        named,
+        vec!["ob-old".to_owned(), "pt-e6".to_owned()],
+        "{}",
+        early.body
+    );
+
+    let both = request(
+        &app,
+        "GET",
+        "/Patient/pt-e6/$everything?start=2019-01-01&end=2021-01-01",
+        &[],
+    )
+    .await;
+    let mut named = ids(&json(&both));
+    named.sort();
+    assert_eq!(
+        named,
+        vec!["ob-old".to_owned(), "pt-e6".to_owned()],
+        "{}",
+        both.body
+    );
+
+    let inverted = request(
+        &app,
+        "GET",
+        "/Patient/pt-e6/$everything?start=2024-01-01&end=2021-01-01",
+        &[],
+    )
+    .await;
+    assert_eq!(
+        inverted.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        inverted.body
+    );
+}
+
+fn dated_observation(id: &str, patient: &str, effective: &str) -> serde_json::Value {
+    serde_json::json!({
+        "resourceType": "Observation",
+        "id": id,
+        "status": "final",
+        "code": {"text": "probe"},
+        "effectiveDateTime": effective,
+        "subject": {"reference": format!("Patient/{patient}")}
+    })
 }
 
 #[tokio::test]

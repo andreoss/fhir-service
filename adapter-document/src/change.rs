@@ -1,9 +1,7 @@
 use crate::store::{faulted, DocumentStore};
 use async_trait::async_trait;
 use fhir_core::{Error, FhirInstant, ResourceEnvelope, ResourceId, ResourceType, VersionId};
-use fhir_store::{
-    ChangeFeed, ChangeKind, ChangePage, ChangeRecord, Continuation, FeedRange,
-};
+use fhir_store::{ChangeFeed, ChangeKind, ChangePage, ChangeRecord, Continuation, FeedRange};
 use mongodb::bson::{doc, Document};
 use mongodb::{ClientSession, Collection};
 
@@ -14,7 +12,9 @@ fn wrong(reason: &str) -> Error {
 }
 
 fn text_of(held: &Document, name: &str) -> Result<String, Error> {
-    held.get_str(name).map(str::to_owned).map_err(|_| wrong(name))
+    held.get_str(name)
+        .map(str::to_owned)
+        .map_err(|_| wrong(name))
 }
 
 fn kind_of(raw: &str) -> Result<ChangeKind, Error> {

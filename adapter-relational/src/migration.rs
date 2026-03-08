@@ -1,5 +1,5 @@
-use fhir_store::Namespace;
 use fhir_core::Error;
+use fhir_store::Namespace;
 use sqlx::{PgPool, Row};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -215,6 +215,27 @@ create index if not exists parameter_index_cover on parameter_index (url)
     include (backfilled, indexed, value_count, overflow, failures);
 ";
 
+
+
+
+
+
+const TYPED_KEYS: &str = "
+drop index if exists resource_version_key;
+drop index if exists resource_current_key;
+create unique index if not exists resource_typed_version_key
+    on resource (resource_type, resource_id, version_number);
+create unique index if not exists resource_typed_current_key
+    on resource (resource_type, resource_id) where is_current;
+";
+
+
+
+const TYPED_TUNING: &str = "
+create index if not exists resource_typed_lookup
+    on resource (resource_type, resource_id);
+";
+
 pub const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 1,
@@ -306,6 +327,18 @@ pub const MIGRATIONS: &[Migration] = &[
         required: false,
         statements: PARAMETER_INDEX_TUNING,
     },
+    Migration {
+        version: 16,
+        name: "typed resource keys",
+        required: true,
+        statements: TYPED_KEYS,
+    },
+    Migration {
+        version: 17,
+        name: "typed key tuning",
+        required: false,
+        statements: TYPED_TUNING,
+    },
 ];
 
 pub fn latest() -> u32 {
@@ -317,7 +350,11 @@ pub fn lowest_compatible() -> u32 {
 }
 
 fn highest_of(migrations: &[Migration]) -> u32 {
-    migrations.iter().map(|step| step.version).max().unwrap_or_default()
+    migrations
+        .iter()
+        .map(|step| step.version)
+        .max()
+        .unwrap_or_default()
 }
 
 fn lowest_of(migrations: &[Migration]) -> u32 {
@@ -515,8 +552,10 @@ impl Migrator {
 
     pub async fn latest(&self) -> Result<usize, Error> {
         let current = self.version().await?.unwrap_or_default();
-        let pending: Vec<&Migration> =
-            MIGRATIONS.iter().filter(|step| step.version > current).collect();
+        let pending: Vec<&Migration> = MIGRATIONS
+            .iter()
+            .filter(|step| step.version > current)
+            .collect();
         for step in &pending {
             self.run(step).await?;
         }
@@ -567,9 +606,24 @@ mod tests {
 
     fn synthetic() -> Vec<Migration> {
         vec![
-            Migration { version: 1, name: "one", required: true, statements: "" },
-            Migration { version: 2, name: "two", required: true, statements: "" },
-            Migration { version: 3, name: "three", required: false, statements: "" },
+            Migration {
+                version: 1,
+                name: "one",
+                required: true,
+                statements: "",
+            },
+            Migration {
+                version: 2,
+                name: "two",
+                required: true,
+                statements: "",
+            },
+            Migration {
+                version: 3,
+                name: "three",
+                required: false,
+                statements: "",
+            },
         ]
     }
 

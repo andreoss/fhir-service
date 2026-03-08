@@ -2,6 +2,8 @@
 name = "fhir-jobs"
 version = "0.1.0"
 edition = "2021"
+license = "GPL-3.0-only"
+publish = false
 
 [dependencies]
 async-trait = "0.1"
@@ -10,6 +12,7 @@ fhir-store = { path = "../store" }
 fhir-telemetry = { path = "../telemetry" }
 serde_json = "1"
 tokio = { version = "1", features = ["rt", "sync", "time"] }
+time = { version = "0.3", features = ["formatting", "parsing"] }
 
 [dev-dependencies]
 fhir-telemetry = { path = "../telemetry" }

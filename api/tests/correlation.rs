@@ -145,8 +145,9 @@ async fn a_job_resumed_after_a_dropped_lease_reports_under_the_request_identifie
         .iter()
         .filter(|line| line.contains(&format!("correlation={offered}")))
         .count();
-    assert_eq!(tied, 2, "the request and the resumed job both report: {lines:?}");
-    assert!(lines
-        .iter()
-        .all(|line| line.contains("operation=export")));
+    assert_eq!(
+        tied, 2,
+        "the request and the resumed job both report: {lines:?}"
+    );
+    assert!(lines.iter().all(|line| line.contains("operation=export")));
 }

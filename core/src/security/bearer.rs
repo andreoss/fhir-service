@@ -126,10 +126,19 @@ pub struct Claims {
     pub client: Option<String>,
     pub audience: Vec<String>,
     pub scopes: Vec<String>,
+    
+    
+    
+    pub roles: Vec<String>,
     pub patient: Option<String>,
     pub expires_at: Option<i64>,
     pub not_before: Option<i64>,
     pub issued_at: Option<i64>,
+    
+    
+    
+    
+    pub carried: std::collections::BTreeMap<String, String>,
 }
 
 pub fn decode(text: &str) -> Result<Vec<u8>, Error> {
@@ -140,6 +149,38 @@ pub fn decode(text: &str) -> Result<Vec<u8>, Error> {
 
 pub fn encode(bytes: &[u8]) -> String {
     URL_SAFE_NO_PAD.encode(bytes)
+}
+
+
+
+fn scalars(payload: &Value) -> std::collections::BTreeMap<String, String> {
+    let Some(held) = payload.as_object() else {
+        return std::collections::BTreeMap::new();
+    };
+    held.iter()
+        .filter_map(|(name, value)| match value {
+            Value::String(held) => Some((name.clone(), held.clone())),
+            Value::Number(held) => Some((name.clone(), held.to_string())),
+            Value::Bool(held) => Some((name.clone(), held.to_string())),
+            _ => None,
+        })
+        .collect()
+}
+
+
+
+
+fn roles(payload: &Value) -> Vec<String> {
+    let mut held = text_or_texts(payload.get("roles"));
+    held.extend(text_or_texts(payload.get("groups")));
+    held.extend(text_or_texts(
+        payload
+            .get("realm_access")
+            .and_then(|held| held.get("roles")),
+    ));
+    held.sort();
+    held.dedup();
+    held
 }
 
 fn text_or_texts(value: Option<&Value>) -> Vec<String> {
@@ -209,6 +250,16 @@ impl KeySet {
 
 impl Claims {
     pub fn verify(token: &str, keys: &KeySet, issuer: &str, now: i64) -> Result<Claims, Error> {
+        Claims::verify_for(token, keys, issuer, None, now)
+    }
+
+    pub fn verify_for(
+        token: &str,
+        keys: &KeySet,
+        issuer: &str,
+        audience: Option<&str>,
+        now: i64,
+    ) -> Result<Claims, Error> {
         let refused = |reason: &str| Error::Unauthenticated(reason.to_owned());
         let header =
             jsonwebtoken::decode_header(token).map_err(|_| refused("malformed token header"))?;
@@ -233,6 +284,11 @@ impl Claims {
         if claims.issuer != issuer {
             return Err(refused("token was issued elsewhere"));
         }
+        if let Some(expected) = audience {
+            if !claims.audience.iter().any(|named| named == expected) {
+                return Err(refused("token names another audience"));
+            }
+        }
         if claims.expires_at.is_some_and(|at| now >= at) {
             return Err(refused("token has expired"));
         }
@@ -252,12 +308,7 @@ impl Claims {
     }
 
     fn read(payload: &Value) -> Claims {
-        let text = |name: &str| {
-            payload
-                .get(name)
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-        };
+        let text = |name: &str| payload.get(name).and_then(Value::as_str).map(str::to_owned);
         let count = |name: &str| payload.get(name).and_then(Value::as_i64);
         Claims {
             issuer: text("iss").unwrap_or_default(),
@@ -272,10 +323,12 @@ impl Claims {
                         .collect::<Vec<String>>()
                 })
                 .unwrap_or_else(|| text_or_texts(payload.get("scp"))),
+            roles: roles(payload),
             patient: text("patient"),
             expires_at: count("exp"),
             not_before: count("nbf"),
             issued_at: count("iat"),
+            carried: scalars(payload),
         }
     }
 }
@@ -307,12 +360,75 @@ mod tests {
 
     #[test]
     fn the_encoding_round_trips_without_padding() {
-        assert_eq!(encode(b"any carnal pleasure."), "YW55IGNhcm5hbCBwbGVhc3VyZS4");
-        assert_eq!(decode("YW55IGNhcm5hbCBwbGVhc3VyZS4").unwrap(), b"any carnal pleasure.");
-        assert_eq!(decode(&encode(&[0xff, 0xfe, 0x00, 0x01])).unwrap(), vec![0xff, 0xfe, 0x00, 0x01]);
+        assert_eq!(
+            encode(b"any carnal pleasure."),
+            "YW55IGNhcm5hbCBwbGVhc3VyZS4"
+        );
+        assert_eq!(
+            decode("YW55IGNhcm5hbCBwbGVhc3VyZS4").unwrap(),
+            b"any carnal pleasure."
+        );
+        assert_eq!(
+            decode(&encode(&[0xff, 0xfe, 0x00, 0x01])).unwrap(),
+            vec![0xff, 0xfe, 0x00, 0x01]
+        );
         assert!(decode("not base64 ~").is_err());
         assert!(decode("A").is_err());
         assert!(decode("YW55IGNhcm5hbCBwbGVhc3VyZS4=").is_err());
+    }
+
+    const AUDIENCE: &str = "https://service.example.org";
+
+    #[test]
+    fn a_token_minted_for_another_audience_is_refused() {
+        let issuer = Issuer::generate("one");
+        let keys = KeySet::parse(&issuer.keys()).unwrap();
+        let error = Claims::verify_for(
+            &issuer.mint(&payload()),
+            &keys,
+            ISSUER,
+            Some("https://unrelated-service.example.org"),
+            1_000,
+        )
+        .unwrap_err();
+        assert!(format!("{error:?}").contains("audience"), "{error:?}");
+    }
+
+    #[test]
+    fn a_token_minted_for_this_audience_is_accepted() {
+        let issuer = Issuer::generate("one");
+        let keys = KeySet::parse(&issuer.keys()).unwrap();
+        let claims = Claims::verify_for(
+            &issuer.mint(&payload()),
+            &keys,
+            ISSUER,
+            Some(AUDIENCE),
+            1_000,
+        )
+        .unwrap();
+        assert_eq!(claims.audience, vec![AUDIENCE.to_owned()]);
+    }
+
+    #[test]
+    fn one_audience_among_several_is_enough() {
+        let issuer = Issuer::generate("one");
+        let keys = KeySet::parse(&issuer.keys()).unwrap();
+        let mut body = payload();
+        body["aud"] = json!(["https://elsewhere.example.org", AUDIENCE]);
+        let claims =
+            Claims::verify_for(&issuer.mint(&body), &keys, ISSUER, Some(AUDIENCE), 1_000).unwrap();
+        assert_eq!(claims.audience.len(), 2);
+    }
+
+    #[test]
+    fn a_token_carrying_no_audience_is_refused_when_one_is_expected() {
+        let issuer = Issuer::generate("one");
+        let keys = KeySet::parse(&issuer.keys()).unwrap();
+        let mut body = payload();
+        body.as_object_mut().unwrap().remove("aud");
+        let error = Claims::verify_for(&issuer.mint(&body), &keys, ISSUER, Some(AUDIENCE), 1_000)
+            .unwrap_err();
+        assert!(format!("{error:?}").contains("audience"), "{error:?}");
     }
 
     #[test]
@@ -323,8 +439,17 @@ mod tests {
         assert_eq!(claims.issuer, ISSUER);
         assert_eq!(claims.subject.as_deref(), Some("practitioner-1"));
         assert_eq!(claims.client.as_deref(), Some("app-1"));
-        assert_eq!(claims.audience, vec!["https://service.example.org".to_owned()]);
-        assert_eq!(claims.scopes, vec!["system/Patient.read".to_owned(), "system/Patient.write".to_owned()]);
+        assert_eq!(
+            claims.audience,
+            vec!["https://service.example.org".to_owned()]
+        );
+        assert_eq!(
+            claims.scopes,
+            vec![
+                "system/Patient.read".to_owned(),
+                "system/Patient.write".to_owned()
+            ]
+        );
         assert_eq!(claims.expires_at, Some(2_000));
     }
 

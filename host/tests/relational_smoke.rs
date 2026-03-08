@@ -781,10 +781,13 @@ fn a_search_names_the_members_of_a_collection_over_the_relational_backend() {
     let inverted = request(port, "GET", "/Patient?_in:not=Group/grp-1", &[], &[]);
     let by_list = request(port, "GET", "/Patient?_in=List/lst-1", &[], &[]);
     let absent = request(port, "GET", "/Patient?_in=Group/grp-2", &[], &[]);
-    let chained = request(port, "GET", "/Observation?subject._in=Group/grp-1", &[], &[]);
-    
-    
-    
+    let chained = request(
+        port,
+        "GET",
+        "/Observation?subject._in=Group/grp-1",
+        &[],
+        &[],
+    );
     let chained_by_id = request(port, "GET", "/Observation?subject._id=101", &[], &[]);
     stop(child);
     drop_schema(&namespace);
@@ -834,4 +837,196 @@ fn a_search_names_the_members_of_a_collection_over_the_relational_backend() {
         "{}",
         chained.body
     );
+}
+
+#[test]
+fn a_write_that_carries_a_provenance_records_it_over_the_relational_backend() {
+    let namespace = schema();
+    let (child, port) = spawn_server(&namespace);
+
+    let carried = serde_json::json!({
+        "resourceType": "Provenance",
+        "recorded": "2026-09-06T04:00:00Z",
+        "agent": [{"who": {"display": "a clinician"}}]
+    })
+    .to_string();
+
+    let created = request(
+        port,
+        "POST",
+        "/Patient",
+        &[
+            ("Content-Type", "application/fhir+json"),
+            ("X-Provenance", &carried),
+        ],
+        &patient("pv-1", "Stone", true),
+    );
+
+    let refused = request(
+        port,
+        "POST",
+        "/Patient",
+        &[
+            ("Content-Type", "application/fhir+json"),
+            ("X-Provenance", "{\"resourceType\":\"Patient\"}"),
+        ],
+        &patient("pv-2", "Stone", true),
+    );
+
+    let held = request(
+        port,
+        "GET",
+        "/Provenance",
+        &[("Accept", "application/fhir+json")],
+        b"",
+    );
+
+    let absent = request(
+        port,
+        "GET",
+        "/Patient/pv-2",
+        &[("Accept", "application/fhir+json")],
+        b"",
+    );
+
+    stop(child);
+    drop_schema(&namespace);
+
+    assert_eq!(created.status, 201, "{}", created.body);
+    assert_eq!(refused.status, 400, "{}", refused.body);
+    assert_eq!(absent.status, 404, "{}", absent.body);
+    assert_eq!(held.status, 200, "{}", held.body);
+    assert_eq!(json(&held.body)["total"], 1, "{}", held.body);
+    assert_eq!(
+        json(&held.body)["entry"][0]["resource"]["target"][0]["reference"],
+        "Patient/pv-1/_history/1",
+        "{}",
+        held.body
+    );
+}
+
+#[test]
+fn everything_narrows_by_the_clinical_window_over_the_relational_backend() {
+    let namespace = schema();
+    let (child, port) = spawn_server(&namespace);
+
+    let json_header = [("Content-Type", "application/fhir+json")];
+    request(
+        port,
+        "PUT",
+        "/Patient/ev-1",
+        &json_header,
+        &patient("ev-1", "Stone", true),
+    );
+    for (id, effective) in [("ev-old", "2020-01-01"), ("ev-new", "2024-06-01")] {
+        let body = serde_json::json!({
+            "resourceType": "Observation",
+            "id": id,
+            "status": "final",
+            "code": {"text": "probe"},
+            "effectiveDateTime": effective,
+            "subject": {"reference": "Patient/ev-1"}
+        })
+        .to_string()
+        .into_bytes();
+        request(
+            port,
+            "PUT",
+            &format!("/Observation/{id}"),
+            &json_header,
+            &body,
+        );
+    }
+
+    let whole = request(port, "GET", "/Patient/ev-1/$everything", &[], b"");
+    let recent = request(
+        port,
+        "GET",
+        "/Patient/ev-1/$everything?start=2023-01-01",
+        &[],
+        b"",
+    );
+    let refused = request(
+        port,
+        "GET",
+        "/Patient/ev-1/$everything?_till=2023-01-01",
+        &[],
+        b"",
+    );
+
+    stop(child);
+    drop_schema(&namespace);
+
+    assert_eq!(whole.status, 200, "{}", whole.body);
+    assert_eq!(json(&whole.body)["total"], 3, "{}", whole.body);
+    assert_eq!(recent.status, 200, "{}", recent.body);
+    assert_eq!(
+        json(&recent.body)["total"],
+        2,
+        "the patient carries no clinical date and is gathered regardless: {}",
+        recent.body
+    );
+    let named: Vec<String> = json(&recent.body)["entry"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["resource"]["id"].as_str().unwrap().to_owned())
+        .collect();
+    assert!(named.contains(&"ev-new".to_owned()), "{named:?}");
+    assert!(!named.contains(&"ev-old".to_owned()), "{named:?}");
+    assert_eq!(refused.status, 400, "{}", refused.body);
+}
+
+#[test]
+fn a_lenient_search_is_answered_over_the_relational_backend() {
+    let namespace = schema();
+    let (child, port) = spawn_server(&namespace);
+
+    request(
+        port,
+        "PUT",
+        "/Patient/ln-1",
+        &[("Content-Type", "application/fhir+json")],
+        &patient("ln-1", "Stone", true),
+    );
+
+    let strict = request(port, "GET", "/Patient?nonesuch=x", &[], b"");
+    let lenient = request(
+        port,
+        "GET",
+        "/Patient?nonesuch=x&active=true",
+        &[("Prefer", "handling=lenient")],
+        b"",
+    );
+    let posted = request(
+        port,
+        "POST",
+        "/Patient/_search",
+        &[("Content-Type", "application/x-www-form-urlencoded")],
+        b"active=true",
+    );
+
+    stop(child);
+    drop_schema(&namespace);
+
+    assert_eq!(strict.status, 400, "{}", strict.body);
+    assert_eq!(lenient.status, 200, "{}", lenient.body);
+    assert_eq!(json(&lenient.body)["total"], 1, "{}", lenient.body);
+    let told = json(&lenient.body)["entry"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|entry| entry["search"]["mode"] == "outcome");
+    assert!(
+        told,
+        "an outcome entry names what was ignored: {}",
+        lenient.body
+    );
+    let link = json(&lenient.body)["link"][0]["url"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(!link.contains("nonesuch"), "{link}");
+    assert_eq!(posted.status, 200, "{}", posted.body);
+    assert_eq!(json(&posted.body)["total"], 1, "{}", posted.body);
 }

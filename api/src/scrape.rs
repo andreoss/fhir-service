@@ -21,10 +21,15 @@ pub fn offered(headers: &HeaderMap) -> Option<&str> {
         .map(|held| held.trim())
 }
 
-pub async fn metrics(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, AppError> {
+pub async fn metrics(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
     match state.scrape.admits(offered(&headers)) {
         Admission::Unserved => Err(Error::NotFound.into()),
-        Admission::Refused => Err(Error::Forbidden("the measurements are restricted".to_owned()).into()),
+        Admission::Refused => {
+            Err(Error::Forbidden("the measurements are restricted".to_owned()).into())
+        }
         Admission::Granted => Ok((
             StatusCode::OK,
             [

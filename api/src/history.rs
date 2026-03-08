@@ -30,9 +30,7 @@ impl HistoryRequest {
             Some("true") => Summary::Metadata,
             Some("text") => Summary::Text,
             Some("count") => Summary::Count,
-            Some(other) => {
-                return Err(Error::UnsupportedParameter(format!("_summary {other:?}")))
-            }
+            Some(other) => return Err(Error::UnsupportedParameter(format!("_summary {other:?}"))),
         };
         let order = match param(raw, "_sort").as_deref() {
             None | Some("-_lastUpdated") => HistoryOrder::Newest,
@@ -84,7 +82,10 @@ pub fn history_bundle(
         }));
     }
     let mut bundle = Map::new();
-    bundle.insert("resourceType".to_owned(), Value::String("Bundle".to_owned()));
+    bundle.insert(
+        "resourceType".to_owned(),
+        Value::String("Bundle".to_owned()),
+    );
     bundle.insert("id".to_owned(), Value::String(Uuid::new_v4().to_string()));
     bundle.insert("type".to_owned(), Value::String("history".to_owned()));
     bundle.insert("total".to_owned(), Value::from(page.total));
@@ -107,12 +108,7 @@ fn period(raw: Option<&str>, name: &str) -> Result<Option<InstantPeriod>, Error>
     }
 }
 
-fn entry(
-    base: &str,
-    envelope: &ResourceEnvelope,
-    summary: Summary,
-    version: FhirVersion,
-) -> Value {
+fn entry(base: &str, envelope: &ResourceEnvelope, summary: Summary, version: FhirVersion) -> Value {
     let resource_type = envelope.resource_type().as_str().to_owned();
     let id = envelope.id().as_str().to_owned();
     let (method, url, status) = if envelope.is_deleted() {
@@ -123,11 +119,17 @@ fn entry(
         ("PUT", format!("{resource_type}/{id}"), "200")
     };
     let mut entry = Map::new();
-    entry.insert("fullUrl".to_owned(), Value::String(format!("{base}/{resource_type}/{id}")));
+    entry.insert(
+        "fullUrl".to_owned(),
+        Value::String(format!("{base}/{resource_type}/{id}")),
+    );
     if let Some(resource) = resource_of(envelope, summary) {
         entry.insert("resource".to_owned(), resource);
     }
-    entry.insert("request".to_owned(), serde_json::json!({ "method": method, "url": url }));
+    entry.insert(
+        "request".to_owned(),
+        serde_json::json!({ "method": method, "url": url }),
+    );
     if !matches!(version, FhirVersion::Stu3) {
         entry.insert(
             "response".to_owned(),
@@ -169,8 +171,19 @@ mod tests {
 
     #[test]
     fn count_is_capped_and_summary_count_drops_entries() {
-        assert_eq!(HistoryRequest::parse(Some("_count=5000")).unwrap().query.count, MAX_COUNT);
-        assert_eq!(HistoryRequest::parse(Some("_summary=count")).unwrap().query.count, 0);
+        assert_eq!(
+            HistoryRequest::parse(Some("_count=5000"))
+                .unwrap()
+                .query
+                .count,
+            MAX_COUNT
+        );
+        assert_eq!(
+            HistoryRequest::parse(Some("_summary=count"))
+                .unwrap()
+                .query
+                .count,
+            0
+        );
     }
-
 }

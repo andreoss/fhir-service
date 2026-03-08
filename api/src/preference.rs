@@ -38,6 +38,52 @@ fn asked(value: &axum::http::HeaderValue) -> Option<Return> {
     text.split(',').filter_map(Return::parse).next()
 }
 
+const HANDLING: &str = "handling";
+const STRICT: &str = "strict";
+const LENIENT: &str = "lenient";
+
+
+
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Handling {
+    Strict,
+    Lenient,
+}
+
+impl Handling {
+    pub fn asked_for(headers: &HeaderMap) -> Result<Handling, fhir_core::Error> {
+        let mut held = Handling::Strict;
+        for value in headers.get_all(PREFER).iter() {
+            let Ok(text) = value.to_str() else {
+                continue;
+            };
+            for token in text.split(',').flat_map(|part| part.split(';')) {
+                let Some((name, wanted)) = token.split_once('=') else {
+                    continue;
+                };
+                if !name.trim().eq_ignore_ascii_case(HANDLING) {
+                    continue;
+                }
+                held = match wanted.trim().to_ascii_lowercase().as_str() {
+                    STRICT => Handling::Strict,
+                    LENIENT => Handling::Lenient,
+                    other => {
+                        return Err(fhir_core::Error::InvalidParameter(format!(
+                            "Prefer: handling={other:?} names neither strict nor lenient"
+                        )))
+                    }
+                };
+            }
+        }
+        Ok(held)
+    }
+
+    pub fn is_lenient(&self) -> bool {
+        matches!(self, Handling::Lenient)
+    }
+}
+
 pub fn respond_async(headers: &HeaderMap) -> bool {
     headers
         .get_all(PREFER)

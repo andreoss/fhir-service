@@ -155,8 +155,10 @@ mod tests {
             actor: "practitioner-1".to_owned(),
             client: Some("app-1".to_owned()),
             scopes: Vec::new(),
+            roles: Vec::new(),
             patient: None,
             secured: true,
+            claims: std::collections::BTreeMap::new(),
         };
         assert_eq!(client_of(&access, &HeaderMap::new()), "app-1");
         let without_client = Access {

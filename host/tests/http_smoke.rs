@@ -18,7 +18,10 @@ fn header<'a>(reply: &'a Reply, name: &str) -> &'a str {
 
 fn issue_code(body: &str) -> String {
     let value: serde_json::Value = serde_json::from_str(body).expect("body must be json");
-    value["issue"][0]["code"].as_str().unwrap_or_default().to_owned()
+    value["issue"][0]["code"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned()
 }
 
 fn patient(id: &str, active: bool) -> Vec<u8> {
@@ -61,7 +64,11 @@ fn full_interaction_chain_over_http() {
     assert_eq!(header(&created, "etag"), "W/\"1\"");
     assert!(header(&created, "location").contains("/Patient/pt-1/_history/1"));
     assert!(header(&created, "content-location").contains("/Patient/pt-1/_history/1"));
-    assert!(header(&created, "last-modified").ends_with(" GMT"), "last-modified was {}", header(&created, "last-modified"));
+    assert!(
+        header(&created, "last-modified").ends_with(" GMT"),
+        "last-modified was {}",
+        header(&created, "last-modified")
+    );
     let value: serde_json::Value = serde_json::from_str(&created.body).unwrap();
     assert_eq!(value["meta"]["versionId"], "1");
     assert_eq!(value["active"], true);
@@ -71,7 +78,13 @@ fn full_interaction_chain_over_http() {
     assert_eq!(header(&read, "etag"), "W/\"1\"");
     assert_eq!(header(&read, "content-type"), "application/fhir+json");
 
-    let updated = request(port, "PUT", "/Patient/pt-1", &[("if-match", "W/\"1\"")], &patient("pt-1", false));
+    let updated = request(
+        port,
+        "PUT",
+        "/Patient/pt-1",
+        &[("if-match", "W/\"1\"")],
+        &patient("pt-1", false),
+    );
     assert_eq!(updated.status, 200, "update failed: {}", updated.body);
     assert_eq!(header(&updated, "etag"), "W/\"2\"");
     assert!(header(&updated, "content-location").contains("/Patient/pt-1/_history/2"));
@@ -91,14 +104,30 @@ fn full_interaction_chain_over_http() {
 fn stale_if_match_is_precondition_failed_with_outcome() {
     let (child, port) = spawn_server();
     request(port, "POST", "/Patient", &[], &patient("pt-2", true));
-    request(port, "PUT", "/Patient/pt-2", &[("if-match", "W/\"1\"")], &patient("pt-2", false));
-    let reply = request(port, "PUT", "/Patient/pt-2", &[("if-match", "W/\"1\"")], &patient("pt-2", true));
+    request(
+        port,
+        "PUT",
+        "/Patient/pt-2",
+        &[("if-match", "W/\"1\"")],
+        &patient("pt-2", false),
+    );
+    let reply = request(
+        port,
+        "PUT",
+        "/Patient/pt-2",
+        &[("if-match", "W/\"1\"")],
+        &patient("pt-2", true),
+    );
     let current = request(port, "GET", "/Patient/pt-2", &[], &[]);
     stop(child);
     assert_eq!(reply.status, 412);
     assert_eq!(issue_code(&reply.body), "conflict");
     assert!(reply.body.contains("OperationOutcome"));
-    assert_eq!(header(&current, "etag"), "W/\"2\"", "no version may be written");
+    assert_eq!(
+        header(&current, "etag"),
+        "W/\"2\"",
+        "no version may be written"
+    );
 }
 
 #[test]
@@ -115,9 +144,19 @@ fn duplicate_create_is_conflict_with_outcome() {
 fn noop_update_never_advances_the_version() {
     let (child, port) = spawn_server();
     request(port, "POST", "/Patient", &[], &patient("pt-4", true));
-    let reply = request(port, "PUT", "/Patient/pt-4", &[("if-match", "W/\"1\"")], &patient("pt-4", true));
+    let reply = request(
+        port,
+        "PUT",
+        "/Patient/pt-4",
+        &[("if-match", "W/\"1\"")],
+        &patient("pt-4", true),
+    );
     assert_eq!(reply.status, 200);
-    assert_eq!(header(&reply, "etag"), "W/\"1\"", "no-op update must not advance the version");
+    assert_eq!(
+        header(&reply, "etag"),
+        "W/\"1\"",
+        "no-op update must not advance the version"
+    );
     stop(child);
 }
 
@@ -169,7 +208,13 @@ fn body_type_mismatch_is_rejected() {
     assert_eq!(reply.status, 201);
     let mismatch = request(port, "GET", "/Observation/pt-6", &[], &[]);
     assert_eq!(mismatch.status, 404);
-    let bad_create = request(port, "POST", "/Patient", &[], b"{\"resourceType\":\"Observation\",\"id\":\"o-1\"}");
+    let bad_create = request(
+        port,
+        "POST",
+        "/Patient",
+        &[],
+        b"{\"resourceType\":\"Observation\",\"id\":\"o-1\"}",
+    );
     stop(child);
     assert_eq!(bad_create.status, 400);
     assert_eq!(issue_code(&bad_create.body), "invalid");
@@ -199,7 +244,11 @@ fn conditional_create_returns_the_existing_match() {
     );
     let absent = request(port, "GET", "/Patient/pt-c2", &[], &[]);
     stop(child);
-    assert_eq!(reply.status, 200, "conditional create failed: {}", reply.body);
+    assert_eq!(
+        reply.status, 200,
+        "conditional create failed: {}",
+        reply.body
+    );
     let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
     assert_eq!(value["id"], "pt-c1");
     assert_eq!(absent.status, 404);
@@ -208,12 +257,32 @@ fn conditional_create_returns_the_existing_match() {
 #[test]
 fn conditional_update_creates_then_updates_the_match() {
     let (child, port) = spawn_server();
-    let created = request(port, "PUT", "/Patient?_id=pt-c3", &[], &patient("pt-c3", true));
-    let updated = request(port, "PUT", "/Patient?_id=pt-c3", &[], &patient("pt-c3", false));
+    let created = request(
+        port,
+        "PUT",
+        "/Patient?_id=pt-c3",
+        &[],
+        &patient("pt-c3", true),
+    );
+    let updated = request(
+        port,
+        "PUT",
+        "/Patient?_id=pt-c3",
+        &[],
+        &patient("pt-c3", false),
+    );
     stop(child);
-    assert_eq!(created.status, 201, "conditional create failed: {}", created.body);
+    assert_eq!(
+        created.status, 201,
+        "conditional create failed: {}",
+        created.body
+    );
     assert_eq!(header(&created, "etag"), "W/\"1\"");
-    assert_eq!(updated.status, 200, "conditional update failed: {}", updated.body);
+    assert_eq!(
+        updated.status, 200,
+        "conditional update failed: {}",
+        updated.body
+    );
     assert_eq!(header(&updated, "etag"), "W/\"2\"");
 }
 
@@ -222,7 +291,13 @@ fn conditional_update_with_many_matches_is_precondition_failed() {
     let (child, port) = spawn_server();
     request(port, "POST", "/Patient", &[], &patient("pt-c4", true));
     request(port, "POST", "/Patient", &[], &patient("pt-c5", true));
-    let reply = request(port, "PUT", "/Patient?active=true", &[], &patient("pt-c4", false));
+    let reply = request(
+        port,
+        "PUT",
+        "/Patient?active=true",
+        &[],
+        &patient("pt-c4", false),
+    );
     stop(child);
     assert_eq!(reply.status, 412, "body was {}", reply.body);
     assert_eq!(issue_code(&reply.body), "multiple-matches");
@@ -269,9 +344,17 @@ fn conditional_delete_removes_the_single_match() {
     let read = request(port, "GET", "/Patient/pt-d3", &[], &[]);
     let again = request(port, "DELETE", "/Patient?_id=pt-none", &[], &[]);
     stop(child);
-    assert_eq!(deleted.status, 204, "conditional delete failed: {}", deleted.body);
+    assert_eq!(
+        deleted.status, 204,
+        "conditional delete failed: {}",
+        deleted.body
+    );
     assert_eq!(read.status, 410);
-    assert_eq!(again.status, 204, "no match is not a failure: {}", again.body);
+    assert_eq!(
+        again.status, 204,
+        "no match is not a failure: {}",
+        again.body
+    );
 }
 
 #[test]
@@ -299,7 +382,10 @@ fn json_patch_updates_the_resource_over_http() {
     assert_eq!(rejected.status, 400);
     assert_eq!(issue_code(&rejected.body), "invalid");
     let value: serde_json::Value = serde_json::from_str(&read.body).unwrap();
-    assert_eq!(value["meta"]["versionId"], "2", "a rejected patch must write nothing");
+    assert_eq!(
+        value["meta"]["versionId"], "2",
+        "a rejected patch must write nothing"
+    );
     assert_eq!(value["active"], false);
 }
 
@@ -311,9 +397,19 @@ fn path_patch_updates_the_resource_over_http() {
         {"name":"type","valueCode":"replace"},
         {"name":"path","valueString":"Patient.active"},
         {"name":"value","valueBoolean":false}]}]}"#;
-    let patched = request(port, "PATCH", "/Patient?_id=pt-p2", &[("Content-Type", "application/fhir+json")], body);
+    let patched = request(
+        port,
+        "PATCH",
+        "/Patient?_id=pt-p2",
+        &[("Content-Type", "application/fhir+json")],
+        body,
+    );
     stop(child);
-    assert_eq!(patched.status, 200, "conditional patch failed: {}", patched.body);
+    assert_eq!(
+        patched.status, 200,
+        "conditional patch failed: {}",
+        patched.body
+    );
     let value: serde_json::Value = serde_json::from_str(&patched.body).unwrap();
     assert_eq!(value["active"], false);
 }
@@ -327,12 +423,22 @@ fn history_over_http_pages_and_orders_versions() {
     let instance = request(port, "GET", "/Patient/pt-h1/_history", &[], &[]);
     let typed = request(port, "GET", "/Patient/_history?_count=2", &[], &[]);
     let system = request(port, "GET", "/_history?_summary=count", &[], &[]);
-    let oldest = request(port, "GET", "/Patient/pt-h1/_history?_sort=_lastUpdated", &[], &[]);
+    let oldest = request(
+        port,
+        "GET",
+        "/Patient/pt-h1/_history?_sort=_lastUpdated",
+        &[],
+        &[],
+    );
     let unknown = request(port, "GET", "/Patient/pt-none/_history", &[], &[]);
     let rejected = request(port, "GET", "/_history?_sort=name", &[], &[]);
     stop(child);
 
-    assert_eq!(instance.status, 200, "instance history failed: {}", instance.body);
+    assert_eq!(
+        instance.status, 200,
+        "instance history failed: {}",
+        instance.body
+    );
     assert_eq!(header(&instance, "content-type"), "application/fhir+json");
     let value: serde_json::Value = serde_json::from_str(&instance.body).unwrap();
     assert_eq!(value["resourceType"], "Bundle");
@@ -372,7 +478,12 @@ fn ids(body: &str) -> Vec<String> {
         .map(|items| {
             items
                 .iter()
-                .map(|item| item["resource"]["id"].as_str().unwrap_or_default().to_owned())
+                .map(|item| {
+                    item["resource"]["id"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_owned()
+                })
                 .collect()
         })
         .unwrap_or_default()
@@ -402,14 +513,26 @@ fn next_token(body: &str) -> String {
 fn live_search_selects_pages_and_reports_totals() {
     let (child, port) = spawn_server();
     for index in 1..=5 {
-        request(port, "POST", "/Patient", &[], &patient(&format!("pt-k{index}"), index % 2 == 1));
+        request(
+            port,
+            "POST",
+            "/Patient",
+            &[],
+            &patient(&format!("pt-k{index}"), index % 2 == 1),
+        );
     }
     let all = request(port, "GET", "/Patient", &[], &[]);
     let by_id = request(port, "GET", "/Patient?_id=pt-k3", &[], &[]);
     let active = request(port, "GET", "/Patient?active=true", &[], &[]);
     let first = request(port, "GET", "/Patient?_count=2&_sort=_id", &[], &[]);
     let token = next_token(&first.body);
-    let second = request(port, "GET", &format!("/Patient?_count=2&_sort=_id&ct={token}"), &[], &[]);
+    let second = request(
+        port,
+        "GET",
+        &format!("/Patient?_count=2&_sort=_id&ct={token}"),
+        &[],
+        &[],
+    );
     let counted = request(port, "GET", "/Patient?_summary=count", &[], &[]);
     let untotalled = request(port, "GET", "/Patient?_total=none", &[], &[]);
     stop(child);
@@ -419,9 +542,15 @@ fn live_search_selects_pages_and_reports_totals() {
     assert_eq!(total(&all.body), 5);
     assert_eq!(ids(&by_id.body), vec!["pt-k3".to_owned()]);
     assert_eq!(total(&active.body), 3);
-    assert_eq!(ids(&first.body), vec!["pt-k1".to_owned(), "pt-k2".to_owned()]);
+    assert_eq!(
+        ids(&first.body),
+        vec!["pt-k1".to_owned(), "pt-k2".to_owned()]
+    );
     assert!(!token.is_empty(), "no continuation token was offered");
-    assert_eq!(ids(&second.body), vec!["pt-k3".to_owned(), "pt-k4".to_owned()]);
+    assert_eq!(
+        ids(&second.body),
+        vec!["pt-k3".to_owned(), "pt-k4".to_owned()]
+    );
     assert_eq!(total(&counted.body), 5);
     assert!(ids(&counted.body).is_empty());
     assert!(total(&untotalled.body).is_null());
@@ -432,7 +561,13 @@ fn live_search_matches_typed_values_and_rejects_the_unsupported() {
     let (child, port) = spawn_server();
     let observation = br#"{"resourceType":"Observation","id":"ob-k1","status":"final","code":{"text":"probe"},"code":{"coding":[{"system":"http://loinc.org","code":"8867-4"}]},"subject":{"reference":"Patient/pt-k1"},"effectiveDateTime":"2026-09-06T04:00:00Z","valueQuantity":{"value":72.5,"system":"http://unitsofmeasure.org","code":"/min"}}"#;
     request(port, "POST", "/Observation", &[], observation);
-    let by_code = request(port, "GET", "/Observation?code=http%3A%2F%2Floinc.org%7C8867-4", &[], &[]);
+    let by_code = request(
+        port,
+        "GET",
+        "/Observation?code=http%3A%2F%2Floinc.org%7C8867-4",
+        &[],
+        &[],
+    );
     let by_reference = request(port, "GET", "/Observation?patient=pt-k1", &[], &[]);
     let by_quantity = request(port, "GET", "/Observation?value-quantity=gt70", &[], &[]);
     let below = request(port, "GET", "/Observation?value-quantity=lt70", &[], &[]);
@@ -461,7 +596,12 @@ fn modes(body: &str, mode: &str) -> Vec<String> {
             items
                 .iter()
                 .filter(|item| item["search"]["mode"] == mode)
-                .map(|item| item["resource"]["id"].as_str().unwrap_or_default().to_owned())
+                .map(|item| {
+                    item["resource"]["id"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_owned()
+                })
                 .collect()
         })
         .unwrap_or_default()
@@ -470,7 +610,8 @@ fn modes(body: &str, mode: &str) -> Vec<String> {
 fn seed_advanced(port: u16) {
     let clinic = br#"{"resourceType":"Organization","id":"org-a1","name":"Mercy","active":true}"#;
     let ann = br#"{"resourceType":"Patient","id":"pt-a1","gender":"female","name":[{"family":"Sorensen"}],"managingOrganization":{"reference":"Organization/org-a1"},"identifier":[{"type":{"coding":[{"system":"urn:t","code":"MR"}]},"system":"urn:mrn","value":"12345"}]}"#;
-    let bo = br#"{"resourceType":"Patient","id":"pt-a2","gender":"male","name":[{"family":"Okonkwo"}]}"#;
+    let bo =
+        br#"{"resourceType":"Patient","id":"pt-a2","gender":"male","name":[{"family":"Okonkwo"}]}"#;
     let warm = br#"{"resourceType":"Observation","id":"ob-a1","status":"final","code":{"text":"probe"},"code":{"text":"Body Temperature","coding":[{"system":"urn:s","code":"vital.temperature"}]},"subject":{"reference":"Patient/pt-a1"}}"#;
     let survey = br#"{"resourceType":"Observation","id":"ob-a2","status":"registered","code":{"text":"probe"},"code":{"coding":[{"system":"urn:s","code":"survey"}]},"subject":{"reference":"Patient/pt-a2"}}"#;
     let system = br#"{"resourceType":"CodeSystem","id":"cs-a1","url":"urn:s","status":"active","content":"complete","hierarchyMeaning":"is-a","concept":[{"code":"vital","concept":[{"code":"vital.temperature"}]}]}"#;
@@ -493,13 +634,49 @@ fn live_search_applies_every_modifier() {
     let missing = request(port, "GET", "/Patient?identifier:missing=true", &[], &[]);
     let not = request(port, "GET", "/Patient?gender:not=male", &[], &[]);
     let text = request(port, "GET", "/Observation?code:text=temperature", &[], &[]);
-    let inside = request(port, "GET", "/Observation?code:in=http%3A%2F%2Fx%2Fvitals", &[], &[]);
-    let outside = request(port, "GET", "/Observation?code:not-in=http%3A%2F%2Fx%2Fvitals", &[], &[]);
-    let below = request(port, "GET", "/Observation?code:below=urn:s%7Cvital", &[], &[]);
-    let above = request(port, "GET", "/Observation?code:above=urn:s%7Cvital.temperature", &[], &[]);
-    let undefined = request(port, "GET", "/Observation?code:below=urn:s%7Cnonesuch", &[], &[]);
+    let inside = request(
+        port,
+        "GET",
+        "/Observation?code:in=http%3A%2F%2Fx%2Fvitals",
+        &[],
+        &[],
+    );
+    let outside = request(
+        port,
+        "GET",
+        "/Observation?code:not-in=http%3A%2F%2Fx%2Fvitals",
+        &[],
+        &[],
+    );
+    let below = request(
+        port,
+        "GET",
+        "/Observation?code:below=urn:s%7Cvital",
+        &[],
+        &[],
+    );
+    let above = request(
+        port,
+        "GET",
+        "/Observation?code:above=urn:s%7Cvital.temperature",
+        &[],
+        &[],
+    );
+    let undefined = request(
+        port,
+        "GET",
+        "/Observation?code:below=urn:s%7Cnonesuch",
+        &[],
+        &[],
+    );
     let typed = request(port, "GET", "/Observation?subject:Patient=pt-a1", &[], &[]);
-    let identified = request(port, "GET", "/Patient?identifier:of-type=urn:t%7CMR%7C12345", &[], &[]);
+    let identified = request(
+        port,
+        "GET",
+        "/Patient?identifier:of-type=urn:t%7CMR%7C12345",
+        &[],
+        &[],
+    );
     let forbidden = request(port, "GET", "/Patient?gender:exact=male", &[], &[]);
     stop(child);
 
@@ -525,9 +702,27 @@ fn live_search_chains_includes_and_compartments() {
     let (child, port) = spawn_server();
     seed_advanced(port);
     let chained = request(port, "GET", "/Observation?patient.gender=female", &[], &[]);
-    let deep = request(port, "GET", "/Observation?patient.organization.name=Mercy", &[], &[]);
-    let reverse = request(port, "GET", "/Patient?_has:Observation:patient:status=final", &[], &[]);
-    let included = request(port, "GET", "/Observation?_id=ob-a1&_include=Observation:subject", &[], &[]);
+    let deep = request(
+        port,
+        "GET",
+        "/Observation?patient.organization.name=Mercy",
+        &[],
+        &[],
+    );
+    let reverse = request(
+        port,
+        "GET",
+        "/Patient?_has:Observation:patient:status=final",
+        &[],
+        &[],
+    );
+    let included = request(
+        port,
+        "GET",
+        "/Observation?_id=ob-a1&_include=Observation:subject",
+        &[],
+        &[],
+    );
     let iterated = request(
         port,
         "GET",
@@ -535,7 +730,13 @@ fn live_search_chains_includes_and_compartments() {
         &[],
         &[],
     );
-    let reverse_include = request(port, "GET", "/Patient?_id=pt-a1&_revinclude=Observation:patient", &[], &[]);
+    let reverse_include = request(
+        port,
+        "GET",
+        "/Patient?_id=pt-a1&_revinclude=Observation:patient",
+        &[],
+        &[],
+    );
     let compartment = request(port, "GET", "/Patient/pt-a1/Observation", &[], &[]);
     let wildcard = request(port, "GET", "/Patient/pt-a1/*", &[], &[]);
     let definitions = request(port, "GET", "/CompartmentDefinition", &[], &[]);
@@ -550,7 +751,10 @@ fn live_search_chains_includes_and_compartments() {
     let mut iterated_ids = modes(&iterated.body, "include");
     iterated_ids.sort();
     assert_eq!(iterated_ids, vec!["org-a1".to_owned(), "pt-a1".to_owned()]);
-    assert_eq!(modes(&reverse_include.body, "include"), vec!["ob-a1".to_owned()]);
+    assert_eq!(
+        modes(&reverse_include.body, "include"),
+        vec!["ob-a1".to_owned()]
+    );
     assert_eq!(modes(&compartment.body, "match"), vec!["ob-a1".to_owned()]);
     let mut gathered = modes(&wildcard.body, "match");
     gathered.sort();
@@ -567,10 +771,32 @@ fn live_continuation_tokens_are_opaque_and_scoped() {
     seed_advanced(port);
     let first = request(port, "GET", "/Patient?_count=1&_sort=_id", &[], &[]);
     let token = next_token(&first.body);
-    let second = request(port, "GET", &format!("/Patient?_count=1&_sort=_id&ct={token}"), &[], &[]);
-    let elsewhere = request(port, "GET", &format!("/Patient?_count=1&_sort=-_id&ct={token}"), &[], &[]);
-    let edited = format!("{}{}", &token[..token.len() - 1], if token.ends_with('0') { '1' } else { '0' });
-    let tampered = request(port, "GET", &format!("/Patient?_count=1&_sort=_id&ct={edited}"), &[], &[]);
+    let second = request(
+        port,
+        "GET",
+        &format!("/Patient?_count=1&_sort=_id&ct={token}"),
+        &[],
+        &[],
+    );
+    let elsewhere = request(
+        port,
+        "GET",
+        &format!("/Patient?_count=1&_sort=-_id&ct={token}"),
+        &[],
+        &[],
+    );
+    let edited = format!(
+        "{}{}",
+        &token[..token.len() - 1],
+        if token.ends_with('0') { '1' } else { '0' }
+    );
+    let tampered = request(
+        port,
+        "GET",
+        &format!("/Patient?_count=1&_sort=_id&ct={edited}"),
+        &[],
+        &[],
+    );
     stop(child);
 
     assert_eq!(token.len(), 32);
@@ -602,7 +828,8 @@ fn live_a_shared_key_keeps_a_token_across_a_restart() {
     );
     stop(second_child);
 
-    let (other_child, other_port) = spawn_with(&[("FHIR_CONTINUATION_KEY", "another-key-entirely")]);
+    let (other_child, other_port) =
+        spawn_with(&[("FHIR_CONTINUATION_KEY", "another-key-entirely")]);
     seed_advanced(other_port);
     let refused = request(
         other_port,
@@ -626,7 +853,13 @@ fn live_the_entry_limit_follows_the_connection_count() {
         {"request":{"method":"GET","url":"Patient/absent-two"}},
         {"request":{"method":"GET","url":"Patient/absent-three"}}
     ]}"#;
-    let reply = request(port, "POST", "/", &[("Content-Type", "application/fhir+json")], bundle);
+    let reply = request(
+        port,
+        "POST",
+        "/",
+        &[("Content-Type", "application/fhir+json")],
+        bundle,
+    );
     stop(child);
 
     assert_eq!(reply.status, 200, "{}", reply.body);
@@ -657,7 +890,11 @@ fn live_status(body: &str, url: &str) -> String {
                     parts
                         .iter()
                         .find(|part| part["name"] == name)
-                        .and_then(|part| part["valueCode"].as_str().or_else(|| part["valueUri"].as_str()))
+                        .and_then(|part| {
+                            part["valueCode"]
+                                .as_str()
+                                .or_else(|| part["valueUri"].as_str())
+                        })
                         .map(str::to_owned)
                 };
                 (read("url").as_deref() == Some(url)).then(|| read("status"))?
@@ -671,13 +908,25 @@ fn live_custom_parameters_register_reindex_and_answer() {
     let (child, port) = spawn_server();
     request(port, "POST", "/Patient", &[], &live_banded("pt-x1", "high"));
     request(port, "POST", "/Patient", &[], &live_banded("pt-x2", "low"));
-    let created = request(port, "POST", "/SearchParameter", &[], &live_definition("sp-x1", "risk-band"));
+    let created = request(
+        port,
+        "POST",
+        "/SearchParameter",
+        &[],
+        &live_definition("sp-x1", "risk-band"),
+    );
     let awaiting = request(port, "GET", "/Patient?risk-band=high", &[], &[]);
     let supported = request(port, "GET", "/SearchParameter/$status", &[], &[]);
     let reindexed = request(port, "POST", "/SearchParameter/$reindex", &[], &[]);
     let searchable = request(port, "GET", "/SearchParameter/$status", &[], &[]);
     let found = request(port, "GET", "/Patient?risk-band=high", &[], &[]);
-    let disabled = request(port, "PUT", "/SearchParameter/$status?url=urn:p:risk-band&status=disabled", &[], &[]);
+    let disabled = request(
+        port,
+        "PUT",
+        "/SearchParameter/$status?url=urn:p:risk-band&status=disabled",
+        &[],
+        &[],
+    );
     let refused = request(port, "GET", "/Patient?risk-band=high", &[], &[]);
     let unknown = request(port, "GET", "/Patient?nonesuch", &[], &[]);
     let empty = request(port, "GET", "/Patient?_id=", &[], &[]);
@@ -688,10 +937,16 @@ fn live_custom_parameters_register_reindex_and_answer() {
     assert_eq!(issue_code(&awaiting.body), "not-supported");
     assert_eq!(live_status(&supported.body, "urn:p:risk-band"), "supported");
     assert_eq!(reindexed.status, 200, "{}", reindexed.body);
-    assert_eq!(live_status(&searchable.body, "urn:p:risk-band"), "searchable");
+    assert_eq!(
+        live_status(&searchable.body, "urn:p:risk-band"),
+        "searchable"
+    );
     assert_eq!(found.status, 200, "{}", found.body);
     assert_eq!(ids(&found.body), vec!["pt-x1".to_owned()]);
-    assert_eq!(live_status(&disabled.body, "urn:p:risk-band"), "pending-disable");
+    assert_eq!(
+        live_status(&disabled.body, "urn:p:risk-band"),
+        "pending-disable"
+    );
     assert_eq!(refused.status, 400);
     assert_eq!(unknown.status, 400);
     assert_eq!(empty.status, 400);
@@ -711,14 +966,32 @@ fn live_search_is_confined_to_the_granted_scope() {
     request(port, "POST", "/Observation", &[], theirs);
     let scope = [("X-Scope", "compartment=Patient/pt-g1")];
     let confined = request(port, "GET", "/Observation", &scope, &[]);
-    let refused = request(port, "GET", "/Observation", &[("X-Scope", "types=Patient")], &[]);
+    let refused = request(
+        port,
+        "GET",
+        "/Observation",
+        &[("X-Scope", "types=Patient")],
+        &[],
+    );
     let long = "u".repeat(600);
     let tagged = format!(
         r#"{{"resourceType":"Patient","id":"pt-g3","identifier":[{{"system":"urn:mrn","value":"{long}-a"}}]}}"#
     );
     request(port, "POST", "/Patient", &[], tagged.as_bytes());
-    let exact = request(port, "GET", &format!("/Patient?identifier=urn:mrn|{long}-a"), &[], &[]);
-    let miss = request(port, "GET", &format!("/Patient?identifier=urn:mrn|{long}-b"), &[], &[]);
+    let exact = request(
+        port,
+        "GET",
+        &format!("/Patient?identifier=urn:mrn|{long}-a"),
+        &[],
+        &[],
+    );
+    let miss = request(
+        port,
+        "GET",
+        &format!("/Patient?identifier=urn:mrn|{long}-b"),
+        &[],
+        &[],
+    );
     stop(child);
 
     assert_eq!(confined.status, 200, "{}", confined.body);
@@ -736,9 +1009,9 @@ fn bundle_body(kind: &str, entries: &str) -> Vec<u8> {
 fn entry(method: &str, url: &str, resource: &str) -> String {
     match resource.is_empty() {
         true => format!(r#"{{"request":{{"method":"{method}","url":"{url}"}}}}"#),
-        false => format!(
-            r#"{{"resource":{resource},"request":{{"method":"{method}","url":"{url}"}}}}"#
-        ),
+        false => {
+            format!(r#"{{"resource":{resource},"request":{{"method":"{method}","url":"{url}"}}}}"#)
+        }
     }
 }
 
@@ -756,8 +1029,16 @@ fn bundles_are_processed_over_http() {
             "transaction",
             &format!(
                 "{},{}",
-                entry("POST", "Patient", r#"{"resourceType":"Patient","id":"bn-1","active":true}"#),
-                entry("POST", "Patient", r#"{"resourceType":"Patient","id":"bn-2","active":false}"#)
+                entry(
+                    "POST",
+                    "Patient",
+                    r#"{"resourceType":"Patient","id":"bn-1","active":true}"#
+                ),
+                entry(
+                    "POST",
+                    "Patient",
+                    r#"{"resourceType":"Patient","id":"bn-2","active":false}"#
+                )
             ),
         ),
     );
@@ -776,8 +1057,16 @@ fn bundles_are_processed_over_http() {
             "transaction",
             &format!(
                 "{},{}",
-                entry("POST", "Patient", r#"{"resourceType":"Patient","id":"bn-3","active":true}"#),
-                entry("POST", "Nonesuch", r#"{"resourceType":"Nonesuch","id":"bn-4"}"#)
+                entry(
+                    "POST",
+                    "Patient",
+                    r#"{"resourceType":"Patient","id":"bn-3","active":true}"#
+                ),
+                entry(
+                    "POST",
+                    "Nonesuch",
+                    r#"{"resourceType":"Nonesuch","id":"bn-4"}"#
+                )
             ),
         ),
     );
@@ -794,8 +1083,16 @@ fn bundles_are_processed_over_http() {
             "batch",
             &format!(
                 "{},{},{}",
-                entry("POST", "Patient", r#"{"resourceType":"Patient","id":"bn-5","active":true}"#),
-                entry("POST", "Nonesuch", r#"{"resourceType":"Nonesuch","id":"bn-6"}"#),
+                entry(
+                    "POST",
+                    "Patient",
+                    r#"{"resourceType":"Patient","id":"bn-5","active":true}"#
+                ),
+                entry(
+                    "POST",
+                    "Nonesuch",
+                    r#"{"resourceType":"Nonesuch","id":"bn-6"}"#
+                ),
                 entry("GET", "Patient/bn-1", "")
             ),
         ),
@@ -804,7 +1101,10 @@ fn bundles_are_processed_over_http() {
     let value: serde_json::Value = serde_json::from_str(&mixed.body).unwrap();
     assert_eq!(value["type"], "batch-response");
     assert_eq!(value["entry"][0]["response"]["status"], "201 Created");
-    assert_eq!(value["entry"][1]["outcome"]["resourceType"], "OperationOutcome");
+    assert_eq!(
+        value["entry"][1]["outcome"]["resourceType"],
+        "OperationOutcome"
+    );
     assert_eq!(value["entry"][2]["resource"]["id"], "bn-1");
     assert_eq!(request(port, "GET", "/Patient/bn-5", &[], &[]).status, 200);
 
@@ -931,7 +1231,10 @@ fn newline_delimited_rows_are_imported_and_a_repeat_adds_no_version() {
         .as_array()
         .expect("failures are listed");
     assert_eq!(failures.len(), 1);
-    assert!(failures[0].as_str().unwrap().starts_with("row 1"), "{failures:?}");
+    assert!(
+        failures[0].as_str().unwrap().starts_with("row 1"),
+        "{failures:?}"
+    );
 
     let stored = request(port, "GET", "/Patient/nd-1", &[], &[]);
     assert_eq!(stored.status, 200, "read failed: {}", stored.body);
@@ -1081,9 +1384,19 @@ fn a_reindex_of_one_resource_makes_it_findable_again() {
         &live_definition("sp-r1", "risk-band"),
     );
     let backfilled = request(port, "POST", "/SearchParameter/$reindex", &[], &[]);
-    assert_eq!(backfilled.status, 200, "backfill failed: {}", backfilled.body);
+    assert_eq!(
+        backfilled.status, 200,
+        "backfill failed: {}",
+        backfilled.body
+    );
 
-    let moved = request(port, "PUT", "/Patient/rx-1", &[], &live_banded("rx-1", "low"));
+    let moved = request(
+        port,
+        "PUT",
+        "/Patient/rx-1",
+        &[],
+        &live_banded("rx-1", "low"),
+    );
     assert_eq!(moved.status, 200, "update failed: {}", moved.body);
     let stale = request(port, "GET", "/Patient?risk-band=low", &[], &[]);
 
@@ -1155,7 +1468,13 @@ fn live_extended_operations_answer() {
         &[],
         &[],
     );
-    let docref = request(port, "GET", "/DocumentReference/$docref?patient=pt-o1", &[], &[]);
+    let docref = request(
+        port,
+        "GET",
+        "/DocumentReference/$docref?patient=pt-o1",
+        &[],
+        &[],
+    );
     let posted = request(
         port,
         "POST",
@@ -1163,9 +1482,21 @@ fn live_extended_operations_answer() {
         &[],
         br#"{"resourceType":"Parameters","parameter":[{"name":"patient","valueString":"pt-o1"}]}"#,
     );
-    let expanded = request(port, "GET", "/ValueSet/$expand?url=urn:vs&excludeNested=true", &[], &[]);
+    let expanded = request(
+        port,
+        "GET",
+        "/ValueSet/$expand?url=urn:vs&excludeNested=true",
+        &[],
+        &[],
+    );
     let unknown = request(port, "GET", "/ValueSet/$expand?url=urn:none", &[], &[]);
-    let below = request(port, "GET", "/Observation?code:below=urn:cs%7Cmid", &[], &[]);
+    let below = request(
+        port,
+        "GET",
+        "/Observation?code:below=urn:cs%7Cmid",
+        &[],
+        &[],
+    );
     stop(child);
 
     assert_eq!(converted.status, 200);
@@ -1203,7 +1534,11 @@ fn spawn_authorized() -> (Child, u16) {
         .env("FHIR_BIND", "127.0.0.1:0")
         .env("FHIR_VERSION", "R4")
         .env("FHIR_AUTH_ISSUER", "https://issuer.example.org")
-        .env("FHIR_AUTH_AUTHORIZE", "https://issuer.example.org/authorize")
+        .env("FHIR_AUTH_AUDIENCE", "https://service.example.org")
+        .env(
+            "FHIR_AUTH_AUTHORIZE",
+            "https://issuer.example.org/authorize",
+        )
         .env("FHIR_AUTH_TOKEN", "https://issuer.example.org/token")
         .env("FHIR_AUTH_SCOPES", "system/*.read,system/*.write")
         .env_remove("FHIR_DATABASE_URL")
@@ -1216,7 +1551,11 @@ fn spawn_authorized() -> (Child, u16) {
     BufReader::new(stdout)
         .read_line(&mut line)
         .expect("failed to read the announced address");
-    match line.trim().rsplit_once(':').and_then(|(_, port)| port.parse().ok()) {
+    match line
+        .trim()
+        .rsplit_once(':')
+        .and_then(|(_, port)| port.parse().ok())
+    {
         Some(port) => (child, port),
         None => {
             let _ = child.kill();
@@ -1283,10 +1622,17 @@ fn live_discovery_matches_the_configured_authorization() {
     let statement = request(port, "GET", "/metadata", &[], &[]);
     stop(child);
 
-    assert_eq!(discovery.status, 200, "discovery failed: {}", discovery.body);
+    assert_eq!(
+        discovery.status, 200,
+        "discovery failed: {}",
+        discovery.body
+    );
     let document: serde_json::Value = serde_json::from_str(&discovery.body).unwrap();
     assert_eq!(document["issuer"], "https://issuer.example.org");
-    assert_eq!(document["token_endpoint"], "https://issuer.example.org/token");
+    assert_eq!(
+        document["token_endpoint"],
+        "https://issuer.example.org/token"
+    );
     assert_eq!(document["scopes_supported"][0], "system/*.read");
 
     let value: serde_json::Value = serde_json::from_str(&statement.body).unwrap();
@@ -1297,6 +1643,7 @@ fn live_discovery_matches_the_configured_authorization() {
 }
 
 const SMOKE_ISSUER: &str = "https://issuer.example.org";
+const SMOKE_AUDIENCE: &str = "https://service.example.org";
 
 fn smoke_signing() -> &'static fhir_core::security::fixture::Issuer {
     use std::sync::OnceLock;
@@ -1315,6 +1662,7 @@ fn smoke_claims(scopes: &str, life: i64) -> serde_json::Value {
         .unwrap_or(0);
     serde_json::json!({
         "iss": SMOKE_ISSUER,
+        "aud": SMOKE_AUDIENCE,
         "sub": "practitioner-1",
         "scope": scopes,
         "exp": expiry,
@@ -1331,9 +1679,16 @@ fn spawn_enforcing() -> (Child, u16) {
         .env("FHIR_BIND", "127.0.0.1:0")
         .env("FHIR_VERSION", "R4")
         .env("FHIR_AUTH_ISSUER", SMOKE_ISSUER)
-        .env("FHIR_AUTH_AUTHORIZE", "https://issuer.example.org/authorize")
+        .env("FHIR_AUTH_AUDIENCE", SMOKE_AUDIENCE)
+        .env(
+            "FHIR_AUTH_AUTHORIZE",
+            "https://issuer.example.org/authorize",
+        )
         .env("FHIR_AUTH_TOKEN", "https://issuer.example.org/token")
-        .env("FHIR_AUTH_INTROSPECT", "https://issuer.example.org/introspect")
+        .env(
+            "FHIR_AUTH_INTROSPECT",
+            "https://issuer.example.org/introspect",
+        )
         .env("FHIR_AUTH_SCOPES", "system/*.read,system/*.write")
         .env("FHIR_AUTH_KEYS", key_document())
         .env_remove("FHIR_DATABASE_URL")
@@ -1346,7 +1701,11 @@ fn spawn_enforcing() -> (Child, u16) {
     BufReader::new(stdout)
         .read_line(&mut line)
         .expect("failed to read the announced address");
-    match line.trim().rsplit_once(':').and_then(|(_, port)| port.parse().ok()) {
+    match line
+        .trim()
+        .rsplit_once(':')
+        .and_then(|(_, port)| port.parse().ok())
+    {
         Some(port) => (child, port),
         None => {
             let _ = child.kill();
@@ -1359,14 +1718,36 @@ fn spawn_enforcing() -> (Child, u16) {
 #[test]
 fn live_requests_are_authorized_scoped_and_recorded() {
     let (child, port) = spawn_enforcing();
-    let write = format!("Bearer {}", smoke_token("system/Patient.read system/Patient.write"));
+    let write = format!(
+        "Bearer {}",
+        smoke_token("system/Patient.read system/Patient.write")
+    );
     let read_all = format!("Bearer {}", smoke_token("system/*.read"));
-    let patient = br#"{"resourceType":"Patient","id":"pt-sec","active":true,"name":[{"family":"Stone"}]}"#;
+    let patient =
+        br#"{"resourceType":"Patient","id":"pt-sec","active":true,"name":[{"family":"Stone"}]}"#;
 
     let anonymous = request(port, "GET", "/Patient/pt-sec", &[], &[]);
-    let created = request(port, "POST", "/Patient", &[("Authorization", write.as_str())], patient);
-    let read = request(port, "GET", "/Patient/pt-sec", &[("Authorization", write.as_str())], &[]);
-    let outside = request(port, "GET", "/Observation", &[("Authorization", write.as_str())], &[]);
+    let created = request(
+        port,
+        "POST",
+        "/Patient",
+        &[("Authorization", write.as_str())],
+        patient,
+    );
+    let read = request(
+        port,
+        "GET",
+        "/Patient/pt-sec",
+        &[("Authorization", write.as_str())],
+        &[],
+    );
+    let outside = request(
+        port,
+        "GET",
+        "/Observation",
+        &[("Authorization", write.as_str())],
+        &[],
+    );
     let introspected = request(
         port,
         "POST",
@@ -1374,7 +1755,13 @@ fn live_requests_are_authorized_scoped_and_recorded() {
         &[("Authorization", write.as_str())],
         format!("token={}", smoke_token("system/Patient.read")).as_bytes(),
     );
-    let trail = request(port, "GET", "/AuditEvent", &[("Authorization", read_all.as_str())], &[]);
+    let trail = request(
+        port,
+        "GET",
+        "/AuditEvent",
+        &[("Authorization", read_all.as_str())],
+        &[],
+    );
     stop(child);
 
     assert_eq!(anonymous.status, 401, "{}", anonymous.body);
@@ -1396,7 +1783,12 @@ fn live_requests_are_authorized_scoped_and_recorded() {
     assert!(!entries.is_empty(), "{}", trail.body);
     let actions: Vec<String> = entries
         .iter()
-        .map(|entry| entry["resource"]["type"]["code"].as_str().unwrap_or_default().to_owned())
+        .map(|entry| {
+            entry["resource"]["type"]["code"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned()
+        })
         .collect();
     assert!(actions.contains(&"write".to_owned()), "{actions:?}");
     assert!(actions.contains(&"read".to_owned()), "{actions:?}");
@@ -1430,7 +1822,10 @@ fn smoke_refusable() -> Vec<(&'static str, String)> {
             smoke_signing()
                 .minted_under(&serde_json::json!({"alg": "ES384", "kid": "one"}), &claims),
         ),
-        ("expired", smoke_signing().mint(&smoke_claims("system/*.read", -60))),
+        (
+            "expired",
+            smoke_signing().mint(&smoke_claims("system/*.read", -60)),
+        ),
     ]
 }
 
@@ -1453,7 +1848,13 @@ fn live_a_token_the_published_key_does_not_verify_is_refused() {
         })
         .collect();
     let honest = format!("Bearer {}", smoke_token("system/*.read"));
-    let absent = request(port, "GET", "/Patient/pt-forged", &[("Authorization", honest.as_str())], &[]);
+    let absent = request(
+        port,
+        "GET",
+        "/Patient/pt-forged",
+        &[("Authorization", honest.as_str())],
+        &[],
+    );
     stop(child);
 
     for (reason, status, body) in &replies {
@@ -1483,7 +1884,11 @@ fn an_unconfigured_instance_does_not_serve_its_measurements() {
     assert_eq!(bare.status, 404, "{}", bare.body);
     assert_eq!(offered.status, 404, "{}", offered.body);
     for reply in [&bare, &offered] {
-        assert!(!reply.body.contains("fhir_operation_total"), "{}", reply.body);
+        assert!(
+            !reply.body.contains("fhir_operation_total"),
+            "{}",
+            reply.body
+        );
         assert!(!reply.body.contains("duration_ms"), "{}", reply.body);
     }
 }
@@ -1502,7 +1907,13 @@ fn a_guarded_instance_serves_measurements_only_to_its_reader() {
         &[("Authorization", "Bearer another-reader-credential")],
         &[],
     );
-    let served = request(port, "GET", "/_metrics", &[("Authorization", held.as_str())], &[]);
+    let served = request(
+        port,
+        "GET",
+        "/_metrics",
+        &[("Authorization", held.as_str())],
+        &[],
+    );
     stop(child);
 
     assert_eq!(statement.status, 200);
@@ -1584,10 +1995,7 @@ fn supplied_code_system_content_is_loaded_at_startup() {
              "concept":[{"code":"b","display":"B"}]}]}"#,
     )
     .expect("the file is writable");
-    let (child, port) = spawn_with(&[(
-        "FHIR_TERMINOLOGY_DIR",
-        &directory.display().to_string(),
-    )]);
+    let (child, port) = spawn_with(&[("FHIR_TERMINOLOGY_DIR", &directory.display().to_string())]);
     let created = request(
         port,
         "POST",

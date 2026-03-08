@@ -74,6 +74,7 @@ async fn lowered(
         },
         values,
         index: filter.index.clone(),
+        exempt: filter.exempt.clone(),
     })
 }
 

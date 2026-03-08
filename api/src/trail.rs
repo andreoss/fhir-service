@@ -106,9 +106,13 @@ impl StoredTrail {
         let sealed = self.chain.append(Entry::Retention(removal.clone()))?;
         self.write(&sealed).await?;
         let mut removed = 0;
-        for record in records.iter().filter(|held| held.sequence <= removal.through) {
+        for record in records
+            .iter()
+            .filter(|held| held.sequence <= removal.through)
+        {
             let id = identifier(record.sequence).parse::<ResourceId>()?;
-            match self.store.hard_delete(&id).await {
+            let key = fhir_core::ResourceKey::new(AUDIT_EVENT.parse()?, id);
+            match self.store.hard_delete(&key).await {
                 Ok(()) => removed += 1,
                 Err(Error::NotFound) => {}
                 Err(error) => return Err(error),
@@ -120,7 +124,8 @@ impl StoredTrail {
     async fn write(&self, sealed: &Sealed) -> Result<(), Error> {
         let mut body = record(sealed, self.version);
         fhir_core::with_assigned_meta(&mut body)?;
-        let bytes = serde_json::to_vec(&body).map_err(|error| Error::Internal(error.to_string()))?;
+        let bytes =
+            serde_json::to_vec(&body).map_err(|error| Error::Internal(error.to_string()))?;
         let envelope = ResourceEnvelope::parse(self.version, &bytes)?;
         self.store.create(envelope).await?;
         Ok(())
@@ -423,10 +428,7 @@ fn fault_of(found: &Tamper) -> &'static str {
 }
 
 async fn held(state: &AppState) -> Result<Arc<StoredTrail>, Error> {
-    state
-        .trail
-        .clone()
-        .ok_or(Error::NotFound)
+    state.trail.clone().ok_or(Error::NotFound)
 }
 
 pub async fn verified(
@@ -526,7 +528,10 @@ mod tests {
         let written = record(&sealed(event()), FhirVersion::R4);
         assert_eq!(written["resourceType"], AUDIT_EVENT);
         assert_eq!(written["type"]["code"], "read");
-        assert_eq!(written["agent"][0]["who"]["identifier"]["value"], "practitioner-1");
+        assert_eq!(
+            written["agent"][0]["who"]["identifier"]["value"],
+            "practitioner-1"
+        );
         assert_eq!(written["entity"][0]["what"]["reference"], "Patient/pt-1");
         assert_eq!(written["outcome"], OUTCOME_GRANTED);
         assert!(!written["recorded"].as_str().unwrap_or_default().is_empty());
@@ -552,7 +557,10 @@ mod tests {
         assert_eq!(written["id"], "au-000000000001");
         assert_eq!(written["extension"][0]["valueUnsignedInt"], 1);
         assert_eq!(written["extension"][1]["valueString"], trail::ORIGIN);
-        assert!(!written["extension"][2]["valueString"].as_str().unwrap().is_empty());
+        assert!(!written["extension"][2]["valueString"]
+            .as_str()
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
@@ -622,9 +630,18 @@ mod tests {
     fn every_fault_has_a_name() {
         assert_eq!(fault_of(&Tamper::Altered { sequence: 1 }), "altered");
         assert_eq!(fault_of(&Tamper::Broken { sequence: 1 }), "broken");
-        assert_eq!(fault_of(&Tamper::Gap { expected: 1, found: 2 }), "gap");
         assert_eq!(
-            fault_of(&Tamper::Truncated { expected: 2, found: 1 }),
+            fault_of(&Tamper::Gap {
+                expected: 1,
+                found: 2
+            }),
+            "gap"
+        );
+        assert_eq!(
+            fault_of(&Tamper::Truncated {
+                expected: 2,
+                found: 1
+            }),
             "truncated"
         );
     }
@@ -651,6 +668,7 @@ mod tests {
                     resource_type: Some(AUDIT_EVENT.parse().unwrap()),
                     id: None,
                     profile: None,
+                    resolved: None,
                     mode: fhir_core::validate::Mode::Create,
                     body: &body,
                 });
@@ -686,6 +704,7 @@ mod tests {
                 resource_type: Some(AUDIT_EVENT.parse().unwrap()),
                 id: None,
                 profile: None,
+                resolved: None,
                 mode: fhir_core::validate::Mode::Create,
                 body: &body,
             });

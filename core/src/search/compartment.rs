@@ -51,8 +51,6 @@ const fn itself(resource_type: &'static str, params: &'static [&'static str]) ->
     }
 }
 
-
-
 include!("compartments.rs");
 
 pub fn definition(code: &str) -> Option<&'static CompartmentDef> {
@@ -168,7 +166,11 @@ mod tests {
     
     const PUBLISHED: &[(&str, &str, &[&str])] = &[
         ("Patient", "Patient", &["link"]),
-        ("Patient", "Condition", &["asserter", "participant-actor", "patient"]),
+        (
+            "Patient",
+            "Condition",
+            &["asserter", "participant-actor", "patient"],
+        ),
         ("Patient", "DocumentReference", &["author", "subject"]),
         ("Patient", "Encounter", &["patient"]),
         ("Patient", "List", &["source", "subject"]),
@@ -225,9 +227,6 @@ mod tests {
             assert_eq!(member.params, *params, "{code}/{resource_type}");
             assert_eq!(member.root, code == resource_type, "{code}/{resource_type}");
         }
-        
-        
-        
         let patient = definition("Patient").expect("the Patient compartment");
         assert!(
             patient.members.len() > 50,
@@ -417,8 +416,6 @@ mod tests {
                 .iter()
                 .find(|member| member.resource_type == *resource_type)
                 .unwrap_or_else(|| panic!("{version:?} {code}/{resource_type}"));
-            
-            
             let mut held = member.params.to_vec();
             held.sort_unstable();
             let mut wanted = params.to_vec();

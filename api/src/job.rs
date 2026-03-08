@@ -68,26 +68,7 @@ fn sink(state: &AppState) -> Option<Arc<dyn fhir_store::BulkStore>> {
     state.outputs.as_ref().map(Arc::clone)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Handling {
-    Strict,
-    Lenient,
-}
-
-fn handling_of(headers: &HeaderMap) -> Handling {
-    let declared = headers
-        .get("prefer")
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or_default();
-    match declared
-        .split(';')
-        .chain(declared.split(','))
-        .any(|token| token.trim().eq_ignore_ascii_case("handling=lenient"))
-    {
-        true => Handling::Lenient,
-        false => Handling::Strict,
-    }
-}
+pub use crate::preference::Handling;
 
 fn unsupported() -> Response {
     let outcome = OperationOutcome::error(
@@ -102,20 +83,16 @@ fn unsupported() -> Response {
     response
 }
 
-fn host_of(headers: &HeaderMap) -> String {
-    let held = headers
-        .get(header::HOST)
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or("localhost")
-        .trim();
+fn base_of(state: &AppState, headers: &HeaderMap) -> String {
+    let held = state.forwarding.base(headers);
     match held.is_empty() {
-        true => "localhost".to_owned(),
-        false => held.to_owned(),
+        true => "http://localhost".to_owned(),
+        false => held,
     }
 }
 
-pub fn status_location(host: &str, id: &JobId) -> String {
-    format!("http://{host}{JOBS}/{id}")
+pub fn status_location(base: &str, id: &JobId) -> String {
+    format!("{base}{JOBS}/{id}")
 }
 
 fn progress_of(record: &JobRecord) -> String {
@@ -138,7 +115,7 @@ fn submitted_as(record: &JobRecord) -> Value {
         .unwrap_or(Value::Null)
 }
 
-fn manifest(host: &str, record: &JobRecord, files: &[fhir_store::Output]) -> Value {
+fn manifest(base: &str, record: &JobRecord, files: &[fhir_store::Output]) -> Value {
     let outcome = record
         .outcome
         .as_deref()
@@ -147,7 +124,7 @@ fn manifest(host: &str, record: &JobRecord, files: &[fhir_store::Output]) -> Val
     let entry = |file: &fhir_store::Output| {
         serde_json::json!({
             "type": file.kind,
-            "url": format!("http://{host}{JOBS}/{}/{}", record.id, file.name),
+            "url": format!("{base}{JOBS}/{}/{}", record.id, file.name),
             "count": file.count,
         })
     };
@@ -195,13 +172,13 @@ fn action_of(kind: JobKind) -> DataAction {
     }
 }
 
-fn accepted(host: &str, id: &JobId) -> Response {
+fn accepted(base: &str, id: &JobId) -> Response {
     let mut response = Response::new(Body::empty());
     *response.status_mut() = StatusCode::ACCEPTED;
     let headers = response.headers_mut();
     headers.insert(
         header::CONTENT_LOCATION,
-        HeaderValue::from_str(&status_location(host, id)).expect("a status location is a header"),
+        HeaderValue::from_str(&status_location(base, id)).expect("a status location is a header"),
     );
     headers.insert(
         header::RETRY_AFTER,
@@ -216,6 +193,12 @@ async fn submit(state: &AppState, kind: JobKind, headers: &HeaderMap, body: &[u8
         Err(error) => return AppError::from(error).into_response_now(),
     };
     if let Err(error) = wide_enough(state, &access, headers, action_of(kind)) {
+        return AppError::from(error).into_response_now();
+    }
+    
+    
+    
+    if let Err(error) = state.tenancy.refuses("an asynchronous job") {
         return AppError::from(error).into_response_now();
     }
     let Some(jobs) = queue(state) else {
@@ -238,7 +221,7 @@ async fn submit(state: &AppState, kind: JobKind, headers: &HeaderMap, body: &[u8
     }
     .correlated(crate::measure::correlation_of(headers));
     match jobs.submit(request).await {
-        Ok(_) => accepted(&host_of(headers), &id),
+        Ok(_) => accepted(&base_of(state, headers), &id),
         Err(error) => AppError::from(error).into_response_now(),
     }
 }
@@ -423,7 +406,7 @@ pub async fn poll(
                 Some(sink) => sink.list(&record.id).await.unwrap_or_default(),
                 None => Vec::new(),
             };
-            let body = manifest(&host_of(&headers), &record, &files).to_string();
+            let body = manifest(&base_of(&state, &headers), &record, &files).to_string();
             let mut response = Response::new(Body::from(body));
             response
                 .headers_mut()
@@ -620,8 +603,13 @@ fn described(
     body: &[u8],
     headers: &HeaderMap,
 ) -> Result<String, Error> {
-    let (mut carried, dropped) =
-        merged(raw, body, &ACCEPTED_PARAMS, &LISTED, handling_of(headers))?;
+    let (mut carried, dropped) = merged(
+        raw,
+        body,
+        &ACCEPTED_PARAMS,
+        &LISTED,
+        Handling::asked_for(headers)?,
+    )?;
     carried.insert("scope".to_owned(), Value::String(scope.to_owned()));
     if let Some(id) = id {
         carried.insert("id".to_owned(), Value::String(id.to_owned()));

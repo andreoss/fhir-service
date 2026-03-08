@@ -38,7 +38,9 @@ pub async fn drop_namespace(pool: &PgPool, namespace: &Namespace) {
     let _ = sqlx::raw_sql(&statement).execute(pool).await;
 }
 
-pub async fn fresh(name: &str) -> Option<(fhir_adapter_relational::RelationalStore, PgPool, Namespace)> {
+pub async fn fresh(
+    name: &str,
+) -> Option<(fhir_adapter_relational::RelationalStore, PgPool, Namespace)> {
     let pool = engine().await?;
     let namespace = namespace(name);
     let store = fhir_adapter_relational::RelationalStore::new(pool.clone(), namespace.clone())

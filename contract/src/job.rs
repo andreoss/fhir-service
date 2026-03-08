@@ -1,7 +1,7 @@
 use fhir_core::Error;
 use fhir_store::{
-    JobFilter, JobId, JobKind, JobProgress, JobRequest, JobResult, JobSignal, JobState, JobStore,
-    JobLimits, Lease, StepTicker, RETRY_BACKOFF,
+    JobFilter, JobId, JobKind, JobLimits, JobProgress, JobRequest, JobResult, JobSignal, JobState,
+    JobStore, Lease, StepTicker, RETRY_BACKOFF,
 };
 
 pub fn job(raw: &str) -> JobId {
@@ -14,7 +14,11 @@ fn queued(id: &str, kind: JobKind) -> JobRequest {
 
 pub async fn submission(store: &dyn JobStore) {
     let submitted = store
-        .submit(JobRequest::new(job("s1"), JobKind::Export, "{\"types\":[]}"))
+        .submit(JobRequest::new(
+            job("s1"),
+            JobKind::Export,
+            "{\"types\":[]}",
+        ))
         .await
         .unwrap();
     assert_eq!(submitted.state, JobState::Queued);
@@ -82,7 +86,10 @@ pub async fn heartbeats(store: &dyn JobStore) {
 }
 
 pub async fn completion(store: &dyn JobStore) {
-    store.submit(queued("f1", JobKind::BulkDelete)).await.unwrap();
+    store
+        .submit(queued("f1", JobKind::BulkDelete))
+        .await
+        .unwrap();
     store.claim(&Lease::new("one", 1_000)).await.unwrap();
 
     let done = store
@@ -108,7 +115,10 @@ pub async fn listing(store: &dyn JobStore) {
     store.submit(queued("l2", JobKind::Export)).await.unwrap();
     store.claim(&Lease::new("one", 1_000)).await.unwrap();
 
-    let running = store.list(&JobFilter::in_state(JobState::Running)).await.unwrap();
+    let running = store
+        .list(&JobFilter::in_state(JobState::Running))
+        .await
+        .unwrap();
     assert_eq!(running.len(), 1);
     assert_eq!(running[0].id, job("l1"));
 
@@ -146,7 +156,10 @@ pub async fn cancellation(store: &dyn JobStore) {
         .finish(&job("k2"), "one", JobResult::Cancelled)
         .await
         .unwrap();
-    assert_eq!(store.fetch(&job("k2")).await.unwrap().state, JobState::Cancelled);
+    assert_eq!(
+        store.fetch(&job("k2")).await.unwrap().state,
+        JobState::Cancelled
+    );
 
     let ended = store.cancel(&job("k2")).await;
     assert!(matches!(ended, Err(Error::VersionConflict)), "{ended:?}");
@@ -197,7 +210,10 @@ pub async fn recovery(store: &dyn JobStore, ticker: &StepTicker) {
 
     let reclaimed = store.reclaim().await.unwrap();
     assert_eq!(reclaimed, vec![job("w1")]);
-    assert_eq!(store.fetch(&job("w1")).await.unwrap().state, JobState::Queued);
+    assert_eq!(
+        store.fetch(&job("w1")).await.unwrap().state,
+        JobState::Queued
+    );
 
     let resumed = store.claim(&Lease::new("two", 1_000)).await.unwrap();
     assert_eq!(resumed.len(), 1);
@@ -209,7 +225,11 @@ pub async fn recovery(store: &dyn JobStore, ticker: &StepTicker) {
     assert!(matches!(stale, Err(Error::VersionConflict)), "{stale:?}");
 
     let done = store
-        .finish(&job("w1"), "two", JobResult::Succeeded("resumed".to_owned()))
+        .finish(
+            &job("w1"),
+            "two",
+            JobResult::Succeeded("resumed".to_owned()),
+        )
         .await
         .unwrap();
     assert_eq!(done.state, JobState::Completed);
@@ -297,7 +317,11 @@ pub async fn rejection(store: &dyn JobStore) {
     store.claim(&Lease::new("one", 1_000)).await.unwrap();
 
     let rejected = store
-        .finish(&job("j1"), "one", JobResult::Rejected("no patch".to_owned()))
+        .finish(
+            &job("j1"),
+            "one",
+            JobResult::Rejected("no patch".to_owned()),
+        )
         .await
         .unwrap();
     assert_eq!(rejected.state, JobState::Failed);
@@ -306,15 +330,24 @@ pub async fn rejection(store: &dyn JobStore) {
 }
 
 pub async fn cancel_signal(store: &dyn JobStore) {
-    store.submit(queued("g1", JobKind::BulkDelete)).await.unwrap();
+    store
+        .submit(queued("g1", JobKind::BulkDelete))
+        .await
+        .unwrap();
     store.claim(&Lease::new("one", 1_000)).await.unwrap();
 
-    let before = store.heartbeat(&job("g1"), "one", 1_000, None).await.unwrap();
+    let before = store
+        .heartbeat(&job("g1"), "one", 1_000, None)
+        .await
+        .unwrap();
     assert_eq!(before, JobSignal::Continue);
 
     store.cancel(&job("g1")).await.unwrap();
 
-    let after = store.heartbeat(&job("g1"), "one", 1_000, None).await.unwrap();
+    let after = store
+        .heartbeat(&job("g1"), "one", 1_000, None)
+        .await
+        .unwrap();
     assert_eq!(after, JobSignal::Cancel);
 
     let stopped = store
@@ -440,7 +473,10 @@ pub async fn retention(store: &dyn JobStore, ticker: &StepTicker) {
 
     let gone = store.fetch(&job("y1")).await;
     assert!(matches!(gone, Err(Error::NotFound)), "{gone:?}");
-    assert!(store.fetch(&job("y2")).await.is_ok(), "a live job was purged");
+    assert!(
+        store.fetch(&job("y2")).await.is_ok(),
+        "a live job was purged"
+    );
     assert_eq!(store.purge(10_000).await.unwrap(), 0);
 }
 
@@ -454,7 +490,10 @@ pub async fn handover(store: &dyn JobStore) {
     assert_eq!(held.len(), 2);
 
     let waiting = store.claim(&Lease::new("staying", 1_000)).await.unwrap();
-    assert!(waiting.is_empty(), "a held lease is not handed on by itself");
+    assert!(
+        waiting.is_empty(),
+        "a held lease is not handed on by itself"
+    );
 
     let handed = store.hand_over("leaving").await.unwrap();
     assert_eq!(handed.len(), 2, "every held job is handed back");
@@ -472,5 +511,8 @@ pub async fn handover(store: &dyn JobStore) {
     assert!(matches!(stale, Err(Error::VersionConflict)), "{stale:?}");
 
     let none = store.hand_over("leaving").await.unwrap();
-    assert!(none.is_empty(), "a worker holding nothing hands nothing back");
+    assert!(
+        none.is_empty(),
+        "a worker holding nothing hands nothing back"
+    );
 }

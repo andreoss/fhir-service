@@ -50,7 +50,9 @@ impl Policy {
     pub fn delay(&self, fault: Fault, attempt: u32) -> Duration {
         match fault {
             Fault::Throttled => self.pause.saturating_mul(attempt),
-            Fault::Transient => self.backoff.saturating_mul(1 << attempt.min(5).saturating_sub(1)),
+            Fault::Transient => self
+                .backoff
+                .saturating_mul(1 << attempt.min(5).saturating_sub(1)),
             Fault::Permanent => Duration::ZERO,
         }
     }

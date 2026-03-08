@@ -1,6 +1,6 @@
 use fhir_core::search::{ParamStatus, ParameterSpec, RegisteredParam};
-use fhir_core::{ResourceEnvelope, ResourceType};
 use fhir_core::Error;
+use fhir_core::{ResourceEnvelope, ResourceType};
 use fhir_store::{IndexReport, SearchQuery};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -236,8 +236,14 @@ mod tests {
             status_of(&spec(false), Some(&IndexReport::empty("urn:p:risk-band"))),
             ParamStatus::Supported
         );
-        assert_eq!(status_of(&spec(false), Some(&backfilled())), ParamStatus::Searchable);
-        assert_eq!(status_of(&spec(true), Some(&backfilled())), ParamStatus::PendingDisable);
+        assert_eq!(
+            status_of(&spec(false), Some(&backfilled())),
+            ParamStatus::Searchable
+        );
+        assert_eq!(
+            status_of(&spec(true), Some(&backfilled())),
+            ParamStatus::PendingDisable
+        );
         assert_eq!(status_of(&spec(true), None), ParamStatus::Disabled);
     }
 

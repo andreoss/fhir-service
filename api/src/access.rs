@@ -1,10 +1,10 @@
 use axum::http::header::{self, HeaderMap};
-use fhir_core::security::bearer::Claims;
 use fhir_core::search::{Compartment, Filter, Grant, GrantFilter, Registry};
+use fhir_core::security::bearer::Claims;
 use fhir_core::security::scope::{DataAction, Scope, Subject};
 use fhir_core::security::Access;
-use fhir_core::ResourceType;
 use fhir_core::Error;
+use fhir_core::ResourceType;
 use std::sync::Arc;
 
 use crate::app::AppState;
@@ -20,7 +20,10 @@ pub struct Guard {
 
 impl Guard {
     pub fn new(authorization: Arc<Authorization>, keys: Arc<dyn Keys>) -> Guard {
-        Guard { authorization, keys }
+        Guard {
+            authorization,
+            keys,
+        }
     }
 
     pub fn issuer(&self) -> &str {
@@ -29,7 +32,13 @@ impl Guard {
 
     pub async fn claims(&self, token: &str) -> Result<Claims, Error> {
         let keys = self.keys.keys(&self.authorization.issuer).await?;
-        Claims::verify(token, &keys, &self.authorization.issuer, now())
+        Claims::verify_for(
+            token,
+            &keys,
+            &self.authorization.issuer,
+            self.authorization.audience.as_deref(),
+            now(),
+        )
     }
 
     pub async fn access(&self, headers: &HeaderMap) -> Result<Access, Error> {
@@ -125,6 +134,7 @@ pub fn granted(
         types,
         compartments,
         filters,
+        every: Vec::new(),
     }))
 }
 
@@ -185,7 +195,10 @@ mod tests {
 
     fn carrying(value: &str) -> HeaderMap {
         let mut headers = HeaderMap::new();
-        headers.insert(header::AUTHORIZATION, value.parse().expect("a header value"));
+        headers.insert(
+            header::AUTHORIZATION,
+            value.parse().expect("a header value"),
+        );
         headers
     }
 
@@ -198,10 +211,15 @@ mod tests {
             actor: "practitioner-1".to_owned(),
             client: None,
             scopes: Scope::parse_all(
-                &scopes.iter().map(|entry| (*entry).to_owned()).collect::<Vec<String>>(),
+                &scopes
+                    .iter()
+                    .map(|entry| (*entry).to_owned())
+                    .collect::<Vec<String>>(),
             ),
+            roles: Vec::new(),
             patient: patient.and_then(|id| fhir_core::ResourceId::parse(id).ok()),
             secured: true,
+            claims: std::collections::BTreeMap::new(),
         }
     }
 
@@ -214,7 +232,9 @@ mod tests {
     #[test]
     fn a_typed_scope_confines_the_grant_to_its_types() {
         let access = access_with(&["system/Patient.read", "system/Observation.read"], None);
-        let grant = granted(&registry(), &access, DataAction::Read).unwrap().unwrap();
+        let grant = granted(&registry(), &access, DataAction::Read)
+            .unwrap()
+            .unwrap();
         assert_eq!(grant.types.len(), 2);
         assert!(grant.admits("Patient".parse().unwrap()));
         assert!(!grant.admits("Encounter".parse().unwrap()));
@@ -224,7 +244,9 @@ mod tests {
     #[test]
     fn a_wildcard_scope_leaves_the_types_open() {
         let access = access_with(&["system/*.read", "system/Patient.read"], None);
-        let grant = granted(&registry(), &access, DataAction::Read).unwrap().unwrap();
+        let grant = granted(&registry(), &access, DataAction::Read)
+            .unwrap()
+            .unwrap();
         assert!(grant.types.is_empty());
         assert!(grant.admits("Encounter".parse().unwrap()));
     }
@@ -232,22 +254,31 @@ mod tests {
     #[test]
     fn a_launch_compartment_confines_a_patient_scope() {
         let access = access_with(&["patient/Observation.rs"], Some("pt-1"));
-        let grant = granted(&registry(), &access, DataAction::Read).unwrap().unwrap();
+        let grant = granted(&registry(), &access, DataAction::Read)
+            .unwrap()
+            .unwrap();
         assert!(!grant.is_open());
         assert_eq!(grant.compartments[0].id.as_str(), "pt-1");
     }
 
     #[test]
     fn a_user_scope_alongside_a_patient_scope_lifts_the_compartment() {
-        let access = access_with(&["patient/Observation.rs", "user/Observation.rs"], Some("pt-1"));
-        let grant = granted(&registry(), &access, DataAction::Read).unwrap().unwrap();
+        let access = access_with(
+            &["patient/Observation.rs", "user/Observation.rs"],
+            Some("pt-1"),
+        );
+        let grant = granted(&registry(), &access, DataAction::Read)
+            .unwrap()
+            .unwrap();
         assert!(grant.is_open());
     }
 
     #[test]
     fn a_scope_parameter_narrows_only_its_own_type() {
         let access = access_with(&["system/Observation.rs?status=final"], None);
-        let grant = granted(&registry(), &access, DataAction::Read).unwrap().unwrap();
+        let grant = granted(&registry(), &access, DataAction::Read)
+            .unwrap()
+            .unwrap();
         assert_eq!(grant.narrowing("Observation".parse().unwrap()).len(), 1);
         assert!(grant.narrowing("Patient".parse().unwrap()).is_empty());
     }
@@ -255,10 +286,15 @@ mod tests {
     #[test]
     fn a_broader_scope_over_the_same_type_drops_the_narrowing() {
         let access = access_with(
-            &["system/Observation.rs?status=final", "system/Observation.read"],
+            &[
+                "system/Observation.rs?status=final",
+                "system/Observation.read",
+            ],
             None,
         );
-        let grant = granted(&registry(), &access, DataAction::Read).unwrap().unwrap();
+        let grant = granted(&registry(), &access, DataAction::Read)
+            .unwrap()
+            .unwrap();
         assert!(grant.filters.is_empty());
     }
 

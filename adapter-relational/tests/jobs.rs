@@ -1,14 +1,15 @@
 mod support;
 
 use fhir_adapter_relational::{Namespace, RelationalJobStore};
-use fhir_store::StepTicker;
 use fhir_store::JobStore;
+use fhir_store::StepTicker;
 use sqlx::PgPool;
 
 async fn queue(name: &str) -> Option<(RelationalJobStore, StepTicker, PgPool, Namespace)> {
     let (store, pool, namespace) = support::fresh(name).await?;
     let ticker = StepTicker::starting_at(1_000);
-    let jobs = RelationalJobStore::new(pool.clone(), namespace.clone()).with_ticker(ticker.ticker());
+    let jobs =
+        RelationalJobStore::new(pool.clone(), namespace.clone()).with_ticker(ticker.ticker());
     drop(store);
     Some((jobs, ticker, pool, namespace))
 }
@@ -42,16 +43,32 @@ suite!(a_claim_holds_one_job_under_a_lease, claiming, "jclaim");
 suite!(a_heartbeat_extends_the_lease, heartbeats, "jbeat");
 suite!(a_finished_attempt_keeps_its_result, completion, "jdone");
 suite!(a_listing_filters_by_kind_and_state, listing, "jlist");
-suite!(an_ended_job_releases_its_description, defragmentation, "jdefrag");
+suite!(
+    an_ended_job_releases_its_description,
+    defragmentation,
+    "jdefrag"
+);
 suite!(
     an_ended_job_is_kept_for_its_retention_and_then_removed,
     retention,
     "jkeep",
     timed
 );
-suite!(a_stop_reaches_a_queued_and_a_running_job, cancellation, "jstop");
-suite!(a_kind_runs_no_more_jobs_at_once_than_its_limit, concurrency, "jcap");
-suite!(one_kind_never_holds_another_back, limits_are_per_kind, "jkinds");
+suite!(
+    a_stop_reaches_a_queued_and_a_running_job,
+    cancellation,
+    "jstop"
+);
+suite!(
+    a_kind_runs_no_more_jobs_at_once_than_its_limit,
+    concurrency,
+    "jcap"
+);
+suite!(
+    one_kind_never_holds_another_back,
+    limits_are_per_kind,
+    "jkinds"
+);
 suite!(
     a_kind_starts_no_more_often_than_its_throttle,
     throttling,
@@ -64,9 +81,24 @@ suite!(
     cancel_signal,
     "jsignal"
 );
-suite!(a_failed_attempt_waits_and_runs_again, retries, "jretry", timed);
-suite!(a_job_a_stopped_worker_held_is_claimed_again, recovery, "jresume", timed);
-suite!(a_job_with_no_attempt_left_fails_on_reclaim, exhaustion, "jspent", timed);
+suite!(
+    a_failed_attempt_waits_and_runs_again,
+    retries,
+    "jretry",
+    timed
+);
+suite!(
+    a_job_a_stopped_worker_held_is_claimed_again,
+    recovery,
+    "jresume",
+    timed
+);
+suite!(
+    a_job_with_no_attempt_left_fails_on_reclaim,
+    exhaustion,
+    "jspent",
+    timed
+);
 suite!(
     a_resumed_job_keeps_the_identifier_it_started_with,
     correlation,
@@ -114,7 +146,9 @@ async fn a_limit_holds_when_many_workers_claim_at_once() {
     }
 
     let running = jobs
-        .list(&fhir_store::JobFilter::in_state(fhir_store::JobState::Running))
+        .list(&fhir_store::JobFilter::in_state(
+            fhir_store::JobState::Running,
+        ))
         .await
         .unwrap();
     assert_eq!(taken, 3, "the limit did not hold under load");
@@ -131,4 +165,8 @@ async fn the_sink_satisfies_the_output_contract() {
     support::drop_namespace(&pool, &namespace).await;
 }
 
-suite!(a_stopping_worker_hands_its_work_back_at_once, handover, "jhand");
+suite!(
+    a_stopping_worker_hands_its_work_back_at_once,
+    handover,
+    "jhand"
+);

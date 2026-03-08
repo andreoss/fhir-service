@@ -26,6 +26,17 @@ group!(ordering, fhir_store_contract::search::ordering);
 group!(linking, fhir_store_contract::search::linking);
 group!(composites, fhir_store_contract::search::composites);
 group!(targeted_index, fhir_store_contract::search::targeted_index);
+group!(exempted, fhir_store_contract::search::exempted);
+group!(
+    narrowed_everywhere,
+    fhir_store_contract::search::narrowed_everywhere
+);
+group!(
+    converted_quantities,
+    fhir_store_contract::search::converted_quantities
+);
+group!(shared_ids, fhir_store_contract::shared_ids);
+group!(erased_versions, fhir_store_contract::erased_versions);
 
 group!(atomicity, fhir_store_contract::atomicity);
 group!(scoped_search, fhir_store_contract::scoped_search);

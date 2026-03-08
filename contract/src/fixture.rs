@@ -1,4 +1,4 @@
-use fhir_core::{FhirInstant, FhirVersion, ResourceEnvelope, ResourceId, VersionId};
+use fhir_core::{FhirInstant, FhirVersion, ResourceEnvelope, ResourceId, ResourceKey, VersionId};
 
 pub const SEED: &str = "2026-09-06T04:00:00Z";
 
@@ -6,6 +6,23 @@ pub fn envelope(resource_type: &str, id: &str, body: &str) -> ResourceEnvelope {
     let separator = if body.trim().is_empty() { "" } else { "," };
     let bytes = format!(
         r#"{{"resourceType":"{resource_type}","id":"{id}","meta":{{"versionId":"0","lastUpdated":"{SEED}"}}{separator}{body}}}"#
+    )
+    .into_bytes();
+    ResourceEnvelope::parse(FhirVersion::R4, &bytes).expect("fixture body is a valid envelope")
+}
+
+
+
+pub fn secured(
+    resource_type: &str,
+    id: &str,
+    body: &str,
+    system: &str,
+    code: &str,
+) -> ResourceEnvelope {
+    let separator = if body.trim().is_empty() { "" } else { "," };
+    let bytes = format!(
+        r#"{{"resourceType":"{resource_type}","id":"{id}","meta":{{"versionId":"0","lastUpdated":"{SEED}","security":[{{"system":"{system}","code":"{code}"}}]}}{separator}{body}}}"#
     )
     .into_bytes();
     ResourceEnvelope::parse(FhirVersion::R4, &bytes).expect("fixture body is a valid envelope")
@@ -26,6 +43,14 @@ pub fn observation(id: &str, code: &str, value: f64, subject: &str) -> ResourceE
         &format!(
             r#""status":"final","code":{{"coding":[{{"system":"urn:s","code":"{code}"}}]}},"valueQuantity":{{"value":{value},"system":"urn:u","code":"mg"}},"subject":{{"reference":"{subject}"}}"#
         ),
+    )
+}
+
+
+pub fn key(resource_type: &str, value: &str) -> ResourceKey {
+    ResourceKey::new(
+        resource_type.parse().expect("a known resource type"),
+        id(value),
     )
 }
 
@@ -67,20 +92,23 @@ impl Refusing {
 
 #[async_trait::async_trait]
 impl fhir_store::ResourceStore for Refusing {
-    async fn create(&self, envelope: ResourceEnvelope) -> Result<ResourceEnvelope, fhir_core::Error> {
+    async fn create(
+        &self,
+        envelope: ResourceEnvelope,
+    ) -> Result<ResourceEnvelope, fhir_core::Error> {
         self.inner.create(envelope).await
     }
 
-    async fn read(&self, id: &ResourceId) -> Result<ResourceEnvelope, fhir_core::Error> {
-        self.inner.read(id).await
+    async fn read(&self, key: &ResourceKey) -> Result<ResourceEnvelope, fhir_core::Error> {
+        self.inner.read(key).await
     }
 
     async fn vread(
         &self,
-        id: &ResourceId,
+        key: &ResourceKey,
         version: &VersionId,
     ) -> Result<ResourceEnvelope, fhir_core::Error> {
-        self.inner.vread(id, version).await
+        self.inner.vread(key, version).await
     }
 
     async fn update(
@@ -99,19 +127,19 @@ impl fhir_store::ResourceStore for Refusing {
         self.inner.search(query).await
     }
 
-    async fn delete(&self, id: &ResourceId) -> Result<ResourceEnvelope, fhir_core::Error> {
-        self.refuses(id)?;
-        self.inner.delete(id).await
+    async fn delete(&self, key: &ResourceKey) -> Result<ResourceEnvelope, fhir_core::Error> {
+        self.refuses(key.id())?;
+        self.inner.delete(key).await
     }
 
-    async fn hard_delete(&self, id: &ResourceId) -> Result<(), fhir_core::Error> {
-        self.refuses(id)?;
-        self.inner.hard_delete(id).await
+    async fn hard_delete(&self, key: &ResourceKey) -> Result<(), fhir_core::Error> {
+        self.refuses(key.id())?;
+        self.inner.hard_delete(key).await
     }
 
-    async fn purge_history(&self, id: &ResourceId) -> Result<usize, fhir_core::Error> {
-        self.refuses(id)?;
-        self.inner.purge_history(id).await
+    async fn purge_history(&self, key: &ResourceKey) -> Result<usize, fhir_core::Error> {
+        self.refuses(key.id())?;
+        self.inner.purge_history(key).await
     }
 
     async fn history(

@@ -1,4 +1,6 @@
-use fhir_core::{Error, FhirInstant, FhirVersion, ResourceEnvelope, ResourceId, ResourceType, VersionId};
+use fhir_core::{
+    Error, FhirInstant, FhirVersion, ResourceEnvelope, ResourceId, ResourceType, VersionId,
+};
 use fhir_store::body::{encoded, Encoding, LazyBody};
 use fhir_store::index::Rows;
 use mongodb::bson::spec::BinarySubtype;
@@ -23,7 +25,9 @@ fn wrong(reason: &str) -> Error {
 }
 
 fn text_of(held: &Document, name: &str) -> Result<String, Error> {
-    held.get_str(name).map(str::to_owned).map_err(|_| wrong(name))
+    held.get_str(name)
+        .map(str::to_owned)
+        .map_err(|_| wrong(name))
 }
 
 pub fn entries_of(rows: &Rows) -> Document {
@@ -216,7 +220,9 @@ impl Record {
             Some(Bson::Binary(binary)) => binary.bytes.clone(),
             _ => return Err(wrong("body")),
         };
-        let number = held.get_i64("version_number").map_err(|_| wrong("version"))?;
+        let number = held
+            .get_i64("version_number")
+            .map_err(|_| wrong("version"))?;
         Ok(Record {
             sequence: held.get_i64("sequence").map_err(|_| wrong("sequence"))?,
             resource_type: text_of(held, "resource_type")?.parse::<ResourceType>()?,
@@ -224,7 +230,9 @@ impl Record {
             version: VersionId::parse(&number.to_string())?,
             spec: text_of(held, "spec_version")?.parse::<FhirVersion>()?,
             last_updated: FhirInstant::parse(&text_of(held, "last_updated")?)?,
-            deleted: held.get_bool("is_deleted").map_err(|_| wrong("delete flag"))?,
+            deleted: held
+                .get_bool("is_deleted")
+                .map_err(|_| wrong("delete flag"))?,
             body: LazyBody::new(stored, Encoding::parse(&text_of(held, "body_encoding")?)?),
         })
     }

@@ -33,7 +33,12 @@ impl PlanKey {
             parts.push(format!("m:{}", compartment.kind.as_str()));
         }
         if let Some(grant) = &query.grant {
-            parts.push(format!("g:{}:{}", grant.types.len(), grant.compartments.len()));
+            parts.push(format!(
+                "g:{}:{}:{}",
+                grant.types.len(),
+                grant.compartments.len(),
+                grant.every.len()
+            ));
         }
         PlanKey(parts.join("|"))
     }
@@ -46,9 +51,7 @@ impl PlanKey {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Plan {
     Scan,
-    Indexed {
-        parameter: String,
-    },
+    Indexed { parameter: String },
 }
 
 impl Plan {

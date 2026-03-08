@@ -81,7 +81,8 @@ fn envelope_metadata_types_round_trip() {
 #[test]
 fn invalid_envelope_is_rejected_at_the_edge() {
     let corrupted = b"{\"resourceType\":\"Patient\",\"id\":\"pt\",\"meta\":{\"versionId\":\"x/\",\"lastUpdated\":\"2026-09-06T04:00:00Z\"}}";
-    let error = ResourceEnvelope::parse(FhirVersion::R4, corrupted).expect_err("invalid envelope must be rejected");
+    let error = ResourceEnvelope::parse(FhirVersion::R4, corrupted)
+        .expect_err("invalid envelope must be rejected");
     assert!(matches!(error, Error::InvalidVersion(_)));
     assert_eq!(error.to_operation_outcome().http_status(), 400);
 }

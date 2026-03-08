@@ -40,6 +40,7 @@ pub enum IssueCode {
     BusinessRule,
     Transient,
     Throttled,
+    TooLarge,
 }
 
 impl IssueCode {
@@ -62,6 +63,7 @@ impl IssueCode {
             IssueCode::BusinessRule => "business-rule",
             IssueCode::Transient => "transient",
             IssueCode::Throttled => "throttled",
+            IssueCode::TooLarge => "too-costly",
         }
     }
 
@@ -82,6 +84,7 @@ impl IssueCode {
             IssueCode::BusinessRule => 422,
             IssueCode::Transient => 503,
             IssueCode::Throttled => 429,
+            IssueCode::TooLarge => 413,
         }
     }
 }
@@ -110,24 +113,53 @@ impl OperationOutcome {
         }
     }
 
+    
+    pub fn information(diagnostics: impl Into<String>) -> OperationOutcome {
+        OperationOutcome {
+            id: None,
+            severity: IssueSeverity::Information,
+            code: IssueCode::Informational,
+            diagnostics: Some(diagnostics.into()),
+        }
+    }
+
     pub fn http_status(&self) -> u16 {
         self.code.http_status()
     }
 
     pub fn to_fhir_json(&self) -> Vec<u8> {
         let mut issue = serde_json::Map::new();
-        issue.insert("severity".to_owned(), serde_json::Value::String(self.severity.to_string()));
-        issue.insert("code".to_owned(), serde_json::Value::String(self.code.to_string()));
+        issue.insert(
+            "severity".to_owned(),
+            serde_json::Value::String(self.severity.to_string()),
+        );
+        issue.insert(
+            "code".to_owned(),
+            serde_json::Value::String(self.code.to_string()),
+        );
         if let Some(diagnostics) = &self.diagnostics {
-            issue.insert("diagnostics".to_owned(), serde_json::Value::String(diagnostics.clone()));
+            issue.insert(
+                "diagnostics".to_owned(),
+                serde_json::Value::String(diagnostics.clone()),
+            );
         }
         let mut body = serde_json::Map::new();
-        body.insert("resourceType".to_owned(), serde_json::Value::String("OperationOutcome".to_owned()));
+        body.insert(
+            "resourceType".to_owned(),
+            serde_json::Value::String("OperationOutcome".to_owned()),
+        );
         if let Some(id) = &self.id {
-            body.insert("id".to_owned(), serde_json::Value::String(id.as_str().to_owned()));
+            body.insert(
+                "id".to_owned(),
+                serde_json::Value::String(id.as_str().to_owned()),
+            );
         }
-        body.insert("issue".to_owned(), serde_json::Value::Array(vec![serde_json::Value::Object(issue)]));
-        serde_json::to_vec(&serde_json::Value::Object(body)).expect("operation outcome is serializable")
+        body.insert(
+            "issue".to_owned(),
+            serde_json::Value::Array(vec![serde_json::Value::Object(issue)]),
+        );
+        serde_json::to_vec(&serde_json::Value::Object(body))
+            .expect("operation outcome is serializable")
     }
 }
 

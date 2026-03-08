@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 const VALUE_SET: &str = "ValueSet";
 const CODE_SYSTEM: &str = "CodeSystem";
+const CONCEPT_MAP: &str = "ConceptMap";
 
 pub struct StoredTerminology {
     store: Arc<dyn ResourceStore>,
@@ -88,6 +89,34 @@ impl Terminology for StoredTerminology {
         let mut systems = self.bodies(CODE_SYSTEM).await?;
         systems.extend(self.published(&set, &systems));
         expand(&set, &systems, request)
+    }
+
+    async fn code_system(&self, url: &str, version: Option<&str>) -> Result<Option<Value>, Error> {
+        for body in self.bodies(CODE_SYSTEM).await? {
+            if body.get("url").and_then(Value::as_str) == Some(url) {
+                return Ok(Some(body));
+            }
+        }
+        Ok(self.catalogue.system(url, version).cloned())
+    }
+
+    async fn value_set(&self, url: &str, version: Option<&str>) -> Result<Option<Value>, Error> {
+        match self.set(url, version).await {
+            Ok(held) => Ok(Some(held)),
+            Err(Error::NotFound) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    async fn concept_maps(&self, url: Option<&str>) -> Result<Vec<Value>, Error> {
+        let held = self.bodies(CONCEPT_MAP).await?;
+        Ok(match url {
+            None => held,
+            Some(wanted) => held
+                .into_iter()
+                .filter(|body| body.get("url").and_then(Value::as_str) == Some(wanted))
+                .collect(),
+        })
     }
 
     async fn subsumption(

@@ -20,7 +20,10 @@ fn command(args: &[String]) -> Option<Command> {
         Some("version") => Some(Command::Version),
         Some("next") => Some(Command::Next),
         Some("latest") => Some(Command::Latest),
-        Some("force") => args.get(1).and_then(|raw| raw.parse().ok()).map(Command::Force),
+        Some("force") => args
+            .get(1)
+            .and_then(|raw| raw.parse().ok())
+            .map(Command::Force),
         Some("unattended") => Some(Command::Unattended),
         _ => None,
     }
@@ -47,7 +50,8 @@ async fn main() {
 }
 
 async fn run(command: Command) -> Result<Option<Refused>, String> {
-    let raw = std::env::var(ENV_NAMESPACE).unwrap_or_else(|_| Namespace::default().as_str().to_owned());
+    let raw =
+        std::env::var(ENV_NAMESPACE).unwrap_or_else(|_| Namespace::default().as_str().to_owned());
     let namespace = Namespace::parse(&raw).map_err(|error| error.to_string())?;
     let url = std::env::var(ENV_URL).unwrap_or_else(|_| DEFAULT_URL.to_owned());
     let pool = PgPoolOptions::new()
@@ -59,7 +63,10 @@ async fn run(command: Command) -> Result<Option<Refused>, String> {
     let migrator = Migrator::new(pool, namespace);
     match command {
         Command::Version => {
-            let report = migrator.compatibility().await.map_err(|error| error.to_string())?;
+            let report = migrator
+                .compatibility()
+                .await
+                .map_err(|error| error.to_string())?;
             let current = report
                 .current
                 .map(|version| version.to_string())
@@ -80,11 +87,17 @@ async fn run(command: Command) -> Result<Option<Refused>, String> {
             println!("applied {applied}");
         }
         Command::Force(version) => {
-            migrator.force(version).await.map_err(|error| error.to_string())?;
+            migrator
+                .force(version)
+                .await
+                .map_err(|error| error.to_string())?;
             println!("forced {version}");
         }
         Command::Unattended => {
-            let report = migrator.compatibility().await.map_err(|error| error.to_string())?;
+            let report = migrator
+                .compatibility()
+                .await
+                .map_err(|error| error.to_string())?;
             if report.state == State::Ahead {
                 let found = report.current.unwrap_or_default();
                 return Ok(Some(Refused(format!(

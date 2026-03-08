@@ -205,7 +205,8 @@ async fn nothing_of_the_payload_reaches_the_measurements() {
     let orchestrator = Orchestrator::new()
         .with(Arc::new(ImportJob::new(store, fhir_core::FhirVersion::R4)))
         .reporting(Arc::clone(&telemetry));
-    let payload = r#"{"resourceType":"Patient","id":"pt-confidential-77","name":[{"family":"Rossignol"}]}"#;
+    let payload =
+        r#"{"resourceType":"Patient","id":"pt-confidential-77","name":[{"family":"Rossignol"}]}"#;
     ran(
         orchestrator,
         JobRequest::new(job("i2"), JobKind::Import, payload),

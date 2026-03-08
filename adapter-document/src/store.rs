@@ -2,7 +2,7 @@ use crate::fault::{classified, retried, Policy};
 use crate::record::{document_of, envelope_of, next_version, version_number, Record};
 use async_trait::async_trait;
 use fhir_core::search::{for_type, ParamDef, ParameterSpec};
-use fhir_core::{Error, ResourceEnvelope, ResourceId, VersionId};
+use fhir_core::{Error, ResourceEnvelope, ResourceKey, VersionId};
 use fhir_store::index::{rows_of, Rows};
 use fhir_store::{
     system_clock, Clock, HistoryOrder, HistoryPage, HistoryQuery, HistoryScope, IndexReport,
@@ -168,12 +168,14 @@ impl DocumentStore {
             .partial_filter_expression(doc! {"is_current": true})
             .build();
         let models = vec![
+            
+            
             IndexModel::builder()
-                .keys(doc! {"resource_id": 1, "version_number": 1})
+                .keys(doc! {"resource_type": 1, "resource_id": 1, "version_number": 1})
                 .options(unique.clone())
                 .build(),
             IndexModel::builder()
-                .keys(doc! {"resource_id": 1})
+                .keys(doc! {"resource_type": 1, "resource_id": 1})
                 .options(current)
                 .build(),
             IndexModel::builder()
@@ -454,11 +456,11 @@ impl DocumentStore {
     async fn current_in(
         &self,
         session: &mut ClientSession,
-        id: &ResourceId,
+        key: &ResourceKey,
     ) -> Result<Option<Record>, Error> {
         let found = self
             .resources()
-            .find_one(doc! {"resource_id": id.as_str(), "is_current": true})
+            .find_one(named(key, doc! {"is_current": true}))
             .session(&mut *session)
             .await
             .map_err(|error| faulted("reading the current version", error))?;
@@ -468,15 +470,15 @@ impl DocumentStore {
     async fn version_in(
         &self,
         session: &mut ClientSession,
-        id: &ResourceId,
+        key: &ResourceKey,
         version: &VersionId,
     ) -> Result<Option<Record>, Error> {
         let found = self
             .resources()
-            .find_one(doc! {
-                "resource_id": id.as_str(),
-                "version_number": version_number(version)?,
-            })
+            .find_one(named(
+                key,
+                doc! {"version_number": version_number(version)?},
+            ))
             .session(&mut *session)
             .await
             .map_err(|error| faulted("reading a version", error))?;
@@ -590,16 +592,22 @@ impl DocumentStore {
     }
 }
 
+
+
+fn named(key: &ResourceKey, mut held: Document) -> Document {
+    held.insert("resource_type", key.resource_type().as_str());
+    held.insert("resource_id", key.id().as_str());
+    held
+}
+
 #[async_trait]
 impl ResourceStore for DocumentStore {
     async fn create(&self, envelope: ResourceEnvelope) -> Result<ResourceEnvelope, Error> {
         let mut work = self.writing().await?;
         let session = work.session()?;
-        if self.current_in(session, envelope.id()).await?.is_some() {
-            return Err(Error::Duplicate(format!(
-                "id {:?} already exists",
-                envelope.id().as_str()
-            )));
+        let key = ResourceKey::of(&envelope);
+        if self.current_in(session, &key).await?.is_some() {
+            return Err(Error::Duplicate(format!("{key} already exists")));
         }
         let first: VersionId = "1".parse()?;
         let stored = envelope.stored_with(first, (self.clock)())?;
@@ -609,12 +617,9 @@ impl ResourceStore for DocumentStore {
         Ok(stored)
     }
 
-    async fn read(&self, id: &ResourceId) -> Result<ResourceEnvelope, Error> {
+    async fn read(&self, key: &ResourceKey) -> Result<ResourceEnvelope, Error> {
         let found = self
-            .perhaps(
-                doc! {"resource_id": id.as_str(), "is_current": true},
-                "reading a resource",
-            )
+            .perhaps(named(key, doc! {"is_current": true}), "reading a resource")
             .await?;
         match found {
             Some(held) => envelope_of(&held),
@@ -622,11 +627,15 @@ impl ResourceStore for DocumentStore {
         }
     }
 
-    async fn vread(&self, id: &ResourceId, version: &VersionId) -> Result<ResourceEnvelope, Error> {
+    async fn vread(
+        &self,
+        key: &ResourceKey,
+        version: &VersionId,
+    ) -> Result<ResourceEnvelope, Error> {
         let number = version_number(version)?;
         let found = self
             .perhaps(
-                doc! {"resource_id": id.as_str(), "version_number": number},
+                named(key, doc! {"version_number": number}),
                 "reading a version",
             )
             .await?;
@@ -643,7 +652,10 @@ impl ResourceStore for DocumentStore {
     ) -> Result<ResourceEnvelope, Error> {
         let mut work = self.writing().await?;
         let session = work.session()?;
-        let Some(current) = self.current_in(session, envelope.id()).await? else {
+        let Some(current) = self
+            .current_in(session, &ResourceKey::of(&envelope))
+            .await?
+        else {
             return Err(Error::NotFound);
         };
         if let Some(expected) = expected_version {
@@ -675,7 +687,7 @@ impl ResourceStore for DocumentStore {
         let mut work = self.writing().await?;
         let session = work.session()?;
         if let Some(held) = self
-            .version_in(session, envelope.id(), envelope.version_id())
+            .version_in(session, &ResourceKey::of(&envelope), envelope.version_id())
             .await?
         {
             let same = held.last_updated == *envelope.last_updated()
@@ -690,7 +702,9 @@ impl ResourceStore for DocumentStore {
                 envelope.id().as_str()
             )));
         }
-        let current = self.current_in(session, envelope.id()).await?;
+        let current = self
+            .current_in(session, &ResourceKey::of(&envelope))
+            .await?;
         let session = work.session()?;
         self.append(session, current.as_ref(), &envelope).await?;
         work.done().await?;
@@ -701,17 +715,20 @@ impl ResourceStore for DocumentStore {
         crate::query::run(self, query).await
     }
 
-    async fn delete(&self, id: &ResourceId) -> Result<ResourceEnvelope, Error> {
+    async fn delete(&self, key: &ResourceKey) -> Result<ResourceEnvelope, Error> {
         let mut work = self.writing().await?;
         let session = work.session()?;
-        let current = self.current_in(session, id).await?.ok_or(Error::NotFound)?;
+        let current = self
+            .current_in(session, key)
+            .await?
+            .ok_or(Error::NotFound)?;
         if current.deleted {
             return Err(Error::Deleted);
         }
         let marker = ResourceEnvelope::deleted_marker(
             current.spec,
             current.resource_type,
-            id.clone(),
+            key.id().clone(),
             next_version(&current.version)?,
             (self.clock)(),
         );
@@ -721,12 +738,12 @@ impl ResourceStore for DocumentStore {
         Ok(marker)
     }
 
-    async fn hard_delete(&self, id: &ResourceId) -> Result<(), Error> {
+    async fn hard_delete(&self, key: &ResourceKey) -> Result<(), Error> {
         let mut work = self.writing().await?;
         let session = work.session()?;
         let removed = self
             .resources()
-            .delete_many(doc! {"resource_id": id.as_str()})
+            .delete_many(named(key, doc! {}))
             .session(&mut *session)
             .await
             .map_err(|error| faulted("removing a resource", error))?;
@@ -737,16 +754,47 @@ impl ResourceStore for DocumentStore {
         }
     }
 
-    async fn purge_history(&self, id: &ResourceId) -> Result<usize, Error> {
+    async fn erase_versions(&self, key: &ResourceKey, through: &VersionId) -> Result<usize, Error> {
         let mut work = self.writing().await?;
+        let number = version_number(through)?;
         let session = work.session()?;
-        if self.current_in(session, id).await?.is_none() {
+        if self.version_in(session, key, through).await?.is_none() {
             return Err(Error::NotFound);
         }
         let session = work.session()?;
         let removed = self
             .resources()
-            .delete_many(doc! {"resource_id": id.as_str(), "is_current": false})
+            .delete_many(named(key, doc! {"version_number": {"$lte": number}}))
+            .session(&mut *session)
+            .await
+            .map_err(|error| faulted("erasing a version", error))?;
+        work.done().await?;
+        Ok(removed.deleted_count as usize)
+    }
+
+    async fn empty(&self) -> Result<usize, Error> {
+        let mut work = self.writing().await?;
+        let session = work.session()?;
+        let removed = self
+            .resources()
+            .delete_many(doc! {})
+            .session(&mut *session)
+            .await
+            .map_err(|error| faulted("emptying the store", error))?;
+        work.done().await?;
+        Ok(removed.deleted_count as usize)
+    }
+
+    async fn purge_history(&self, key: &ResourceKey) -> Result<usize, Error> {
+        let mut work = self.writing().await?;
+        let session = work.session()?;
+        if self.current_in(session, key).await?.is_none() {
+            return Err(Error::NotFound);
+        }
+        let session = work.session()?;
+        let removed = self
+            .resources()
+            .delete_many(named(key, doc! {"is_current": false}))
             .session(&mut *session)
             .await
             .map_err(|error| faulted("purging history", error))?;
@@ -760,13 +808,10 @@ impl ResourceStore for DocumentStore {
         query: &HistoryQuery,
     ) -> Result<HistoryPage, Error> {
         if let HistoryScope::Instance(resource_type, id) = scope {
-            let found = self
-                .perhaps(doc! {"resource_id": id.as_str()}, "reading a resource")
+            let key = ResourceKey::new(*resource_type, id.clone());
+            self.perhaps(named(&key, doc! {}), "reading a resource")
                 .await?
                 .ok_or(Error::NotFound)?;
-            if found.get_str("resource_type") != Ok(resource_type.as_str()) {
-                return Err(Error::NotFound);
-            }
         }
         let (found, total) = self.scoped(scope, query).await?;
         let entries = found
@@ -810,9 +855,9 @@ impl ResourceStore for DocumentStore {
     async fn reindex_resource(
         &self,
         specs: &[ParameterSpec],
-        id: &ResourceId,
+        key: &ResourceKey,
     ) -> Result<Vec<IndexReport>, Error> {
-        crate::query::reindex_resource(self, specs, id).await
+        crate::query::reindex_resource(self, specs, key).await
     }
 
     async fn index_report(&self, url: &str) -> Result<Option<IndexReport>, Error> {

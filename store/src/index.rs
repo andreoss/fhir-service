@@ -198,11 +198,21 @@ fn quantities_of(element: &Value, out: &mut Vec<Measured>) {
             if let Some(nested) = map.get("value") {
                 numbers_of(nested, &mut values);
             }
-            out.extend(
-                values
-                    .into_iter()
-                    .map(|value| (value, system.clone(), code.clone(), true)),
-            );
+            
+            
+            
+            
+            out.extend(values.into_iter().map(|value| {
+                match fhir_core::ucum::canonical(value, system.as_deref(), code.as_deref()) {
+                    Some((held, base)) => (
+                        held,
+                        Some(fhir_core::ucum::UCUM.to_owned()),
+                        Some(base.to_owned()),
+                        true,
+                    ),
+                    None => (value, system.clone(), code.clone(), true),
+                }
+            }));
         }
         Value::Number(_) | Value::String(_) => {
             let mut values = Vec::new();

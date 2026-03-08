@@ -37,7 +37,12 @@ async fn request(app: &Service, method: &str, uri: &str, body: &[u8]) -> Reply {
     let headers = response
         .headers()
         .iter()
-        .map(|(name, value)| (name.to_string(), value.to_str().unwrap_or_default().to_owned()))
+        .map(|(name, value)| {
+            (
+                name.to_string(),
+                value.to_str().unwrap_or_default().to_owned(),
+            )
+        })
         .collect();
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     Reply {
@@ -63,7 +68,10 @@ fn queue() -> (Arc<MemoryJobStore>, StepTicker) {
 
 fn submitted_id(reply: &Reply) -> JobId {
     let location = header(reply, "content-location");
-    let tail = location.rsplit('/').next().expect("a status location ends in an id");
+    let tail = location
+        .rsplit('/')
+        .next()
+        .expect("a status location ends in an id");
     JobId::parse(tail).expect("the announced id is valid")
 }
 
@@ -80,8 +88,12 @@ async fn a_submission_answers_with_a_status_location_and_a_retry_after() {
     assert!(!header(&reply, "retry-after").is_empty());
     let held = jobs.fetch(&submitted_id(&reply)).await.unwrap();
     assert_eq!(held.kind, fhir_store::JobKind::Export);
-    let payload: serde_json::Value =
-        serde_json::from_str(held.payload.as_deref().expect("a job carries a description")).unwrap();
+    let payload: serde_json::Value = serde_json::from_str(
+        held.payload
+            .as_deref()
+            .expect("a job carries a description"),
+    )
+    .unwrap();
     assert_eq!(payload["types"][0], "Patient");
     assert_eq!(payload["scope"], "system");
     assert!(payload["_till"].is_string());
@@ -117,7 +129,11 @@ async fn polling_a_queued_job_reports_progress_and_asks_to_wait() {
 
     assert_eq!(polled.status, StatusCode::ACCEPTED);
     assert!(!header(&polled, "retry-after").is_empty());
-    assert!(header(&polled, "x-progress").contains("queued"), "{:?}", polled.headers);
+    assert!(
+        header(&polled, "x-progress").contains("queued"),
+        "{:?}",
+        polled.headers
+    );
 }
 
 #[tokio::test]
@@ -126,10 +142,16 @@ async fn polling_a_finished_job_answers_with_its_manifest() {
     let app = service(Arc::clone(&jobs) as Arc<dyn JobStore>);
     let reply = request(&app, "POST", "/$export", b"{}").await;
     let id = submitted_id(&reply);
-    jobs.claim(&fhir_store::Lease::new("one", 1_000)).await.unwrap();
-    jobs.finish(&id, "one", fhir_store::JobResult::Succeeded("{\"handled\":2}".to_owned()))
+    jobs.claim(&fhir_store::Lease::new("one", 1_000))
         .await
         .unwrap();
+    jobs.finish(
+        &id,
+        "one",
+        fhir_store::JobResult::Succeeded("{\"handled\":2}".to_owned()),
+    )
+    .await
+    .unwrap();
 
     let polled = request(&app, "GET", &format!("/_jobs/{id}"), b"").await;
 
@@ -149,10 +171,16 @@ async fn polling_a_failed_job_answers_with_an_outcome() {
     let id = submitted_id(&reply);
     while jobs.fetch(&id).await.unwrap().state != fhir_store::JobState::Failed {
         ticker.advance(10_000);
-        jobs.claim(&fhir_store::Lease::new("one", 1_000)).await.unwrap();
-        jobs.finish(&id, "one", fhir_store::JobResult::Failed("no store".to_owned()))
+        jobs.claim(&fhir_store::Lease::new("one", 1_000))
             .await
             .unwrap();
+        jobs.finish(
+            &id,
+            "one",
+            fhir_store::JobResult::Failed("no store".to_owned()),
+        )
+        .await
+        .unwrap();
     }
 
     let polled = request(&app, "GET", &format!("/_jobs/{id}"), b"").await;
@@ -196,10 +224,16 @@ async fn cancelling_a_finished_job_conflicts() {
     let app = service(Arc::clone(&jobs) as Arc<dyn JobStore>);
     let reply = request(&app, "POST", "/$export", b"{}").await;
     let id = submitted_id(&reply);
-    jobs.claim(&fhir_store::Lease::new("one", 1_000)).await.unwrap();
-    jobs.finish(&id, "one", fhir_store::JobResult::Succeeded("{}".to_owned()))
+    jobs.claim(&fhir_store::Lease::new("one", 1_000))
         .await
         .unwrap();
+    jobs.finish(
+        &id,
+        "one",
+        fhir_store::JobResult::Succeeded("{}".to_owned()),
+    )
+    .await
+    .unwrap();
 
     let cancelled = request(&app, "DELETE", &format!("/_jobs/{id}"), b"").await;
 

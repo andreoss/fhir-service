@@ -19,7 +19,7 @@ pub fn validate_id_chars(value: &str) -> Result<(), Error> {
     Ok(())
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ResourceId(String);
 
 impl ResourceId {
@@ -61,7 +61,11 @@ mod tests {
 
     #[test]
     fn accepts_valid_ids() {
-        for value in ["a", "abc-123.xyz", "1234567890123456789012345678901234567890123456789012345678901234"] {
+        for value in [
+            "a",
+            "abc-123.xyz",
+            "1234567890123456789012345678901234567890123456789012345678901234",
+        ] {
             let id = ResourceId::parse(value).expect("valid id should parse");
             assert_eq!(id.as_str(), value);
         }
@@ -69,19 +73,28 @@ mod tests {
 
     #[test]
     fn rejects_empty_id() {
-        assert!(matches!(ResourceId::parse(""), Err(Error::InvalidResourceId(_))));
+        assert!(matches!(
+            ResourceId::parse(""),
+            Err(Error::InvalidResourceId(_))
+        ));
     }
 
     #[test]
     fn rejects_id_longer_than_64() {
         let value = "a".repeat(65);
-        assert!(matches!(ResourceId::parse(&value), Err(Error::InvalidResourceId(_))));
+        assert!(matches!(
+            ResourceId::parse(&value),
+            Err(Error::InvalidResourceId(_))
+        ));
     }
 
     #[test]
     fn rejects_invalid_id_characters() {
         for value in ["with space", "slash/", "under_score", "ok:", "a\nb"] {
-            assert!(matches!(ResourceId::parse(value), Err(Error::InvalidResourceId(_))));
+            assert!(matches!(
+                ResourceId::parse(value),
+                Err(Error::InvalidResourceId(_))
+            ));
         }
     }
 

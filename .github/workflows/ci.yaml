@@ -5,49 +5,50 @@ on:
     branches: ["master"]
   pull_request:
 
-env:
-  FHIR_IMAGE: fhir-service:${{ github.sha }}
-  FHIR_COVERAGE_FLOOR: "85"
-
 jobs:
   pipeline:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: format
-        run: cargo fmt --all --check
-      - name: analysis
-        run: cargo clippy --workspace --all-targets -- -D warnings
-      - name: build
-        run: cargo build --workspace
       - name: engines
         run: docker compose up -d --wait
+      - name: build
+        run: cargo build --workspace
       - name: test
         run: cargo test --workspace
+      - name: analysis
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: format
+        run: cargo fmt --all --check
+      - uses: taiki-e/install-action@cargo-deny
+      - name: dependencies
+        run: cargo deny --all-features check advisories licenses bans sources
+      - uses: taiki-e/install-action@cargo-cyclonedx
+      - name: bill of materials
+        run: |
+          cargo cyclonedx --format json --all-features -p fhir-host
+          mkdir -p scratch
+          mv host/bill-of-materials.json scratch/bill-of-materials.json
       - uses: taiki-e/install-action@cargo-llvm-cov
       - name: coverage
         run: |
           mkdir -p scratch
-          cargo llvm-cov --workspace --summary-only --json \
-            --output-path scratch/coverage.json
-          covered=$(jq -r '.data[0].totals.lines.percent' scratch/coverage.json)
-          echo "lines covered: $covered (floor $FHIR_COVERAGE_FLOOR)"
-          awk -v c="$covered" -v f="$FHIR_COVERAGE_FLOOR" \
-            'BEGIN { exit (c + 0 >= f + 0) ? 0 : 1 }'
+          cargo llvm-cov --workspace --summary-only --json --output-path scratch/coverage.json
+          cargo run --quiet --bin gate -- scratch/coverage.json 85
       - name: image
-        run: docker build --file Containerfile --tag "$FHIR_IMAGE" .
-      - name: publish
-        if: github.ref == 'refs/heads/master'
-        env:
-          FHIR_REGISTRY: ${{ vars.FHIR_REGISTRY }}
+        run: sh ci/publish.sh
+      - name: record the image the bill of materials describes
         run: |
-          if [ -z "${FHIR_REGISTRY:-}" ]; then
-            echo "publish skipped: no registry named"
-            exit 0
-          fi
-          docker tag "$FHIR_IMAGE" "$FHIR_REGISTRY/$FHIR_IMAGE"
-          docker push "$FHIR_REGISTRY/$FHIR_IMAGE"
+          printf 'image %s\n' "$(sh ci/digest.sh)" >> scratch/bill-of-materials.txt
+          cat scratch/bill-of-materials.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bill-of-materials
+          path: |
+            scratch/bill-of-materials.json
+            scratch/bill-of-materials.txt
       - name: engines down
         if: always()
         run: docker compose down -v

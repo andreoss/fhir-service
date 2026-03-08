@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use fhir_core::security::bearer::KeySet;
 use fhir_core::Error;
-use std::collections::HashMap;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -247,7 +247,9 @@ mod tests {
             .expect("one thumbprint");
         let handle = tokio::spawn(async move {
             for _ in 0..replies {
-                let Ok((mut socket, _)) = listener.accept().await else { return };
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
                 let mut buffer = [0u8; 1024];
                 let read = socket.read(&mut buffer).await.unwrap_or(0);
                 let request = String::from_utf8_lossy(&buffer[..read]).to_string();
@@ -347,13 +349,15 @@ mod pinning {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let addr = listener.local_addr().expect("addr");
         let base = format!("http://{addr}");
-        let named = metadata.unwrap_or_else(|| {
-            json!({ "issuer": base.clone(), "jwks_uri": format!("{base}/keys") })
-        });
+        let named = metadata.unwrap_or_else(
+            || json!({ "issuer": base.clone(), "jwks_uri": format!("{base}/keys") }),
+        );
         let keys = Arc::new(keys);
         let handle = tokio::spawn(async move {
             loop {
-                let Ok((mut socket, _)) = listener.accept().await else { return };
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
                 let mut buffer = [0u8; 1024];
                 let read = socket.read(&mut buffer).await.unwrap_or(0);
                 let request = String::from_utf8_lossy(&buffer[..read]).to_string();
@@ -387,7 +391,10 @@ mod pinning {
         let found = DiscoveredKeys::new(Duration::from_secs(2));
         let refused = found.keys(&issuer.base).await;
         assert!(refused.is_err(), "an unauthenticated fetch must be refused");
-        let detail = refused.err().map(|error| error.to_string()).unwrap_or_default();
+        let detail = refused
+            .err()
+            .map(|error| error.to_string())
+            .unwrap_or_default();
         assert!(detail.contains("pin"), "{detail}");
     }
 
@@ -439,7 +446,10 @@ mod pinning {
         let issuer = answering(published, Some(strayed)).await;
         let found = DiscoveredKeys::new(Duration::from_secs(2)).pinning(&issuer.base, [pin]);
         let refused = found.keys(&issuer.base).await;
-        assert!(refused.is_err(), "keys must come from the issuer's own origin");
+        assert!(
+            refused.is_err(),
+            "keys must come from the issuer's own origin"
+        );
     }
 
     #[tokio::test]

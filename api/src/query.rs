@@ -19,6 +19,10 @@ fn split(pair: &str) -> (&str, &str) {
     pair.split_once('=').unwrap_or((pair, ""))
 }
 
+pub fn decoded(text: &str) -> String {
+    decode(text)
+}
+
 fn decode(text: &str) -> String {
     let bytes = text.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
@@ -29,16 +33,18 @@ fn decode(text: &str) -> String {
                 out.push(b' ');
                 index += 1;
             }
-            b'%' if index + 2 < bytes.len() => match hex(bytes[index + 1]).zip(hex(bytes[index + 2])) {
-                Some((high, low)) => {
-                    out.push(high * 16 + low);
-                    index += 3;
+            b'%' if index + 2 < bytes.len() => {
+                match hex(bytes[index + 1]).zip(hex(bytes[index + 2])) {
+                    Some((high, low)) => {
+                        out.push(high * 16 + low);
+                        index += 3;
+                    }
+                    None => {
+                        out.push(bytes[index]);
+                        index += 1;
+                    }
                 }
-                None => {
-                    out.push(bytes[index]);
-                    index += 1;
-                }
-            },
+            }
             byte => {
                 out.push(byte);
                 index += 1;
@@ -55,6 +61,23 @@ fn hex(byte: u8) -> Option<u8> {
         b'A'..=b'F' => Some(byte - b'A' + 10),
         _ => None,
     }
+}
+
+
+
+
+pub fn encoded(text: &str) -> String {
+    let mut held = String::with_capacity(text.len());
+    for byte in text.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'*' => {
+                held.push(byte as char)
+            }
+            b' ' => held.push_str("%20"),
+            other => held.push_str(&format!("%{other:02X}")),
+        }
+    }
+    held
 }
 
 #[cfg(test)]
@@ -89,7 +112,10 @@ mod tests {
 
     #[test]
     fn a_named_parameter_is_read_back() {
-        assert_eq!(param(Some("_count=5&_since=x"), "_count"), Some("5".to_owned()));
+        assert_eq!(
+            param(Some("_count=5&_since=x"), "_count"),
+            Some("5".to_owned())
+        );
         assert_eq!(param(Some("_count=5"), "_sort"), None);
         assert_eq!(param(None, "_count"), None);
     }

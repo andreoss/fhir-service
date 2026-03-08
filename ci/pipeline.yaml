@@ -1,0 +1,18 @@
+stages:
+  - name: build
+    run: cargo build --workspace --locked
+  - name: test
+    run: cargo test --workspace --locked
+  - name: analysis
+    run: cargo clippy --workspace --all-targets --locked -- -D warnings
+  - name: format
+    run: cargo fmt --all --check
+  - name: dependencies
+    run: cargo deny --all-features check advisories licenses bans sources
+  - name: bill of materials
+    run: cargo cyclonedx --format json --all-features -p fhir-host && mkdir -p scratch && mv host/bill-of-materials.json scratch/bill-of-materials.json
+  - name: coverage
+    run: cargo llvm-cov --workspace --locked --summary-only --json --output-path scratch/coverage.json && cargo run --quiet --bin gate -- scratch/coverage.json 85
+    gate: 85
+  - name: publish
+    run: sh ci/publish.sh

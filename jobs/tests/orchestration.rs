@@ -34,7 +34,12 @@ async fn ran(
 ) -> fhir_store::JobRecord {
     let id = request.id.clone();
     jobs.submit(request).await.unwrap();
-    let worker = Worker::new(Arc::clone(&jobs) as Arc<dyn JobStore>, Arc::new(orchestrator), "one", 1_000);
+    let worker = Worker::new(
+        Arc::clone(&jobs) as Arc<dyn JobStore>,
+        Arc::new(orchestrator),
+        "one",
+        1_000,
+    );
     assert_eq!(worker.poll().await.unwrap(), 1);
     jobs.fetch(&id).await.unwrap()
 }
@@ -97,19 +102,27 @@ async fn an_import_writes_rows_and_reports_a_bad_row_by_position() {
     let outcome: serde_json::Value = serde_json::from_str(&record.outcome.unwrap()).unwrap();
     assert_eq!(outcome["handled"], 1);
     assert_eq!(outcome["failures"].as_array().unwrap().len(), 1);
-    assert!(outcome["failures"][0].as_str().unwrap().starts_with("row 1"));
-    assert!(store.read(&fhir_store_contract::fixture::id("i1")).await.is_ok());
+    assert!(outcome["failures"][0]
+        .as_str()
+        .unwrap()
+        .starts_with("row 1"));
+    assert!(store
+        .read(&fhir_core::ResourceKey::new(
+            "Patient".parse().unwrap(),
+            fhir_store_contract::fixture::id("i1")
+        ))
+        .await
+        .is_ok());
 }
 
 #[tokio::test]
 async fn a_bulk_delete_removes_every_matching_resource() {
     let store = seeded().await;
     let (jobs, _ticker) = queue();
-    let orchestrator =
-        Orchestrator::new().with(Arc::new(BulkDeleteJob::new(
-            Arc::clone(&store) as Arc<dyn ResourceStore>,
-            sink(),
-        )));
+    let orchestrator = Orchestrator::new().with(Arc::new(BulkDeleteJob::new(
+        Arc::clone(&store) as Arc<dyn ResourceStore>,
+        sink(),
+    )));
     let record = ran(
         jobs,
         orchestrator,
@@ -127,12 +140,12 @@ async fn a_bulk_delete_removes_every_matching_resource() {
 async fn a_bulk_update_patches_every_matching_resource() {
     let store = seeded().await;
     let (jobs, _ticker) = queue();
-    let orchestrator =
-        Orchestrator::new().with(Arc::new(BulkUpdateJob::new(
-            Arc::clone(&store) as Arc<dyn ResourceStore>,
-            sink(),
-        )));
-    let payload = r#"{"types":["Patient"],"patch":[{"op":"replace","path":"/active","value":false}]}"#;
+    let orchestrator = Orchestrator::new().with(Arc::new(BulkUpdateJob::new(
+        Arc::clone(&store) as Arc<dyn ResourceStore>,
+        sink(),
+    )));
+    let payload =
+        r#"{"types":["Patient"],"patch":[{"op":"replace","path":"/active","value":false}]}"#;
     let record = ran(
         jobs,
         orchestrator,
@@ -142,7 +155,13 @@ async fn a_bulk_update_patches_every_matching_resource() {
 
     let outcome: serde_json::Value = serde_json::from_str(&record.outcome.unwrap()).unwrap();
     assert_eq!(outcome["handled"], 2);
-    let read = store.read(&fhir_store_contract::fixture::id("p1")).await.unwrap();
+    let read = store
+        .read(&fhir_core::ResourceKey::new(
+            "Patient".parse().unwrap(),
+            fhir_store_contract::fixture::id("p1"),
+        ))
+        .await
+        .unwrap();
     let body: serde_json::Value = serde_json::from_slice(read.raw()).unwrap();
     assert_eq!(body["active"], false);
 }
@@ -202,7 +221,12 @@ async fn a_kind_no_handler_was_registered_for_is_refused_and_the_job_never_runs(
     let told = refused.outcome.unwrap_or_default();
     assert!(told.contains("import"), "{told}");
     assert_eq!(
-        store.search(&SearchQuery::default()).await.unwrap().entries.len(),
+        store
+            .search(&SearchQuery::default())
+            .await
+            .unwrap()
+            .entries
+            .len(),
         2,
         "a refused job touches no record"
     );

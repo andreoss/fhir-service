@@ -1,4 +1,3 @@
-
 use crate::Config;
 use fhir_core::{Catalogue, Error};
 use serde_json::Value;
@@ -30,8 +29,8 @@ fn read(directory: &Path) -> Result<Vec<Value>, Error> {
     for path in names {
         let text = std::fs::read_to_string(&path)
             .map_err(|_| Error::Config("a supplied terminology file cannot be read".to_owned()))?;
-        let body: Value = serde_json::from_str(&text)
-            .map_err(|reason| Error::InvalidJson(reason.to_string()))?;
+        let body: Value =
+            serde_json::from_str(&text).map_err(|reason| Error::InvalidJson(reason.to_string()))?;
         match body.get("resourceType").and_then(Value::as_str) {
             Some("Bundle") => bodies.extend(entries(&body)),
             _ => bodies.push(body),

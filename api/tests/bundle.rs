@@ -614,7 +614,7 @@ async fn a_delete_entry_outside_the_scope_is_refused() {
 
 use async_trait::async_trait;
 use fhir_core::search::ParameterSpec;
-use fhir_core::{Error, ResourceEnvelope, ResourceId, VersionId};
+use fhir_core::{Error, ResourceEnvelope, VersionId};
 use fhir_store::{
     HistoryPage, HistoryQuery, HistoryScope, IndexReport, ResourceStore, SearchPage, SearchQuery,
     StoreScope,
@@ -665,12 +665,16 @@ impl ResourceStore for Probe {
         stored
     }
 
-    async fn read(&self, id: &ResourceId) -> Result<ResourceEnvelope, Error> {
-        self.inner.read(id).await
+    async fn read(&self, key: &fhir_core::ResourceKey) -> Result<ResourceEnvelope, Error> {
+        self.inner.read(key).await
     }
 
-    async fn vread(&self, id: &ResourceId, version: &VersionId) -> Result<ResourceEnvelope, Error> {
-        self.inner.vread(id, version).await
+    async fn vread(
+        &self,
+        key: &fhir_core::ResourceKey,
+        version: &VersionId,
+    ) -> Result<ResourceEnvelope, Error> {
+        self.inner.vread(key, version).await
     }
 
     async fn update(
@@ -685,16 +689,16 @@ impl ResourceStore for Probe {
         self.inner.search(query).await
     }
 
-    async fn delete(&self, id: &ResourceId) -> Result<ResourceEnvelope, Error> {
-        self.inner.delete(id).await
+    async fn delete(&self, key: &fhir_core::ResourceKey) -> Result<ResourceEnvelope, Error> {
+        self.inner.delete(key).await
     }
 
-    async fn hard_delete(&self, id: &ResourceId) -> Result<(), Error> {
-        self.inner.hard_delete(id).await
+    async fn hard_delete(&self, key: &fhir_core::ResourceKey) -> Result<(), Error> {
+        self.inner.hard_delete(key).await
     }
 
-    async fn purge_history(&self, id: &ResourceId) -> Result<usize, Error> {
-        self.inner.purge_history(id).await
+    async fn purge_history(&self, key: &fhir_core::ResourceKey) -> Result<usize, Error> {
+        self.inner.purge_history(key).await
     }
 
     async fn history(

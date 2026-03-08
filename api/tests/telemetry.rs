@@ -69,7 +69,9 @@ async fn a_request_is_measured_under_the_operation_it_ran() {
     assert!(text.contains("fhir_operation_total{operation=\"search\",outcome=\"success\"} 1"));
     assert!(text.contains("fhir_operation_total{operation=\"read\",outcome=\"client_fault\"} 1"));
     assert!(text.contains("fhir_operation_failure_total{operation=\"read\"} 1"));
-    assert!(text.contains("fhir_operation_duration_ms_count{operation=\"read\",outcome=\"success\"} 1"));
+    assert!(
+        text.contains("fhir_operation_duration_ms_count{operation=\"read\",outcome=\"success\"} 1")
+    );
 }
 
 #[tokio::test]
@@ -99,7 +101,13 @@ async fn nothing_a_caller_supplied_reaches_telemetry() {
     let sink = Held::default();
     let app = service(&sink);
     let telemetry = app.telemetry();
-    call(&app, "PUT", &format!("/Patient/{PATIENT}"), &patient(PATIENT)).await;
+    call(
+        &app,
+        "PUT",
+        &format!("/Patient/{PATIENT}"),
+        &patient(PATIENT),
+    )
+    .await;
     call(&app, "GET", &format!("/Patient/{PATIENT}"), b"").await;
     call(&app, "GET", &format!("/Patient?family={NAME}"), b"").await;
     call(&app, "GET", &format!("/Patient/{PATIENT}/_history"), b"").await;

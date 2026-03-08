@@ -28,6 +28,54 @@ pub async fn open(config: &Config) -> Result<Stores, Error> {
     Ok((store, jobs, outputs))
 }
 
+
+
+
+pub async fn resources_for(
+    config: &Config,
+    version: fhir_core::FhirVersion,
+) -> Result<Arc<dyn ResourceStore>, Error> {
+    let held = Config {
+        version,
+        ..config.clone()
+    };
+    let _ = &held;
+    #[cfg(any(feature = "backend-relational", feature = "backend-document"))]
+    let suffix = version.as_str().to_ascii_lowercase();
+    match config.backend {
+        #[cfg(feature = "backend-memory")]
+        Backend::Memory => Ok(Arc::new(MemoryStore::default())),
+        #[cfg(not(feature = "backend-memory"))]
+        Backend::Memory => resources(config).await,
+        #[cfg(feature = "backend-relational")]
+        Backend::Relational => {
+            let base = relational_namespace()?;
+            let namespace = Namespace::parse(&format!("{}_{suffix}", base.as_str()))?;
+            let store = RelationalStore::connect_waiting(
+                &config.database_url,
+                namespace,
+                config.connections,
+                config.wait,
+            )
+            .await?;
+            store.migrate().await?;
+            Ok(Arc::new(store))
+        }
+        #[cfg(not(feature = "backend-relational"))]
+        Backend::Relational => resources(config).await,
+        #[cfg(feature = "backend-document")]
+        Backend::Document => {
+            let base = document_namespace()?;
+            let namespace = Namespace::parse(&format!("{}_{suffix}", base.as_str()))?;
+            let store = DocumentStore::connect(&config.document_url, namespace).await?;
+            store.initialise().await?;
+            Ok(Arc::new(store))
+        }
+        #[cfg(not(feature = "backend-document"))]
+        Backend::Document => resources(config).await,
+    }
+}
+
 pub async fn resources(config: &Config) -> Result<Arc<dyn ResourceStore>, Error> {
     match config.backend {
         #[cfg(feature = "backend-memory")]
@@ -62,12 +110,20 @@ pub async fn resources(config: &Config) -> Result<Arc<dyn ResourceStore>, Error>
 pub async fn queue(config: &Config) -> Result<Option<Arc<dyn JobStore>>, Error> {
     match config.backend {
         #[cfg(feature = "backend-memory")]
-        Backend::Memory => Ok(Some(Arc::new(fhir_adapter_memory::MemoryJobStore::default()))),
+        Backend::Memory => Ok(Some(Arc::new(
+            fhir_adapter_memory::MemoryJobStore::default(),
+        ))),
         #[cfg(not(feature = "backend-memory"))]
         Backend::Memory => Ok(None),
         #[cfg(feature = "backend-relational")]
         Backend::Relational => {
-            let store = RelationalStore::connect_waiting(&config.database_url, relational_namespace()?, config.connections, config.wait).await?;
+            let store = RelationalStore::connect_waiting(
+                &config.database_url,
+                relational_namespace()?,
+                config.connections,
+                config.wait,
+            )
+            .await?;
             Ok(Some(Arc::new(store.jobs())))
         }
         #[cfg(not(feature = "backend-relational"))]
@@ -84,7 +140,13 @@ pub async fn outputs(config: &Config) -> Result<Option<Arc<dyn BulkStore>>, Erro
         Backend::Memory => Ok(None),
         #[cfg(feature = "backend-relational")]
         Backend::Relational => {
-            let store = RelationalStore::connect_waiting(&config.database_url, relational_namespace()?, config.connections, config.wait).await?;
+            let store = RelationalStore::connect_waiting(
+                &config.database_url,
+                relational_namespace()?,
+                config.connections,
+                config.wait,
+            )
+            .await?;
             Ok(Some(Arc::new(store.outputs())))
         }
         #[cfg(not(feature = "backend-relational"))]

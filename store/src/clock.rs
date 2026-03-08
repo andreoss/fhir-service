@@ -17,7 +17,6 @@ fn epoch() -> FhirInstant {
     FhirInstant::parse("1970-01-01T00:00:00+00:00").expect("epoch instant is valid")
 }
 
-
 pub type Ticker = Arc<dyn Fn() -> i64 + Send + Sync>;
 
 pub fn system_ticker() -> Ticker {
@@ -36,7 +35,9 @@ impl StepTicker {
     }
 
     pub fn advance(&self, millis: i64) -> i64 {
-        self.0.fetch_add(millis, std::sync::atomic::Ordering::SeqCst) + millis
+        self.0
+            .fetch_add(millis, std::sync::atomic::Ordering::SeqCst)
+            + millis
     }
 
     pub fn now(&self) -> i64 {

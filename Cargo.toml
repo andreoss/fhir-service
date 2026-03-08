@@ -11,6 +11,7 @@ members = [
     "telemetry",
     "api",
     "host",
+    "tools/tools",
     "shadow",
 ]
 

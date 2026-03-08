@@ -1,7 +1,9 @@
 use fhir_adapter_memory::{MemoryJobStore, MemoryStore};
 use fhir_core::FhirVersion;
 use fhir_jobs::{ImportJob, Orchestrator, Worker};
-use fhir_store::{BulkStore, JobId, JobKind, JobRequest, JobState, JobStore, ResourceStore, StepTicker};
+use fhir_store::{
+    BulkStore, JobId, JobKind, JobRequest, JobState, JobStore, ResourceStore, StepTicker,
+};
 use fhir_store_contract::fixture::{id, observation, patient};
 use serde_json::Value;
 use std::sync::Arc;
@@ -63,10 +65,28 @@ async fn newline_delimited_rows_are_loaded_and_a_bad_row_names_its_line() {
     assert_eq!(outcome["handled"], 2);
     let failures = outcome["failures"].as_array().expect("failures are listed");
     assert_eq!(failures.len(), 2);
-    assert!(failures[0].as_str().unwrap().starts_with("row 1"), "{failures:?}");
-    assert!(failures[1].as_str().unwrap().starts_with("row 4"), "{failures:?}");
-    assert!(store.read(&id("i1")).await.is_ok());
-    assert!(store.read(&id("o1")).await.is_ok());
+    assert!(
+        failures[0].as_str().unwrap().starts_with("row 1"),
+        "{failures:?}"
+    );
+    assert!(
+        failures[1].as_str().unwrap().starts_with("row 4"),
+        "{failures:?}"
+    );
+    assert!(store
+        .read(&fhir_core::ResourceKey::new(
+            "Patient".parse().unwrap(),
+            id("i1")
+        ))
+        .await
+        .is_ok());
+    assert!(store
+        .read(&fhir_core::ResourceKey::new(
+            "Observation".parse().unwrap(),
+            id("o1")
+        ))
+        .await
+        .is_ok());
 }
 
 #[tokio::test]
@@ -95,8 +115,17 @@ async fn a_described_supply_still_carries_its_rows_in_an_array() {
     let outcome = outcome_of(&record);
     assert_eq!(outcome["handled"], 1);
     assert_eq!(outcome["failures"].as_array().unwrap().len(), 1);
-    assert!(outcome["failures"][0].as_str().unwrap().starts_with("row 1"));
-    assert!(store.read(&id("i2")).await.is_ok());
+    assert!(outcome["failures"][0]
+        .as_str()
+        .unwrap()
+        .starts_with("row 1"));
+    assert!(store
+        .read(&fhir_core::ResourceKey::new(
+            "Patient".parse().unwrap(),
+            id("i2")
+        ))
+        .await
+        .is_ok());
 }
 
 #[tokio::test]
@@ -112,7 +141,18 @@ async fn a_row_matching_what_is_held_creates_no_version() {
     let loaded = outcome_of(&first);
     assert_eq!(loaded["handled"], 2);
     assert_eq!(loaded["unchanged"], 0);
-    assert_eq!(store.read(&id("i3")).await.unwrap().version_id().as_str(), "1");
+    assert_eq!(
+        store
+            .read(&fhir_core::ResourceKey::new(
+                "Patient".parse().unwrap(),
+                id("i3")
+            ))
+            .await
+            .unwrap()
+            .version_id()
+            .as_str(),
+        "1"
+    );
 
     let again = ran(Arc::clone(&store), job("m5"), supplied).await;
     let repeated = outcome_of(&again);
@@ -120,8 +160,30 @@ async fn a_row_matching_what_is_held_creates_no_version() {
     assert_eq!(repeated["handled"], 0);
     assert_eq!(repeated["unchanged"], 2);
     assert_eq!(repeated["failures"].as_array().unwrap().len(), 0);
-    assert_eq!(store.read(&id("i3")).await.unwrap().version_id().as_str(), "1");
-    assert_eq!(store.read(&id("o3")).await.unwrap().version_id().as_str(), "1");
+    assert_eq!(
+        store
+            .read(&fhir_core::ResourceKey::new(
+                "Patient".parse().unwrap(),
+                id("i3")
+            ))
+            .await
+            .unwrap()
+            .version_id()
+            .as_str(),
+        "1"
+    );
+    assert_eq!(
+        store
+            .read(&fhir_core::ResourceKey::new(
+                "Observation".parse().unwrap(),
+                id("o3")
+            ))
+            .await
+            .unwrap()
+            .version_id()
+            .as_str(),
+        "1"
+    );
 }
 
 #[tokio::test]
@@ -145,7 +207,18 @@ async fn a_row_that_moved_on_creates_the_next_version() {
     let outcome = outcome_of(&moved);
     assert_eq!(outcome["handled"], 1);
     assert_eq!(outcome["unchanged"], 0);
-    assert_eq!(store.read(&id("i4")).await.unwrap().version_id().as_str(), "2");
+    assert_eq!(
+        store
+            .read(&fhir_core::ResourceKey::new(
+                "Patient".parse().unwrap(),
+                id("i4")
+            ))
+            .await
+            .unwrap()
+            .version_id()
+            .as_str(),
+        "2"
+    );
 }
 
 async fn itemised(
@@ -156,8 +229,11 @@ async fn itemised(
 ) -> fhir_store::JobRecord {
     let (jobs, _ticker) = queue();
     let orchestrator = Orchestrator::new().with(Arc::new(
-        ImportJob::new(Arc::clone(&store) as Arc<dyn ResourceStore>, FhirVersion::R4)
-            .reporting(sink as Arc<dyn fhir_store::BulkStore>),
+        ImportJob::new(
+            Arc::clone(&store) as Arc<dyn ResourceStore>,
+            FhirVersion::R4,
+        )
+        .reporting(sink as Arc<dyn fhir_store::BulkStore>),
     ));
     jobs.submit(JobRequest::new(id.clone(), JobKind::Import, payload))
         .await
@@ -199,13 +275,7 @@ async fn every_row_the_supply_lost_is_itemised_in_a_failure_file() {
         row(observation("of1", "code-1", 3.0, "Patient/f1")),
     );
 
-    let record = itemised(
-        Arc::clone(&store),
-        Arc::clone(&sink),
-        job("g1"),
-        supplied,
-    )
-    .await;
+    let record = itemised(Arc::clone(&store), Arc::clone(&sink), job("g1"), supplied).await;
 
     assert_eq!(record.state, JobState::Completed);
     let outcome = outcome_of(&record);
@@ -243,8 +313,20 @@ async fn every_row_the_supply_lost_is_itemised_in_a_failure_file() {
         .as_str()
         .unwrap()
         .starts_with("row 4"));
-    assert!(store.read(&id("f1")).await.is_ok());
-    assert!(store.read(&id("of1")).await.is_ok());
+    assert!(store
+        .read(&fhir_core::ResourceKey::new(
+            "Patient".parse().unwrap(),
+            id("f1")
+        ))
+        .await
+        .is_ok());
+    assert!(store
+        .read(&fhir_core::ResourceKey::new(
+            "Observation".parse().unwrap(),
+            id("of1")
+        ))
+        .await
+        .is_ok());
 }
 
 #[tokio::test]
@@ -287,8 +369,11 @@ async fn a_row_the_record_refuses_is_itemised_beside_the_rows_it_took() {
     let sink = Arc::new(fhir_adapter_memory::MemoryBulkStore::new());
     let (jobs, _ticker) = queue();
     let orchestrator = Orchestrator::new().with(Arc::new(
-        ImportJob::new(Arc::clone(&store) as Arc<dyn ResourceStore>, FhirVersion::R4)
-            .reporting(Arc::clone(&sink) as Arc<dyn fhir_store::BulkStore>),
+        ImportJob::new(
+            Arc::clone(&store) as Arc<dyn ResourceStore>,
+            FhirVersion::R4,
+        )
+        .reporting(Arc::clone(&sink) as Arc<dyn fhir_store::BulkStore>),
     ));
     let supplied = format!(
         "{}\n{}\n",
@@ -310,11 +395,25 @@ async fn a_row_the_record_refuses_is_itemised_beside_the_rows_it_took() {
     let outcome = outcome_of(&record);
     assert_eq!(outcome["handled"], 1);
     assert_eq!(outcome["failures"].as_array().unwrap().len(), 1);
-    let rows = reported(&sink.read(&job("g3"), "import-failures.ndjson").await.unwrap());
+    let rows = reported(
+        &sink
+            .read(&job("g3"), "import-failures.ndjson")
+            .await
+            .unwrap(),
+    );
     assert_eq!(rows.len(), 1);
     assert!(rows[0]["issue"][0]["diagnostics"]
         .as_str()
         .unwrap()
         .starts_with("row 1"));
-    assert!(inner.read(&id("f3")).await.is_ok(), "the row it took is held");
+    assert!(
+        inner
+            .read(&fhir_core::ResourceKey::new(
+                "Patient".parse().unwrap(),
+                id("f3")
+            ))
+            .await
+            .is_ok(),
+        "the row it took is held"
+    );
 }

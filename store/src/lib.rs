@@ -33,6 +33,8 @@ pub use plan::{Plan, PlanCache, PlanKey, PlanStat, REGRESSION_FACTOR};
 pub use range::{partition, FeedRange, PARTITIONS};
 pub use resource::{ResourceStore, SearchParam, SearchParams};
 pub use scope::StoreScope;
-pub use search::{SearchPage, SearchQuery, SortDirection, SortKey, TotalMode};
+pub use search::{
+    SearchPage, SearchQuery, SortDirection, SortKey, TotalMode, DEFAULT_INCLUDE_DEPTH,
+};
 pub use terminology::{Subsumption, Terminology};
 pub use trail::{digest_of, Chain, Entry, Head, Retention, Seal, Sealed, Tamper};

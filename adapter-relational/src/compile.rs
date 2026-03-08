@@ -195,15 +195,42 @@ impl<'a> Compiler<'a> {
         code: Option<&str>,
         alias: &str,
     ) -> String {
+        
+        
+        
+        
+        
+        let named_ucum = match system {
+            TokenSystem::Exact(held) => held == fhir_core::ucum::UCUM,
+            TokenSystem::Any | TokenSystem::Absent => true,
+        };
+        let scale = code
+            .filter(|_| named_ucum)
+            .and_then(|held| fhir_core::ucum::canonical(1.0, None, Some(held)));
+        let (asked_system, asked_code) = match scale {
+            Some((_, base)) => (
+                TokenSystem::Exact(fhir_core::ucum::UCUM.to_owned()),
+                Some(base),
+            ),
+            None => (system.clone(), code),
+        };
         let measure = match number {
             SearchValue::Number {
                 comparator,
                 value,
                 tolerance,
-            } => self.number_condition(*comparator, *value, *tolerance, &format!("{alias}.value")),
+            } => {
+                let factor = scale.map(|(factor, _)| factor).unwrap_or(1.0);
+                self.number_condition(
+                    *comparator,
+                    *value * factor,
+                    *tolerance * factor,
+                    &format!("{alias}.value"),
+                )
+            }
             _ => "false".to_owned(),
         };
-        let system = match system {
+        let system = match &asked_system {
             TokenSystem::Any => "true".to_owned(),
             TokenSystem::Absent => format!("{alias}.system is null and {alias}.structured"),
             TokenSystem::Exact(name) => {
@@ -211,7 +238,7 @@ impl<'a> Compiler<'a> {
                 format!("{alias}.system = {bound}")
             }
         };
-        let unit = match code {
+        let unit = match asked_code {
             None => "true".to_owned(),
             Some(text) => {
                 let bound = self.text(text);
@@ -635,6 +662,23 @@ impl<'a> Compiler<'a> {
     }
 
     pub fn filter(&mut self, filter: &Filter, outer: &str) -> Result<String, Error> {
+        let judged = self.judged(filter, outer)?;
+        if filter.exempt.is_empty() {
+            return Ok(judged);
+        }
+        let names = filter
+            .exempt
+            .iter()
+            .map(|kind| kind.as_str().to_owned())
+            .collect();
+        let bound = self.texts(names);
+        Ok(or_of(vec![
+            format!("{outer}.resource_type = any({bound})"),
+            judged,
+        ]))
+    }
+
+    fn judged(&mut self, filter: &Filter, outer: &str) -> Result<String, Error> {
         if matches!(filter.modifier, Modifier::Missing) {
             let wanted = matches!(filter.values.first(), Some(SearchValue::Missing(true)));
             return Ok(match &filter.target {
@@ -705,8 +749,6 @@ impl<'a> Compiler<'a> {
                 format!("{far}.resource_type = any({bound})")
             }
         };
-        
-        
         let name = self.text(&chain.link);
         let slot = self.text(MAIN);
         let resource = self.store.table("resource");
@@ -767,6 +809,9 @@ impl<'a> Compiler<'a> {
             let kind = self.text(held.resource_type.as_str());
             let narrowed = self.filter(&held.filter, outer)?;
             parts.push(format!("({outer}.resource_type <> {kind} or ({narrowed}))"));
+        }
+        for held in &grant.every {
+            parts.push(self.filter(held, outer)?);
         }
         if !grant.types.is_empty() {
             let names = grant
@@ -860,6 +905,16 @@ mod tests {
         let mut compiler = Compiler::new(&store);
         let text = compiler.filter(filter, "r").expect("the filter compiles");
         (text, compiler.binds().len())
+    }
+
+    #[tokio::test]
+    async fn a_filter_does_not_reach_a_type_it_is_exempt_from() {
+        let kind = "Patient".parse::<fhir_core::ResourceType>().unwrap();
+        let filter =
+            built("Observation", "date", Modifier::None, "ge2023-01-01").exempting(vec![kind]);
+        let (text, _) = sql(&filter);
+        assert!(text.contains("r.resource_type = any($"), "{text}");
+        assert!(text.starts_with("("), "{text}");
     }
 
     #[tokio::test]
@@ -1032,6 +1087,7 @@ mod tests {
                 id: fhir_core::ResourceId::parse("p1").unwrap(),
             }],
             filters: Vec::new(),
+            every: Vec::new(),
         };
         let text = compiler.grant(&grant, "r").expect("the grant compiles");
         assert!(text.contains("r.resource_type = any($"), "{text}");
@@ -1046,6 +1102,7 @@ mod tests {
             types: vec![kind("Patient")],
             compartments: Vec::new(),
             filters: Vec::new(),
+            every: Vec::new(),
         };
         let text = compiler.grant(&grant, "r").expect("the grant compiles");
         assert!(!text.contains("index_reference"), "{text}");

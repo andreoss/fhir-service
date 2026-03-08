@@ -29,8 +29,9 @@ impl Seal {
         let held: Vec<u8> = match self {
             Seal::Open => Sha256::digest(message).to_vec(),
             Seal::Keyed(key) => {
-                let mut keyed = <Hmac<Sha256> as Mac>::new_from_slice(key)
-                    .unwrap_or_else(|_| Mac::new_from_slice(&[0u8; 32]).expect("a fixed key is accepted"));
+                let mut keyed = <Hmac<Sha256> as Mac>::new_from_slice(key).unwrap_or_else(|_| {
+                    Mac::new_from_slice(&[0u8; 32]).expect("a fixed key is accepted")
+                });
                 keyed.update(message);
                 keyed.finalize().into_bytes().to_vec()
             }
@@ -92,7 +93,10 @@ impl std::fmt::Display for Tamper {
                 write!(out, "record {expected} is missing before {found}")
             }
             Tamper::Truncated { expected, found } => {
-                write!(out, "the chain reaches {found} where {expected} was expected")
+                write!(
+                    out,
+                    "the chain reaches {found} where {expected} was expected"
+                )
             }
         }
     }
@@ -171,12 +175,18 @@ fn summary(entry: &Entry) -> Vec<u8> {
             optional(&mut held, event.client.as_deref());
             field(&mut held, event.action.as_str().as_bytes());
             field(&mut held, event.interaction.as_str().as_bytes());
-            optional(&mut held, event.resource_type.as_ref().map(ResourceType::as_str));
+            optional(
+                &mut held,
+                event.resource_type.as_ref().map(ResourceType::as_str),
+            );
             optional(&mut held, event.resource_id.as_ref().map(|id| id.as_str()));
-            field(&mut held, match event.granted {
-                true => b"granted".as_slice(),
-                false => b"refused".as_slice(),
-            });
+            field(
+                &mut held,
+                match event.granted {
+                    true => b"granted".as_slice(),
+                    false => b"refused".as_slice(),
+                },
+            );
             field(&mut held, event.recorded.as_bytes());
         }
         Entry::Retention(retention) => {
@@ -352,7 +362,14 @@ mod tests {
     fn trail(seal: Seal, count: u64) -> (Chain, Vec<Sealed>) {
         let chain = Chain::new(seal);
         let records = (1..=count)
-            .map(|n| chain.append(event(&format!("actor-{n}"), &format!("2026-09-07T00:00:0{n}Z"))).unwrap())
+            .map(|n| {
+                chain
+                    .append(event(
+                        &format!("actor-{n}"),
+                        &format!("2026-09-07T00:00:0{n}Z"),
+                    ))
+                    .unwrap()
+            })
             .collect();
         (chain, records)
     }
@@ -389,7 +406,10 @@ mod tests {
         records.remove(2);
         assert_eq!(
             verify(&Seal::keyed("k"), &records),
-            Err(Tamper::Gap { expected: 3, found: 4 })
+            Err(Tamper::Gap {
+                expected: 3,
+                found: 4
+            })
         );
     }
 
@@ -400,7 +420,10 @@ mod tests {
         records.pop();
         assert_eq!(
             verify_against(&Seal::keyed("k"), &records, &head),
-            Err(Tamper::Truncated { expected: 4, found: 3 })
+            Err(Tamper::Truncated {
+                expected: 4,
+                found: 3
+            })
         );
     }
 
@@ -410,7 +433,10 @@ mod tests {
         records.remove(0);
         assert_eq!(
             verify(&Seal::keyed("k"), &records),
-            Err(Tamper::Truncated { expected: 1, found: 2 })
+            Err(Tamper::Truncated {
+                expected: 1,
+                found: 2
+            })
         );
     }
 
@@ -430,7 +456,8 @@ mod tests {
         let forger = Seal::keyed("other");
         for record in records.iter_mut() {
             record.entry = event("forged", "2026-09-07T00:00:09Z");
-            record.digest = forger.digest(&message(record.sequence, &record.previous, &record.entry));
+            record.digest =
+                forger.digest(&message(record.sequence, &record.previous, &record.entry));
         }
         assert!(verify(&Seal::keyed("k"), &records).is_err());
     }
@@ -472,7 +499,10 @@ mod tests {
         kept.push(sealed);
         assert_eq!(
             verify(&Seal::keyed("k"), &kept),
-            Err(Tamper::Truncated { expected: 3, found: 4 })
+            Err(Tamper::Truncated {
+                expected: 3,
+                found: 4
+            })
         );
     }
 
@@ -490,7 +520,10 @@ mod tests {
         names.sort();
         assert_eq!(
             names,
-            vec!["action", "actor", "digest", "id", "kind", "outcome", "previous", "recorded", "sequence", "type"]
+            vec![
+                "action", "actor", "digest", "id", "kind", "outcome", "previous", "recorded",
+                "sequence", "type"
+            ]
         );
     }
 
@@ -518,7 +551,11 @@ mod tests {
             anchor: ORIGIN.to_owned(),
             horizon: "2026-09-07T00:00:00Z".to_owned(),
         };
-        let line = published(&Chain::new(Seal::open()).append(Entry::Retention(removal)).unwrap());
+        let line = published(
+            &Chain::new(Seal::open())
+                .append(Entry::Retention(removal))
+                .unwrap(),
+        );
         assert_eq!(line["kind"], "retention");
         assert_eq!(line["through"], 7);
         assert!(line.get("actor").is_none());
@@ -528,7 +565,9 @@ mod tests {
     fn a_chain_resumes_from_a_head_it_is_given() {
         let (chain, records) = trail(Seal::keyed("k"), 2);
         let resumed = Chain::resumed(Seal::keyed("k"), chain.head().unwrap());
-        let next = resumed.append(event("actor-3", "2026-09-07T00:00:03Z")).unwrap();
+        let next = resumed
+            .append(event("actor-3", "2026-09-07T00:00:03Z"))
+            .unwrap();
         assert_eq!(next.sequence, 3);
         assert_eq!(next.previous, records[1].digest);
     }
@@ -538,8 +577,14 @@ mod tests {
         let reported = [
             Tamper::Altered { sequence: 1 },
             Tamper::Broken { sequence: 2 },
-            Tamper::Gap { expected: 3, found: 4 },
-            Tamper::Truncated { expected: 5, found: 4 },
+            Tamper::Gap {
+                expected: 3,
+                found: 4,
+            },
+            Tamper::Truncated {
+                expected: 5,
+                found: 4,
+            },
         ];
         assert!(reported.iter().all(|held| held.to_string().len() > 8));
     }
@@ -547,9 +592,16 @@ mod tests {
     #[test]
     fn a_record_naming_no_resource_still_seals() {
         let chain = Chain::new(Seal::keyed("k"));
-        let bare = AuditEvent::allowed("actor", DataAction::Export).of(None, None).refused();
+        let bare = AuditEvent::allowed("actor", DataAction::Export)
+            .of(None, None)
+            .refused();
         let sealed = chain.append(Entry::Interaction(bare)).unwrap();
-        assert_eq!(verify(&Seal::keyed("k"), std::slice::from_ref(&sealed)).unwrap().sequence, 1);
+        assert_eq!(
+            verify(&Seal::keyed("k"), std::slice::from_ref(&sealed))
+                .unwrap()
+                .sequence,
+            1
+        );
         assert_eq!(published(&sealed)["outcome"], "refused");
     }
 

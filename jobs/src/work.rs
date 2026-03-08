@@ -2,7 +2,7 @@ use crate::handler::{JobContext, JobHandler, Unit, UnitOutcome};
 use crate::{payload, report};
 use async_trait::async_trait;
 use fhir_core::search::ParameterSpec;
-use fhir_core::{Error, FhirVersion, Patch, ResourceEnvelope, ResourceId, ResourceType};
+use fhir_core::{Error, FhirVersion, Patch, ResourceEnvelope, ResourceType};
 use fhir_store::{
     BulkStore, HistoryOrder, HistoryQuery, HistoryScope, InteractionEntry, Interactions, JobKind,
     ResourceStore, SearchQuery,
@@ -158,7 +158,10 @@ impl ImportJob {
     }
 
     async fn versioned(&self, envelope: ResourceEnvelope) -> Result<bool, Error> {
-        let held = self.store.read(envelope.id()).await?;
+        let held = self
+            .store
+            .read(&fhir_core::ResourceKey::of(&envelope))
+            .await?;
         let stored = self.store.update(envelope, None).await?;
         Ok(stored.version_id() != held.version_id())
     }
@@ -219,6 +222,10 @@ pub struct BulkDeleteRequest {
     pub hard: bool,
     pub purge: bool,
     pub soft_deleted: bool,
+    
+    
+    
+    pub before: Option<String>,
 }
 
 impl BulkDeleteRequest {
@@ -231,6 +238,7 @@ impl BulkDeleteRequest {
             hard: payload::flagged(&parsed, &["_hardDelete", "hardDelete"]),
             purge: payload::flagged(&parsed, &["_purgeHistory", "purgeHistory"]),
             soft_deleted: payload::flagged(&parsed, &["_softDeleted", "softDeleted"]),
+            before: payload::text(&parsed, "_before"),
         })
     }
 
@@ -246,8 +254,27 @@ impl BulkDeleteRequest {
         carried.insert("hardDelete".to_owned(), Value::Bool(self.hard));
         carried.insert("purgeHistory".to_owned(), Value::Bool(self.purge));
         carried.insert("softDeleted".to_owned(), Value::Bool(self.soft_deleted));
+        if let Some(before) = &self.before {
+            carried.insert("_before".to_owned(), Value::String(before.clone()));
+        }
         Value::Object(carried)
     }
+}
+
+
+
+
+fn written_before(before: &str) -> Result<fhir_core::search::Filter, Error> {
+    let def = fhir_core::search::lookup(None, "_lastUpdated")
+        .ok_or_else(|| Error::UnsupportedParameter("\"_lastUpdated\"".to_owned()))?;
+    let value = def
+        .value_with(&fhir_core::search::Modifier::None, &format!("le{before}"))
+        .map_err(|_| Error::InvalidParameter(format!("_before {before:?}")))?;
+    Ok(fhir_core::search::Filter::new(
+        "_lastUpdated",
+        def.target.clone(),
+        vec![value],
+    ))
 }
 
 pub struct BulkDeleteJob {
@@ -280,10 +307,11 @@ impl BulkDeleteJob {
         match request.soft_deleted {
             true => marked_of(self.store.as_ref(), resource_type).await,
             false => {
-                let page = self
-                    .store
-                    .search(&SearchQuery::of_type(resource_type))
-                    .await?;
+                let mut query = SearchQuery::of_type(resource_type);
+                if let Some(before) = &request.before {
+                    query.filters.push(written_before(before)?);
+                }
+                let page = self.store.search(&query).await?;
                 Ok(page.entries)
             }
         }
@@ -294,19 +322,19 @@ impl BulkDeleteJob {
         request: &BulkDeleteRequest,
         entry: &ResourceEnvelope,
     ) -> Result<u64, Error> {
-        let id = entry.id();
+        let key = fhir_core::ResourceKey::of(entry);
         if request.soft_deleted {
             return match request.hard || !request.purge {
-                true => self.store.hard_delete(id).await.map(|_| 0),
-                false => self.store.purge_history(id).await.map(|gone| gone as u64),
+                true => self.store.hard_delete(&key).await.map(|_| 0),
+                false => self.store.purge_history(&key).await.map(|gone| gone as u64),
             };
         }
         if request.hard {
-            return self.store.hard_delete(id).await.map(|_| 0);
+            return self.store.hard_delete(&key).await.map(|_| 0);
         }
-        self.store.delete(id).await?;
+        self.store.delete(&key).await?;
         match request.purge {
-            true => self.store.purge_history(id).await.map(|gone| gone as u64),
+            true => self.store.purge_history(&key).await.map(|gone| gone as u64),
             false => Ok(0),
         }
     }
@@ -522,8 +550,10 @@ impl JobHandler for BulkUpdateJob {
     }
 }
 
-fn logical(reference: &str) -> Result<ResourceId, Error> {
-    ResourceId::parse(reference.rsplit('/').next().unwrap_or_default())
+
+
+fn logical(reference: &str) -> Result<fhir_core::ResourceKey, Error> {
+    reference.parse::<fhir_core::ResourceKey>()
 }
 
 fn safe(label: &str) -> String {

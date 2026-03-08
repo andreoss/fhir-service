@@ -3,7 +3,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use fhir_adapter_memory::MemoryStore;
 use fhir_api::{Dependency, Service};
-use fhir_core::{Error, FhirInstant, FhirVersion, ResourceEnvelope, ResourceId, VersionId};
+use fhir_core::{Error, FhirInstant, FhirVersion, ResourceEnvelope, VersionId};
 use fhir_store::{HistoryPage, HistoryQuery, HistoryScope, ResourceStore, SearchPage, SearchQuery};
 use http_body_util::BodyExt;
 use std::sync::Arc;
@@ -474,10 +474,14 @@ impl ResourceStore for FailingStore {
     async fn create(&self, _: ResourceEnvelope) -> Result<ResourceEnvelope, Error> {
         Err((self.0)())
     }
-    async fn read(&self, _: &ResourceId) -> Result<ResourceEnvelope, Error> {
+    async fn read(&self, _: &fhir_core::ResourceKey) -> Result<ResourceEnvelope, Error> {
         Err((self.0)())
     }
-    async fn vread(&self, _: &ResourceId, _: &VersionId) -> Result<ResourceEnvelope, Error> {
+    async fn vread(
+        &self,
+        _: &fhir_core::ResourceKey,
+        _: &VersionId,
+    ) -> Result<ResourceEnvelope, Error> {
         Err((self.0)())
     }
     async fn update(
@@ -490,13 +494,13 @@ impl ResourceStore for FailingStore {
     async fn search(&self, _: &SearchQuery) -> Result<SearchPage, Error> {
         Err((self.0)())
     }
-    async fn delete(&self, _: &ResourceId) -> Result<ResourceEnvelope, Error> {
+    async fn delete(&self, _: &fhir_core::ResourceKey) -> Result<ResourceEnvelope, Error> {
         Err((self.0)())
     }
-    async fn hard_delete(&self, _: &ResourceId) -> Result<(), Error> {
+    async fn hard_delete(&self, _: &fhir_core::ResourceKey) -> Result<(), Error> {
         Err((self.0)())
     }
-    async fn purge_history(&self, _: &ResourceId) -> Result<usize, Error> {
+    async fn purge_history(&self, _: &fhir_core::ResourceKey) -> Result<usize, Error> {
         Err((self.0)())
     }
     async fn history(&self, _: &HistoryScope, _: &HistoryQuery) -> Result<HistoryPage, Error> {
@@ -2808,6 +2812,85 @@ async fn the_status_endpoint_answers_a_posted_query() {
         status_of(&listing, "urn:p:risk-band").as_deref(),
         Some("supported")
     );
+}
+
+#[tokio::test]
+async fn the_status_of_one_named_parameter_is_answered_by_its_own_address() {
+    let app = service();
+    let body = definition(
+        "sp-11",
+        "risk-band",
+        "Patient.extension.valueCode",
+        "active",
+    );
+    request(&app, "POST", "/SearchParameter", &[], &body).await;
+    let one = statuses(&app, "GET", "/SearchParameter/sp-11/$status", &[]).await;
+    assert_eq!(one["resourceType"], "Parameters");
+    assert_eq!(one["parameter"].as_array().map(Vec::len), Some(1));
+    assert_eq!(
+        status_of(&one, "urn:p:risk-band").as_deref(),
+        Some("supported")
+    );
+    let missing = request(&app, "GET", "/SearchParameter/nonesuch/$status", &[], &[]).await;
+    assert_eq!(missing.status, StatusCode::NOT_FOUND);
+    let patient = request(
+        &app,
+        "POST",
+        "/Patient",
+        &[],
+        br#"{"resourceType":"Patient"}"#,
+    )
+    .await;
+    let held: serde_json::Value = serde_json::from_str(&patient.body).unwrap();
+    let id = held["id"].as_str().unwrap().to_owned();
+    let wrong = request(
+        &app,
+        "GET",
+        &format!("/SearchParameter/{id}/$status"),
+        &[],
+        &[],
+    )
+    .await;
+    assert_eq!(
+        wrong.status,
+        StatusCode::NOT_FOUND,
+        "a resource of another type is not a search parameter: {}",
+        wrong.body
+    );
+}
+
+#[tokio::test]
+async fn the_status_query_is_answered_from_a_form_too_long_for_an_address() {
+    let app = service();
+    let body = definition(
+        "sp-12",
+        "risk-band",
+        "Patient.extension.valueCode",
+        "active",
+    );
+    request(&app, "POST", "/SearchParameter", &[], &body).await;
+    let whole = statuses(&app, "POST", "/SearchParameter/$status/_search", b"").await;
+    assert_eq!(
+        status_of(&whole, "urn:p:risk-band").as_deref(),
+        Some("supported")
+    );
+    let one = statuses(
+        &app,
+        "POST",
+        "/SearchParameter/$status/_search",
+        b"url=urn:p:risk-band",
+    )
+    .await;
+    assert_eq!(one["parameter"].as_array().map(Vec::len), Some(1));
+    let missing = request(
+        &app,
+        "POST",
+        "/SearchParameter/$status/_search",
+        &[],
+        b"url=urn:p:nonesuch",
+    )
+    .await;
+    assert_eq!(missing.status, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]

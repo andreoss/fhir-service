@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use fhir_core::Error;
 use fhir_store::{
-    system_ticker, JobFilter, JobId, JobProgress, JobRecord, JobRequest, JobResult, JobSignal,
-    JobKind, JobState, JobStore, Lease, Ticker, RETRY_BACKOFF,
+    system_ticker, JobFilter, JobId, JobKind, JobProgress, JobRecord, JobRequest, JobResult,
+    JobSignal, JobState, JobStore, Lease, Ticker, RETRY_BACKOFF,
 };
 use std::sync::Mutex;
 
@@ -115,7 +115,10 @@ impl JobStore for MemoryJobStore {
             }
             let kind = records[slot].kind;
             let position = kind.slot();
-            if !lease.limits.admits(kind, running[position], started[position], now) {
+            if !lease
+                .limits
+                .admits(kind, running[position], started[position], now)
+            {
                 continue;
             }
             running[position] += 1;
@@ -131,7 +134,6 @@ impl JobStore for MemoryJobStore {
         }
         Ok(taken)
     }
-
 
     async fn heartbeat(
         &self,
@@ -302,9 +304,7 @@ impl JobStore for MemoryJobStore {
             .filter(|record| filter.admits(record))
             .cloned()
             .collect();
-        found.sort_by(|left, right| {
-            (right.created, &right.id).cmp(&(left.created, &left.id))
-        });
+        found.sort_by(|left, right| (right.created, &right.id).cmp(&(left.created, &left.id)));
         Ok(found)
     }
 }

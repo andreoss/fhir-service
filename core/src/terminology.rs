@@ -1,4 +1,3 @@
-
 use crate::search::select;
 use crate::Error;
 use serde_json::{Map, Value};
@@ -59,7 +58,9 @@ pub fn concepts(code_system: &Value) -> Vec<Coding> {
 }
 
 fn branch(held: Option<&Value>, system: Option<&str>, version: Option<&str>) -> Vec<Coding> {
-    let Some(Value::Array(items)) = held else { return Vec::new() };
+    let Some(Value::Array(items)) = held else {
+        return Vec::new();
+    };
     items
         .iter()
         .filter_map(|item| coding(item, system, version))
@@ -121,7 +122,8 @@ fn inactive(item: &Value) -> bool {
             let flag = property.get("valueBoolean").and_then(Value::as_bool);
             matches!(
                 (code, value, flag),
-                (Some("status"), Some("retired" | "deprecated"), _) | (Some("inactive"), _, Some(true))
+                (Some("status"), Some("retired" | "deprecated"), _)
+                    | (Some("inactive"), _, Some(true))
             )
         })
 }
@@ -208,7 +210,10 @@ pub fn expand(
                     .is_some_and(|text| text.to_lowercase().contains(&wanted))
         });
     }
-    held = held.iter().map(|concept| rendered(concept, request)).collect();
+    held = held
+        .iter()
+        .map(|concept| rendered(concept, request))
+        .collect();
     if request.exclude_nested {
         held = flattened(&held);
     }
@@ -347,7 +352,10 @@ fn selected(
         let mut out = Vec::new();
         for filter in filters {
             let op = filter.get("op").and_then(Value::as_str);
-            let value = filter.get("value").and_then(Value::as_str).unwrap_or_default();
+            let value = filter
+                .get("value")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
             match op {
                 Some("is-a") => {
                     if let Some(found) = subtree(&held, value) {
@@ -422,11 +430,7 @@ fn counted(held: &[Coding]) -> usize {
         .sum()
 }
 
-pub fn expansion_json(
-    expansion: &Expansion,
-    request: &ExpansionRequest,
-    stamp: &Stamp,
-) -> Value {
+pub fn expansion_json(expansion: &Expansion, request: &ExpansionRequest, stamp: &Stamp) -> Value {
     let mut body = Map::new();
     body.insert(
         "resourceType".to_owned(),
@@ -444,8 +448,14 @@ pub fn expansion_json(
         }
     }
     let mut held = Map::new();
-    held.insert("identifier".to_owned(), Value::String(stamp.identifier.clone()));
-    held.insert("timestamp".to_owned(), Value::String(stamp.timestamp.clone()));
+    held.insert(
+        "identifier".to_owned(),
+        Value::String(stamp.identifier.clone()),
+    );
+    held.insert(
+        "timestamp".to_owned(),
+        Value::String(stamp.timestamp.clone()),
+    );
     held.insert("total".to_owned(), Value::from(expansion.total));
     if request.count.is_some() || request.offset > 0 {
         held.insert("offset".to_owned(), Value::from(expansion.offset));

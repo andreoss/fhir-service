@@ -68,7 +68,13 @@ fn live_every_named_version_answers_a_full_text_search_over_the_narrative() {
         let (child, port) = spawn_with(&[("FHIR_VERSION", version)]);
         let headers = [("Content-Type", "application/fhir+json")];
         let observation = r#"{"resourceType":"Observation","id":"e2e-text","status":"final","text":{"status":"generated","div":"<div><p>Fever and chills with bone pain</p></div>"},"code":{"text":"note"}}"#;
-        let created = request(port, "POST", "/Observation", &headers, observation.as_bytes());
+        let created = request(
+            port,
+            "POST",
+            "/Observation",
+            &headers,
+            observation.as_bytes(),
+        );
         let found = request(port, "GET", "/Observation?_text=fever", &[], &[]);
         let none = request(port, "GET", "/Observation?_text=rash", &[], &[]);
         let boolean = request(

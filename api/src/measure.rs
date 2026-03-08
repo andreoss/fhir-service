@@ -1,8 +1,8 @@
 use axum::extract::{MatchedPath, Request, State};
 use axum::http::{HeaderValue, Method};
-use fhir_core::CorrelationId;
 use axum::middleware::Next;
 use axum::response::Response;
+use fhir_core::CorrelationId;
 use fhir_telemetry::{Dimensions, Operation, Outcome};
 use std::time::Instant;
 
@@ -80,18 +80,10 @@ fn instance(method: &Method, path: &str) -> Operation {
 pub const CORRELATION: &str = "x-correlation-id";
 
 pub fn correlation_of(headers: &axum::http::HeaderMap) -> CorrelationId {
-    CorrelationId::offered(
-        headers
-            .get(CORRELATION)
-            .and_then(|held| held.to_str().ok()),
-    )
+    CorrelationId::offered(headers.get(CORRELATION).and_then(|held| held.to_str().ok()))
 }
 
-pub async fn measured(
-    State(state): State<AppState>,
-    mut request: Request,
-    next: Next,
-) -> Response {
+pub async fn measured(State(state): State<AppState>, mut request: Request, next: Next) -> Response {
     let method = request.method().clone();
     let path = request
         .extensions()
@@ -146,7 +138,11 @@ mod tests {
             (Method::POST, "/$bulk-update", Operation::BulkUpdate),
             (Method::GET, "/_jobs/{id}", Operation::Job),
             (Method::POST, "/$validate", Operation::Other),
-            (Method::POST, "/{type}/{id}/$purge-history", Operation::Delete),
+            (
+                Method::POST,
+                "/{type}/{id}/$purge-history",
+                Operation::Delete,
+            ),
         ];
         for (method, path, expected) in table {
             assert_eq!(operation_of(&method, path), expected, "{path}");

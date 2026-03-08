@@ -34,7 +34,11 @@ fn a_value_past_the_bound_keeps_the_remainder_beside_the_key() {
     assert_eq!(key.key().chars().count(), KEY_LIMIT);
     assert!(key.overflows());
     assert_eq!(
-        format!("{}{}", key.key(), key.overflow().expect("an overflow is kept")),
+        format!(
+            "{}{}",
+            key.key(),
+            key.overflow().expect("an overflow is kept")
+        ),
         text
     );
     assert!(key.matches(&text));
@@ -67,8 +71,11 @@ fn a_token_longer_than_the_key_is_matched_on_the_whole_of_its_code() {
     assert!(wanted.matches(element));
     let other = SearchValue::parse(ValueType::Token, &format!("urn:mrn|{}", long("-b"))).unwrap();
     assert!(!other.matches(element));
-    let truncated =
-        SearchValue::parse(ValueType::Token, &format!("urn:mrn|{}", "u".repeat(KEY_LIMIT))).unwrap();
+    let truncated = SearchValue::parse(
+        ValueType::Token,
+        &format!("urn:mrn|{}", "u".repeat(KEY_LIMIT)),
+    )
+    .unwrap();
     assert!(!truncated.matches(element));
 }
 

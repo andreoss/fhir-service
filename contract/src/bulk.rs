@@ -10,11 +10,19 @@ pub async fn outputs(store: &dyn BulkStore) {
     assert!(store.list(&one).await.unwrap().is_empty());
 
     store
-        .write(&one, &Output::new("Patient-1.ndjson", "Patient", 2), b"a\nb\n")
+        .write(
+            &one,
+            &Output::new("Patient-1.ndjson", "Patient", 2),
+            b"a\nb\n",
+        )
         .await
         .unwrap();
     store
-        .write(&one, &Output::new("Observation-1.ndjson", "Observation", 1), b"c\n")
+        .write(
+            &one,
+            &Output::new("Observation-1.ndjson", "Observation", 1),
+            b"c\n",
+        )
         .await
         .unwrap();
 
@@ -27,7 +35,10 @@ pub async fn outputs(store: &dyn BulkStore) {
     assert_eq!(listed[1].name, "Patient-1.ndjson");
     assert_eq!(listed[1].count, 2);
 
-    assert_eq!(store.read(&one, "Patient-1.ndjson").await.unwrap(), b"a\nb\n");
+    assert_eq!(
+        store.read(&one, "Patient-1.ndjson").await.unwrap(),
+        b"a\nb\n"
+    );
 
     store
         .write(&one, &Output::new("Patient-1.ndjson", "Patient", 1), b"a\n")
@@ -39,11 +50,18 @@ pub async fn outputs(store: &dyn BulkStore) {
 
     let other = job("o2");
     store
-        .write(&other, &Output::new("Patient-1.ndjson", "Patient", 1), b"z\n")
+        .write(
+            &other,
+            &Output::new("Patient-1.ndjson", "Patient", 1),
+            b"z\n",
+        )
         .await
         .unwrap();
     assert_eq!(store.list(&other).await.unwrap().len(), 1);
-    assert_eq!(store.read(&other, "Patient-1.ndjson").await.unwrap(), b"z\n");
+    assert_eq!(
+        store.read(&other, "Patient-1.ndjson").await.unwrap(),
+        b"z\n"
+    );
 
     let missing = store.read(&one, "nowhere.ndjson").await;
     assert!(matches!(missing, Err(Error::NotFound)), "{missing:?}");

@@ -6,7 +6,7 @@ use crate::row::{envelope_of, Record, COLUMNS};
 use crate::throttle::{Admission, Throttle};
 use async_trait::async_trait;
 use fhir_core::search::{for_type, ParamDef, ParameterSpec};
-use fhir_core::{Error, ResourceEnvelope, ResourceId, VersionId};
+use fhir_core::{Error, ResourceEnvelope, ResourceKey, VersionId};
 use fhir_store::Namespace;
 use fhir_store::{
     system_clock, Clock, HistoryOrder, HistoryPage, HistoryQuery, HistoryScope, IndexReport,
@@ -451,16 +451,18 @@ impl RelationalStore {
     async fn current_in(
         &self,
         transaction: &mut PgConnection,
-        id: &ResourceId,
+        key: &ResourceKey,
         lock: bool,
     ) -> Result<Option<Current>, Error> {
         let statement = format!(
-            "select {COLUMNS} from {} where resource_id = $1 and is_current{}",
+            "select {COLUMNS} from {} where resource_type = $1 and resource_id = $2 \
+             and is_current{}",
             self.table("resource"),
             if lock { " for update" } else { "" }
         );
         let found = sqlx::query(&statement)
-            .bind(id.as_str())
+            .bind(key.resource_type().as_str())
+            .bind(key.id().as_str())
             .fetch_optional(&mut *transaction)
             .await
             .map_err(|error| faulted("reading the current version", error))?;
@@ -470,15 +472,17 @@ impl RelationalStore {
     async fn version_in(
         &self,
         transaction: &mut PgConnection,
-        id: &ResourceId,
+        key: &ResourceKey,
         version: &VersionId,
     ) -> Result<Option<Record>, Error> {
         let statement = format!(
-            "select {COLUMNS} from {} where resource_id = $1 and version_number = $2",
+            "select {COLUMNS} from {} where resource_type = $1 and resource_id = $2 \
+             and version_number = $3",
             self.table("resource")
         );
         let found = sqlx::query(&statement)
-            .bind(id.as_str())
+            .bind(key.resource_type().as_str())
+            .bind(key.id().as_str())
             .bind(version_number(version)?)
             .fetch_optional(&mut *transaction)
             .await
@@ -1051,15 +1055,9 @@ impl ResourceStore for RelationalStore {
     async fn create(&self, envelope: ResourceEnvelope) -> Result<ResourceEnvelope, Error> {
         let _place = self.admit().await?;
         let mut work = self.work().await?;
-        if self
-            .current_in(work.conn()?, envelope.id(), true)
-            .await?
-            .is_some()
-        {
-            return Err(Error::Duplicate(format!(
-                "id {:?} already exists",
-                envelope.id().as_str()
-            )));
+        let key = ResourceKey::of(&envelope);
+        if self.current_in(work.conn()?, &key, true).await?.is_some() {
+            return Err(Error::Duplicate(format!("{key} already exists")));
         }
         let first: VersionId = "1".parse()?;
         let stored = envelope.stored_with(first, (self.clock)())?;
@@ -1068,13 +1066,17 @@ impl ResourceStore for RelationalStore {
         Ok(stored)
     }
 
-    async fn read(&self, id: &ResourceId) -> Result<ResourceEnvelope, Error> {
+    async fn read(&self, key: &ResourceKey) -> Result<ResourceEnvelope, Error> {
         let _place = self.admit_cheap().await?;
         let statement = format!(
-            "select {COLUMNS} from {} where resource_id = $1 and is_current",
+            "select {COLUMNS} from {} where resource_type = $1 and resource_id = $2 \
+             and is_current",
             self.table("resource")
         );
-        let binds = [Bind::Text(id.as_str().to_owned())];
+        let binds = [
+            Bind::Text(key.resource_type().as_str().to_owned()),
+            Bind::Text(key.id().as_str().to_owned()),
+        ];
         let row = self
             .perhaps(&statement, &binds, "reading a resource")
             .await?;
@@ -1084,14 +1086,23 @@ impl ResourceStore for RelationalStore {
         }
     }
 
-    async fn vread(&self, id: &ResourceId, version: &VersionId) -> Result<ResourceEnvelope, Error> {
+    async fn vread(
+        &self,
+        key: &ResourceKey,
+        version: &VersionId,
+    ) -> Result<ResourceEnvelope, Error> {
         let _place = self.admit_cheap().await?;
         let statement = format!(
-            "select {COLUMNS} from {} where resource_id = $1 and version_number = $2",
+            "select {COLUMNS} from {} where resource_type = $1 and resource_id = $2 \
+             and version_number = $3",
             self.table("resource")
         );
         let number = version_number(version)?;
-        let binds = [Bind::Text(id.as_str().to_owned()), Bind::Big(number)];
+        let binds = [
+            Bind::Text(key.resource_type().as_str().to_owned()),
+            Bind::Text(key.id().as_str().to_owned()),
+            Bind::Big(number),
+        ];
         let row = self
             .perhaps(&statement, &binds, "reading a version")
             .await?;
@@ -1108,7 +1119,10 @@ impl ResourceStore for RelationalStore {
     ) -> Result<ResourceEnvelope, Error> {
         let _place = self.admit().await?;
         let mut work = self.work().await?;
-        let Some(current) = self.current_in(work.conn()?, envelope.id(), true).await? else {
+        let Some(current) = self
+            .current_in(work.conn()?, &ResourceKey::of(&envelope), true)
+            .await?
+        else {
             return Err(Error::NotFound);
         };
         if let Some(expected) = expected_version {
@@ -1139,7 +1153,11 @@ impl ResourceStore for RelationalStore {
         let _place = self.admit().await?;
         let mut work = self.work().await?;
         if let Some(held) = self
-            .version_in(work.conn()?, envelope.id(), envelope.version_id())
+            .version_in(
+                work.conn()?,
+                &ResourceKey::of(&envelope),
+                envelope.version_id(),
+            )
             .await?
         {
             let exact = held.last_updated == *envelope.last_updated()
@@ -1150,8 +1168,11 @@ impl ResourceStore for RelationalStore {
             }
             return Err(repeated(&envelope));
         }
-        let current = self.current_in(work.conn()?, envelope.id(), true).await?;
-        self.append(work.conn()?, current.as_ref(), &envelope).await?;
+        let current = self
+            .current_in(work.conn()?, &ResourceKey::of(&envelope), true)
+            .await?;
+        self.append(work.conn()?, current.as_ref(), &envelope)
+            .await?;
         work.done().await?;
         Ok(true)
     }
@@ -1161,11 +1182,11 @@ impl ResourceStore for RelationalStore {
         crate::query::run(self, query).await
     }
 
-    async fn delete(&self, id: &ResourceId) -> Result<ResourceEnvelope, Error> {
+    async fn delete(&self, key: &ResourceKey) -> Result<ResourceEnvelope, Error> {
         let _place = self.admit().await?;
         let mut work = self.work().await?;
         let current = self
-            .current_in(work.conn()?, id, true)
+            .current_in(work.conn()?, key, true)
             .await?
             .ok_or(Error::NotFound)?;
         if current.deleted {
@@ -1174,7 +1195,7 @@ impl ResourceStore for RelationalStore {
         let marker = ResourceEnvelope::deleted_marker(
             current.spec,
             current.resource_type,
-            id.clone(),
+            key.id().clone(),
             next_version(&current.version)?,
             (self.clock)(),
         );
@@ -1183,31 +1204,75 @@ impl ResourceStore for RelationalStore {
         Ok(marker)
     }
 
-    async fn hard_delete(&self, id: &ResourceId) -> Result<(), Error> {
+    async fn hard_delete(&self, key: &ResourceKey) -> Result<(), Error> {
         let _place = self.admit().await?;
         let statement = format!(
-            "delete from {} where resource_id = $1",
+            "delete from {} where resource_type = $1 and resource_id = $2",
             self.table("resource")
         );
-        let binds = [Bind::Text(id.as_str().to_owned())];
+        let binds = [
+            Bind::Text(key.resource_type().as_str().to_owned()),
+            Bind::Text(key.id().as_str().to_owned()),
+        ];
         match self.ran(&statement, &binds, "removing a resource").await? {
             0 => Err(Error::NotFound),
             _ => Ok(()),
         }
     }
 
-    async fn purge_history(&self, id: &ResourceId) -> Result<usize, Error> {
+    async fn erase_versions(&self, key: &ResourceKey, through: &VersionId) -> Result<usize, Error> {
         let _place = self.admit().await?;
         let mut work = self.work().await?;
-        if self.current_in(work.conn()?, id, true).await?.is_none() {
+        let number = version_number(through)?;
+        if self.version_in(work.conn()?, key, through).await?.is_none() {
             return Err(Error::NotFound);
         }
         let statement = format!(
-            "delete from {} where resource_id = $1 and not is_current",
+            "delete from {} where resource_type = $1 and resource_id = $2 \
+             and version_number <= $3",
             self.table("resource")
         );
         let removed = sqlx::query(&statement)
-            .bind(id.as_str())
+            .bind(key.resource_type().as_str())
+            .bind(key.id().as_str())
+            .bind(number)
+            .execute(work.conn()?)
+            .await
+            .map_err(|error| faulted("erasing a version", error))?;
+        work.done().await?;
+        Ok(removed.rows_affected() as usize)
+    }
+
+    async fn empty(&self) -> Result<usize, Error> {
+        let _place = self.admit().await?;
+        let mut work = self.work().await?;
+        
+        
+        
+        
+        
+        let statement = format!("delete from {}", self.table("resource"));
+        let removed = sqlx::query(&statement)
+            .execute(work.conn()?)
+            .await
+            .map_err(|error| faulted("emptying the store", error))?;
+        work.done().await?;
+        Ok(removed.rows_affected() as usize)
+    }
+
+    async fn purge_history(&self, key: &ResourceKey) -> Result<usize, Error> {
+        let _place = self.admit().await?;
+        let mut work = self.work().await?;
+        if self.current_in(work.conn()?, key, true).await?.is_none() {
+            return Err(Error::NotFound);
+        }
+        let statement = format!(
+            "delete from {} where resource_type = $1 and resource_id = $2 and not is_current",
+            self.table("resource")
+        );
+        let removed = sqlx::query(&statement)
+            .bind(key.resource_type().as_str())
+            .bind(key.id().as_str())
             .execute(work.conn()?)
             .await
             .map_err(|error| faulted("purging history", error))?;
@@ -1223,21 +1288,17 @@ impl ResourceStore for RelationalStore {
         let _place = self.admit().await?;
         if let HistoryScope::Instance(resource_type, id) = scope {
             let statement = format!(
-                "select resource_type from {} where resource_id = $1
+                "select resource_type from {} where resource_type = $1 and resource_id = $2
                  order by version_number limit 1",
                 self.table("resource")
             );
-            let binds = [Bind::Text(id.as_str().to_owned())];
-            let row = self
-                .perhaps(&statement, &binds, "reading a resource")
+            let binds = [
+                Bind::Text(resource_type.as_str().to_owned()),
+                Bind::Text(id.as_str().to_owned()),
+            ];
+            self.perhaps(&statement, &binds, "reading a resource")
                 .await?
                 .ok_or(Error::NotFound)?;
-            let found: String = row
-                .try_get("resource_type")
-                .map_err(|error| faulted("reading a resource", error))?;
-            if found != resource_type.as_str() {
-                return Err(Error::NotFound);
-            }
         }
         let (rows, total) = self.scoped_rows(scope, query).await?;
         let entries = rows
@@ -1281,9 +1342,9 @@ impl ResourceStore for RelationalStore {
     async fn reindex_resource(
         &self,
         specs: &[ParameterSpec],
-        id: &ResourceId,
+        key: &ResourceKey,
     ) -> Result<Vec<IndexReport>, Error> {
-        crate::query::reindex_resource(self, specs, id).await
+        crate::query::reindex_resource(self, specs, key).await
     }
 
     async fn index_report(&self, url: &str) -> Result<Option<IndexReport>, Error> {

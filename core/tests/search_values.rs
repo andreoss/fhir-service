@@ -75,9 +75,24 @@ fn a_date_selects_by_the_span_the_written_precision_denotes() {
 fn a_date_compares_against_the_whole_of_a_stored_period() {
     let body = observation();
     assert!(matches("Observation", "date", "2026-09-06", &body));
-    assert!(!matches("Observation", "date", "2026-09-06T04:00:00Z", &body));
-    assert!(matches("Observation", "date", "ge2026-09-06T04:30:00Z", &body));
-    assert!(matches("Observation", "date", "le2026-09-06T04:30:00Z", &body));
+    assert!(!matches(
+        "Observation",
+        "date",
+        "2026-09-06T04:00:00Z",
+        &body
+    ));
+    assert!(matches(
+        "Observation",
+        "date",
+        "ge2026-09-06T04:30:00Z",
+        &body
+    ));
+    assert!(matches(
+        "Observation",
+        "date",
+        "le2026-09-06T04:30:00Z",
+        &body
+    ));
     assert!(matches("Observation", "date", "eb2026-09-07", &body));
     assert!(matches("Observation", "date", "sa2026-09-05", &body));
     assert!(!matches("Observation", "date", "sa2026-09-06", &body));
@@ -85,30 +100,85 @@ fn a_date_compares_against_the_whole_of_a_stored_period() {
 
 #[test]
 fn a_reference_matches_by_type_and_id_and_by_the_id_alone() {
-    assert!(matches("Observation", "subject", "Patient/pt-1", &observation()));
+    assert!(matches(
+        "Observation",
+        "subject",
+        "Patient/pt-1",
+        &observation()
+    ));
     assert!(matches("Observation", "patient", "pt-1", &observation()));
-    assert!(!matches("Observation", "subject", "Patient/pt-2", &observation()));
-    assert!(!matches("Observation", "subject", "Group/pt-1", &observation()));
-    assert!(matches("Observation", "performer", "Practitioner/pr-1", &observation()));
-    assert!(!matches("Observation", "performer", "Practitioner/pr-2", &observation()));
-    assert!(matches("Patient", "organization", "Organization/org-1", &patient()));
+    assert!(!matches(
+        "Observation",
+        "subject",
+        "Patient/pt-2",
+        &observation()
+    ));
+    assert!(!matches(
+        "Observation",
+        "subject",
+        "Group/pt-1",
+        &observation()
+    ));
+    assert!(matches(
+        "Observation",
+        "performer",
+        "Practitioner/pr-1",
+        &observation()
+    ));
+    assert!(!matches(
+        "Observation",
+        "performer",
+        "Practitioner/pr-2",
+        &observation()
+    ));
+    assert!(matches(
+        "Patient",
+        "organization",
+        "Organization/org-1",
+        &patient()
+    ));
 }
 
 #[test]
 fn a_token_matches_a_coding_a_plain_code_and_the_system_it_was_given() {
-    assert!(matches("Observation", "code", "http://loinc.org|8867-4", &observation()));
+    assert!(matches(
+        "Observation",
+        "code",
+        "http://loinc.org|8867-4",
+        &observation()
+    ));
     assert!(matches("Observation", "code", "8867-4", &observation()));
-    assert!(matches("Observation", "code", "http://loinc.org|", &observation()));
+    assert!(matches(
+        "Observation",
+        "code",
+        "http://loinc.org|",
+        &observation()
+    ));
     assert!(!matches("Observation", "code", "|8867-4", &observation()));
-    assert!(!matches("Observation", "code", "http://snomed.info/sct|8867-4", &observation()));
+    assert!(!matches(
+        "Observation",
+        "code",
+        "http://snomed.info/sct|8867-4",
+        &observation()
+    ));
     assert!(matches("Observation", "status", "final", &observation()));
     assert!(!matches("Observation", "status", "amended", &observation()));
-    assert!(matches("Observation", "status", "amended,final", &observation()));
+    assert!(matches(
+        "Observation",
+        "status",
+        "amended,final",
+        &observation()
+    ));
 }
 
 #[test]
 fn a_quantity_needs_its_value_its_system_and_its_unit_to_hold_together() {
-    assert!(matches("Observation", "value-quantity", "72.5", &observation()));
+    assert!(matches(
+        "Observation",
+        "value-quantity",
+        "72.5",
+        &observation()
+    ));
     assert!(matches(
         "Observation",
         "value-quantity",
@@ -121,14 +191,34 @@ fn a_quantity_needs_its_value_its_system_and_its_unit_to_hold_together() {
         "72.5|http://other.org|/min",
         &observation()
     ));
-    assert!(!matches("Observation", "value-quantity", "72.5||mg", &observation()));
-    assert!(matches("Observation", "value-quantity", "gt70", &observation()));
-    assert!(!matches("Observation", "value-quantity", "lt70", &observation()));
+    assert!(!matches(
+        "Observation",
+        "value-quantity",
+        "72.5||mg",
+        &observation()
+    ));
+    assert!(matches(
+        "Observation",
+        "value-quantity",
+        "gt70",
+        &observation()
+    ));
+    assert!(!matches(
+        "Observation",
+        "value-quantity",
+        "lt70",
+        &observation()
+    ));
     assert!(
         !matches("Observation", "value-quantity", "120", &observation()),
         "the parameter reads the value of the observation, not that of a component"
     );
-    assert!(matches("Observation", "component-value-quantity", "120", &observation()));
+    assert!(matches(
+        "Observation",
+        "component-value-quantity",
+        "120",
+        &observation()
+    ));
 }
 
 #[test]
@@ -147,13 +237,33 @@ fn a_number_selects_the_range_the_precision_it_was_written_with_denotes() {
     assert!(matches("RiskAssessment", "probability", "lt1", &held));
     for boundary in [0.35, 0.45] {
         assert!(
-            matches("RiskAssessment", "probability", "0.4", &assessment(json!(boundary))),
+            matches(
+                "RiskAssessment",
+                "probability",
+                "0.4",
+                &assessment(json!(boundary))
+            ),
             "the bound its precision denotes is inside the range: {boundary}"
         );
     }
-    assert!(!matches("RiskAssessment", "probability", "0.4", &assessment(json!(0.34))));
-    assert!(!matches("RiskAssessment", "probability", "0.4", &assessment(json!(0.46))));
-    assert!(matches("RiskAssessment", "probability", "0.5", &assessment(json!(0.45))));
+    assert!(!matches(
+        "RiskAssessment",
+        "probability",
+        "0.4",
+        &assessment(json!(0.34))
+    ));
+    assert!(!matches(
+        "RiskAssessment",
+        "probability",
+        "0.4",
+        &assessment(json!(0.46))
+    ));
+    assert!(matches(
+        "RiskAssessment",
+        "probability",
+        "0.5",
+        &assessment(json!(0.45))
+    ));
 }
 
 #[test]
@@ -177,7 +287,12 @@ fn a_composite_needs_both_halves_to_hold_of_one_element() {
         "http://loinc.org|8480-6$72.5",
         &body
     ));
-    assert!(matches("Observation", "component-code-value-quantity", "8480-6$120", &body));
+    assert!(matches(
+        "Observation",
+        "component-code-value-quantity",
+        "8480-6$120",
+        &body
+    ));
     assert!(!matches(
         "Observation",
         "component-code-value-quantity",

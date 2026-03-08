@@ -104,15 +104,14 @@ mod tests {
 
     #[test]
     fn a_line_names_the_dimensions_and_the_duration() {
-        let event = Event::of(
-            Dimensions::of(Operation::Update, Outcome::ServerFault),
-            9,
-        );
+        let event = Event::of(Dimensions::of(Operation::Update, Outcome::ServerFault), 9);
         assert_eq!(
             event.line(),
             "operation=update outcome=server_fault duration_ms=9"
         );
-        let tied = event.tied(Some(CorrelationId::parse("0123456789abcdef0123456789abcdef").unwrap()));
+        let tied = event.tied(Some(
+            CorrelationId::parse("0123456789abcdef0123456789abcdef").unwrap(),
+        ));
         assert_eq!(
             tied.line(),
             "operation=update outcome=server_fault duration_ms=9 correlation=0123456789abcdef0123456789abcdef"
@@ -124,5 +123,84 @@ mod tests {
         let event = Event::of(Dimensions::of(Operation::Read, Outcome::Success), 1);
         assert!(event.correlation.is_none());
         assert!(!event.line().contains("correlation"));
+    }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+pub trait Traces: Send + Sync {
+    fn span(&self, event: &Event);
+}
+
+
+#[derive(Debug, Default, Clone)]
+pub struct Traced(Arc<Mutex<Vec<Event>>>);
+
+impl Traced {
+    pub fn traces(&self) -> Arc<dyn Traces> {
+        Arc::new(Traced(Arc::clone(&self.0)))
+    }
+
+    pub fn spans(&self) -> Vec<Event> {
+        match self.0.lock() {
+            Ok(held) => held.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
+    }
+}
+
+impl Traces for Traced {
+    fn span(&self, event: &Event) {
+        match self.0.lock() {
+            Ok(mut held) => held.push(event.clone()),
+            Err(poisoned) => poisoned.into_inner().push(event.clone()),
+        }
+    }
+}
+
+pub trait Alarm: Send + Sync {
+    fn raise(&self, line: &str) -> Result<(), String>;
+}
+
+
+
+#[derive(Debug, Default, Clone)]
+pub struct Recorded(Arc<Mutex<Vec<String>>>);
+
+impl Recorded {
+    pub fn alarm(&self) -> Arc<dyn Alarm> {
+        Arc::new(Recorded(Arc::clone(&self.0)))
+    }
+
+    pub fn raised(&self) -> Vec<String> {
+        match self.0.lock() {
+            Ok(held) => held.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
+    }
+}
+
+impl Alarm for Recorded {
+    fn raise(&self, line: &str) -> Result<(), String> {
+        match self.0.lock() {
+            Ok(mut held) => held.push(line.to_owned()),
+            Err(poisoned) => poisoned.into_inner().push(line.to_owned()),
+        }
+        Ok(())
     }
 }

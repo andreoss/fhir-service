@@ -76,6 +76,12 @@ pub fn inputs(code: &str) -> Vec<OperationParam> {
             found
         }
         "everything" => listed(&crate::operation::EVERYTHING_PARAMS),
+        "document" => listed(&crate::operation::DOCUMENT_PARAMS),
+        "lastn" => {
+            let mut found = listed(&crate::operation::LASTN_PARAMS);
+            found.push(optional("max"));
+            found
+        }
         "docref" => listed(&crate::operation::DOCREF_PARAMS),
         "expand" => listed(&crate::operation::EXPAND_PARAMS),
         "includes" => listed(&crate::search::CONTROL),
@@ -90,7 +96,7 @@ pub fn inputs(code: &str) -> Vec<OperationParam> {
 
 fn output(code: &str) -> Option<&'static str> {
     match code {
-        "everything" | "includes" | "docref" => Some("Bundle"),
+        "everything" | "includes" | "docref" | "document" | "lastn" => Some("Bundle"),
         "expand" => Some("ValueSet"),
         "validate" => Some("OperationOutcome"),
         "convert-data" => Some("Resource"),
@@ -154,7 +160,10 @@ pub fn definitions_bundle(base: &str, self_url: &str) -> Vec<u8> {
         })
         .collect();
     let mut bundle = Map::new();
-    bundle.insert("resourceType".to_owned(), Value::String("Bundle".to_owned()));
+    bundle.insert(
+        "resourceType".to_owned(),
+        Value::String("Bundle".to_owned()),
+    );
     bundle.insert("id".to_owned(), Value::String(Uuid::new_v4().to_string()));
     bundle.insert("type".to_owned(), Value::String("searchset".to_owned()));
     bundle.insert("total".to_owned(), Value::from(entries.len()));
@@ -178,20 +187,20 @@ fn rendered(body: Vec<u8>) -> Response {
 }
 
 pub async fn operation_definitions(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
-    let base = base_of(&headers);
+    let base = base_of(&state, &headers);
     let self_url = format!("{base}/OperationDefinition");
     Ok(rendered(definitions_bundle(&base, &self_url)))
 }
 
 pub async fn operation_definition(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Path(code): Path<String>,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
-    let base = base_of(&headers);
+    let base = base_of(&state, &headers);
     let found = operations()
         .into_iter()
         .find(|operation| operation.code == code)

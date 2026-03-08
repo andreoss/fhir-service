@@ -84,7 +84,10 @@ fn the_types_a_version_defines_are_the_types_it_serves() {
     assert!(!Model::of(FhirVersion::R5).has_resource("DeviceUseStatement"));
     assert!(!Model::of(FhirVersion::Stu3).has_resource("EvidenceVariable"));
     for version in [FhirVersion::R4, FhirVersion::R4b, FhirVersion::R5] {
-        assert!(Model::of(version).has_resource("EvidenceVariable"), "{version}");
+        assert!(
+            Model::of(version).has_resource("EvidenceVariable"),
+            "{version}"
+        );
     }
 }
 
@@ -92,7 +95,12 @@ fn the_types_a_version_defines_are_the_types_it_serves() {
 fn the_names_the_service_parses_are_the_names_the_versions_define() {
     let union: std::collections::BTreeSet<String> = FhirVersion::ALL
         .into_iter()
-        .flat_map(|version| Model::of(version).resources().map(str::to_owned).collect::<Vec<_>>())
+        .flat_map(|version| {
+            Model::of(version)
+                .resources()
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
         .collect();
     for name in &union {
         assert!(
@@ -117,7 +125,10 @@ fn a_type_a_version_does_not_define_is_not_served_by_it() {
             .map(|held| held.to_string())
             .collect();
         assert_eq!(served.len(), model.resources().count(), "{version}");
-        assert!(served.iter().all(|name| model.has_resource(name)), "{version}");
+        assert!(
+            served.iter().all(|name| model.has_resource(name)),
+            "{version}"
+        );
     }
     assert!(fhir_core::ResourceType::served(FhirVersion::Stu3)
         .iter()
@@ -146,7 +157,11 @@ fn the_codes_administrative_gender_publishes_are_the_codes_a_patient_may_carry()
     for version in FhirVersion::ALL {
         for code in ["male", "female", "other", "unknown"] {
             let body = serde_json::json!({"resourceType": "Patient", "gender": code});
-            assert_eq!(Model::of(version).check(&body), Vec::new(), "{version} {code}");
+            assert_eq!(
+                Model::of(version).check(&body),
+                Vec::new(),
+                "{version} {code}"
+            );
         }
         for code in ["Male", "m", "lady"] {
             let body = serde_json::json!({"resourceType": "Patient", "gender": code});
@@ -168,7 +183,11 @@ fn a_date_is_a_year_a_month_or_a_day_and_nothing_longer() {
     for version in FhirVersion::ALL {
         for held in ["1980", "1980-04", "1980-04-01"] {
             let body = serde_json::json!({"resourceType": "Patient", "birthDate": held});
-            assert_eq!(Model::of(version).check(&body), Vec::new(), "{version} {held}");
+            assert_eq!(
+                Model::of(version).check(&body),
+                Vec::new(),
+                "{version} {held}"
+            );
         }
         for held in ["19800401", "1980-04-01T00:00:00Z", "80-04-01", "1980-13-01"] {
             let body = serde_json::json!({"resourceType": "Patient", "birthDate": held});
@@ -185,7 +204,8 @@ fn a_choice_is_named_by_the_type_it_carries() {
     for version in FhirVersion::ALL {
         let held = serde_json::json!({"resourceType": "Patient", "deceasedBoolean": true});
         assert_eq!(Model::of(version).check(&held), Vec::new(), "{version}");
-        let dated = serde_json::json!({"resourceType": "Patient", "deceasedDateTime": "1980-04-01"});
+        let dated =
+            serde_json::json!({"resourceType": "Patient", "deceasedDateTime": "1980-04-01"});
         assert_eq!(Model::of(version).check(&dated), Vec::new(), "{version}");
         let bare = serde_json::json!({"resourceType": "Patient", "deceased": true});
         assert!(
@@ -200,7 +220,8 @@ fn a_choice_is_named_by_the_type_it_carries() {
 
 #[test]
 fn an_element_a_version_dropped_is_served_by_no_later_version() {
-    let body = serde_json::json!({"resourceType": "Patient", "animal": {"species": {"text": "dog"}}});
+    let body =
+        serde_json::json!({"resourceType": "Patient", "animal": {"species": {"text": "dog"}}});
     assert_eq!(Model::of(FhirVersion::Stu3).check(&body), Vec::new());
     for version in [FhirVersion::R4, FhirVersion::R4b, FhirVersion::R5] {
         assert!(

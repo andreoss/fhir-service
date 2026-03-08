@@ -14,8 +14,9 @@ use crate::handlers::{
     compartment_definition, compartment_definitions, compartment_search, conditional_delete,
     conditional_patch, conditional_update, create, delete_instance, health, instance_history,
     method_not_allowed, not_found, parameter_refresh, parameter_reindex, parameter_status,
-    parameter_status_query, parameter_status_update, patch_instance, purge_history, read,
-    search_system, search_type, system_history, type_history, update, vread,
+    parameter_status_form, parameter_status_of, parameter_status_query, parameter_status_update,
+    patch_instance, purge_history, read, search_system, search_system_form, search_type,
+    search_type_form, system_history, type_history, update, vread,
 };
 use crate::smart::configuration;
 
@@ -38,6 +39,33 @@ pub struct AppState {
     pub authorization: Option<Arc<crate::smart::Authorization>>,
     pub guard: Option<Arc<crate::access::Guard>>,
     pub polling: Arc<crate::polling::Polling>,
+    pub versioning: Arc<crate::versioning::Versioning>,
+    pub profiles: crate::profile::OnWrite,
+    pub roles: Arc<crate::roles::Roles>,
+    pub throttle: crate::throttle::Throttle,
+    pub capabilities: crate::capabilities::Capabilities,
+    
+    pub purge_keeps: Arc<Vec<String>>,
+    pub busy: crate::readiness::Busy,
+    pub artifacts: Arc<crate::binary::Artifacts>,
+    pub allowed_profiles: Arc<crate::profile::AllowedProfiles>,
+    pub administration: crate::administration::Administration,
+    pub tenancy: crate::tenancy::Tenancy,
+    pub policies: crate::policy::Policies,
+    pub security_headers: crate::headers::SecurityHeaders,
+    
+    
+    pub alarm: Option<Arc<dyn fhir_telemetry::Alarm>>,
+    pub traces: Option<Arc<dyn fhir_telemetry::Traces>>,
+    pub reset: crate::reset::Resettable,
+    pub unchanged: crate::unchanged::Unchanged,
+    
+    pub default_format: crate::representation::MediaType,
+    pub paging: crate::paging::Paging,
+    pub limits: crate::limits::Limits,
+    pub forwarding: crate::address::Forwarding,
+    pub references: crate::references::References,
+    pub restricted: crate::restricted::Restricted,
 }
 
 pub type Asked = std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>;
@@ -117,6 +145,245 @@ impl Service {
                 authorization: None,
                 guard: None,
                 polling: Arc::new(crate::polling::Polling::new(fhir_store::system_ticker())),
+                versioning: Arc::new(crate::versioning::Versioning::default()),
+                profiles: crate::profile::OnWrite::default(),
+                roles: Arc::new(crate::roles::Roles::default()),
+                throttle: crate::throttle::Throttle::unbounded(),
+                capabilities: crate::capabilities::Capabilities::default(),
+                purge_keeps: Arc::new(
+                    crate::erase::KEPT_ON_PURGE
+                        .iter()
+                        .map(|name| (*name).to_owned())
+                        .collect(),
+                ),
+                busy: crate::readiness::Busy::new(),
+                artifacts: Arc::new(crate::binary::Artifacts::default()),
+                allowed_profiles: Arc::new(crate::profile::AllowedProfiles::default()),
+                administration: crate::administration::Administration::off(),
+                tenancy: crate::tenancy::Tenancy::off(),
+                policies: crate::policy::Policies::off(),
+                security_headers: crate::headers::SecurityHeaders::default(),
+                alarm: None,
+                traces: None,
+                reset: crate::reset::Resettable::never(),
+                unchanged: crate::unchanged::Unchanged::silent(),
+                default_format: crate::representation::MediaType::DEFAULT,
+                paging: crate::paging::Paging::default(),
+                limits: crate::limits::Limits::default(),
+                forwarding: crate::address::Forwarding::untrusted(),
+                references: crate::references::References::as_written(),
+                restricted: crate::restricted::Restricted::everything(),
+            },
+        }
+    }
+
+    pub fn with_versioning(self, versioning: crate::versioning::Versioning) -> Service {
+        Service {
+            state: AppState {
+                versioning: Arc::new(versioning),
+                ..self.state
+            },
+        }
+    }
+
+    pub fn with_profile_validation(self, profiles: crate::profile::OnWrite) -> Service {
+        Service {
+            state: AppState {
+                profiles,
+                ..self.state
+            },
+        }
+    }
+
+    pub fn with_roles(self, roles: crate::roles::Roles) -> Service {
+        Service {
+            state: AppState {
+                roles: Arc::new(roles),
+                ..self.state
+            },
+        }
+    }
+
+    pub fn with_throttle(self, throttle: crate::throttle::Throttle) -> Service {
+        Service {
+            state: AppState {
+                throttle,
+                ..self.state
+            },
+        }
+    }
+
+    
+    
+    pub fn keeping_on_purge(self, kept: Vec<String>) -> Service {
+        Service {
+            state: AppState {
+                purge_keeps: Arc::new(kept),
+                ..self.state
+            },
+        }
+    }
+
+    pub fn accepting_profiles(self, allowed: crate::profile::AllowedProfiles) -> Service {
+        Service {
+            state: AppState {
+                allowed_profiles: Arc::new(allowed),
+                ..self.state
+            },
+        }
+    }
+
+    
+    
+    pub fn paging(self, paging: crate::paging::Paging) -> Service {
+        Service {
+            state: AppState {
+                paging,
+                ..self.state
+            },
+        }
+    }
+
+    
+    pub fn serving(self, restricted: crate::restricted::Restricted) -> Service {
+        Service {
+            state: AppState {
+                restricted,
+                ..self.state
+            },
+        }
+    }
+
+    
+    
+    pub fn normalising(self, references: crate::references::References) -> Service {
+        Service {
+            state: AppState {
+                references,
+                ..self.state
+            },
+        }
+    }
+
+    
+    
+    pub fn behind_proxy(self, forwarding: crate::address::Forwarding) -> Service {
+        Service {
+            state: AppState {
+                forwarding,
+                ..self.state
+            },
+        }
+    }
+
+    
+    pub fn bounded_by(self, limits: crate::limits::Limits) -> Service {
+        Service {
+            state: AppState {
+                limits,
+                ..self.state
+            },
+        }
+    }
+
+    
+    pub fn answering(self, default_format: crate::representation::MediaType) -> Service {
+        Service {
+            state: AppState {
+                default_format,
+                ..self.state
+            },
+        }
+    }
+
+    
+    pub fn skipping_unchanged(self, unchanged: crate::unchanged::Unchanged) -> Service {
+        Service {
+            state: AppState {
+                unchanged,
+                ..self.state
+            },
+        }
+    }
+
+    
+    
+    pub fn resettable(self, reset: crate::reset::Resettable) -> Service {
+        Service {
+            state: AppState {
+                reset,
+                ..self.state
+            },
+        }
+    }
+
+    
+    pub fn with_security_headers(
+        self,
+        security_headers: crate::headers::SecurityHeaders,
+    ) -> Service {
+        Service {
+            state: AppState {
+                security_headers,
+                ..self.state
+            },
+        }
+    }
+
+    
+    
+    pub fn with_policies(self, policies: crate::policy::Policies) -> Service {
+        Service {
+            state: AppState {
+                policies,
+                ..self.state
+            },
+        }
+    }
+
+    
+    pub fn with_tenancy(self, tenancy: crate::tenancy::Tenancy) -> Service {
+        Service {
+            state: AppState {
+                tenancy,
+                ..self.state
+            },
+        }
+    }
+
+    
+    
+    pub fn with_administration(
+        self,
+        administration: crate::administration::Administration,
+    ) -> Service {
+        Service {
+            state: AppState {
+                administration,
+                ..self.state
+            },
+        }
+    }
+
+    pub fn holding_artifacts(self, artifacts: crate::binary::Artifacts) -> Service {
+        Service {
+            state: AppState {
+                artifacts: Arc::new(artifacts),
+                ..self.state
+            },
+        }
+    }
+
+    
+    pub fn busy(&self) -> crate::readiness::Busy {
+        self.state.busy.clone()
+    }
+
+    pub fn with_capabilities(self, capabilities: crate::capabilities::Capabilities) -> Service {
+        Service {
+            state: AppState {
+                capabilities,
+                ..self.state
             },
         }
     }
@@ -188,6 +455,48 @@ impl Service {
         Arc::clone(&self.state.telemetry)
     }
 
+    
+    
+    
+    pub fn alarming(self, alarm: Arc<dyn fhir_telemetry::Alarm>) -> Service {
+        self.measuring(Some(alarm), None)
+    }
+
+    
+    pub fn tracing(self, traces: Arc<dyn fhir_telemetry::Traces>) -> Service {
+        self.measuring(None, Some(traces))
+    }
+
+    
+    
+    
+    fn measuring(
+        self,
+        alarm: Option<Arc<dyn fhir_telemetry::Alarm>>,
+        traces: Option<Arc<dyn fhir_telemetry::Traces>>,
+    ) -> Service {
+        let alarm = alarm.or_else(|| self.state.alarm.clone());
+        let traces = traces.or_else(|| self.state.traces.clone());
+        let mut telemetry = fhir_telemetry::Telemetry::new(
+            Arc::new(fhir_telemetry::Stream),
+            fhir_store::system_ticker(),
+        );
+        if let Some(held) = alarm.clone() {
+            telemetry = telemetry.alarming(held);
+        }
+        if let Some(held) = traces.clone() {
+            telemetry = telemetry.tracing(held);
+        }
+        Service {
+            state: AppState {
+                telemetry: Arc::new(telemetry),
+                alarm,
+                traces,
+                ..self.state
+            },
+        }
+    }
+
     pub fn scraped(self, scrape: fhir_telemetry::Scrape) -> Service {
         Service {
             state: AppState {
@@ -246,6 +555,9 @@ impl Service {
         dependencies: Vec<Dependency>,
     ) -> Result<Service, Error> {
         let service = Service::new(store, version, dependencies);
+        
+        
+        crate::profile::register_types(&service.state.store).await?;
         service.refresh().await?;
         Ok(service)
     }
@@ -268,7 +580,21 @@ impl Service {
     }
 
     pub fn router(&self) -> Router<()> {
-        layered(routes().with_state(self.state.clone()), &self.state)
+        let held = layered(routes().with_state(self.state.clone()), &self.state);
+        match self.state.administration.is_on() {
+            
+            
+            
+            true => {
+                Router::new()
+                    .fallback_service(held)
+                    .layer(axum::middleware::from_fn_with_state(
+                        self.state.clone(),
+                        crate::administration::doors,
+                    ))
+            }
+            false => held,
+        }
     }
 
     pub async fn bind(&self, addr: SocketAddr) -> Result<Bound, Error> {
@@ -296,6 +622,27 @@ pub(crate) fn over(state: &AppState, store: Arc<dyn ResourceStore>) -> Router<()
 
 fn layered(router: Router<()>, state: &AppState) -> Router<()> {
     router
+        .layer(axum::middleware::from_fn(crate::cors::shared))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::headers::written,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::limits::bounded,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::references::lengthening,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::tenancy::unlabelling,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::throttle::bounded,
+        ))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             crate::measure::measured,
@@ -359,7 +706,18 @@ fn entries() -> Vec<Entry> {
     vec![
         entry("/", BOTH, get(search_system).post(crate::bundle::process)),
         entry("/health", READ, get(health)),
+        entry("/Binary", &[Verb::Post], post(crate::binary::write)),
+        entry(
+            "/Binary/{id}",
+            &[Verb::Get, Verb::Put],
+            get(crate::binary::read).put(crate::binary::write_at),
+        ),
+        entry("/$liveness", READ, get(crate::readiness::liveness)),
+        entry("/$readiness", READ, get(crate::readiness::readiness)),
         entry("/metadata", READ, get(capability)),
+        entry("/openapi.json", READ, get(crate::handlers::description)),
+        entry("/$reset", WRITE, post(crate::reset::reset)),
+        entry("/$fhirUser-lookup", WRITE, post(crate::fhiruser::lookup)),
         entry("/$versions", BOTH, get(version_report).post(version_report)),
         entry("/.well-known/smart-configuration", READ, get(configuration)),
         entry(
@@ -385,6 +743,16 @@ fn entries() -> Vec<Entry> {
             get(crate::trail::exported).post(crate::trail::exported),
         ),
         entry("/AuditEvent/$retain", WRITE, post(crate::trail::retained)),
+        entry(
+            "/SearchParameter/$status/_search",
+            &[Verb::Post],
+            post(parameter_status_form),
+        ),
+        entry(
+            "/SearchParameter/{id}/$status",
+            READ,
+            get(parameter_status_of),
+        ),
         entry("/SearchParameter/$reindex", WRITE, post(parameter_reindex)),
         entry("/SearchParameter/$refresh", WRITE, post(parameter_refresh)),
         entry("/CompartmentDefinition", READ, get(compartment_definitions)),
@@ -408,6 +776,8 @@ fn entries() -> Vec<Entry> {
                 .delete(delete_instance)
                 .patch(patch_instance),
         ),
+        entry("/_search", &[Verb::Post], post(search_system_form)),
+        entry("/{type}/_search", &[Verb::Post], post(search_type_form)),
         entry("/_history", READ, get(system_history)),
         entry("/{type}/_history", READ, get(type_history)),
         entry("/{type}/{id}/_history", READ, get(instance_history)),
@@ -422,6 +792,114 @@ fn entries() -> Vec<Entry> {
                 .patch(conditional_patch),
         ),
         entry("/{type}/{id}/$purge-history", WRITE, post(purge_history)),
+        entry(
+            "/$convert",
+            &[Verb::Post],
+            post(crate::operation::represented),
+        ),
+        entry(
+            "/StructureDefinition/$snapshot",
+            &[Verb::Post],
+            post(crate::operation::snapshot),
+        ),
+        entry(
+            "/ValueSet/$validate-code",
+            BOTH,
+            get(crate::coding::value_set_validate_code)
+                .post(crate::coding::value_set_validate_code),
+        ),
+        entry(
+            "/ValueSet/{id}/$validate-code",
+            BOTH,
+            get(crate::coding::value_set_validate_code_instance)
+                .post(crate::coding::value_set_validate_code_instance),
+        ),
+        entry(
+            "/CodeSystem/$validate-code",
+            BOTH,
+            get(crate::coding::code_system_validate_code)
+                .post(crate::coding::code_system_validate_code),
+        ),
+        entry(
+            "/CodeSystem/{id}/$validate-code",
+            BOTH,
+            get(crate::coding::code_system_validate_code_instance)
+                .post(crate::coding::code_system_validate_code_instance),
+        ),
+        entry(
+            "/CodeSystem/$lookup",
+            BOTH,
+            get(crate::coding::lookup).post(crate::coding::lookup),
+        ),
+        entry(
+            "/CodeSystem/$subsumes",
+            BOTH,
+            get(crate::coding::subsumes).post(crate::coding::subsumes),
+        ),
+        entry(
+            "/CodeSystem/$find-matches",
+            BOTH,
+            get(crate::coding::find_matches).post(crate::coding::find_matches),
+        ),
+        entry(
+            "/CodeSystem/$compose",
+            BOTH,
+            get(crate::coding::find_matches).post(crate::coding::find_matches),
+        ),
+        entry(
+            "/ConceptMap/$translate",
+            BOTH,
+            get(crate::coding::translate).post(crate::coding::translate),
+        ),
+        entry(
+            "/ConceptMap/{id}/$translate",
+            BOTH,
+            get(crate::coding::translate_instance).post(crate::coding::translate_instance),
+        ),
+        entry("/$closure", &[Verb::Post], post(crate::coding::closure)),
+        entry(
+            "/Observation/$lastn",
+            BOTH,
+            get(crate::operation::last_n).post(crate::operation::last_n),
+        ),
+        entry(
+            "/{type}/{id}/$erase",
+            &[Verb::Post],
+            post(crate::erase::erase_instance),
+        ),
+        entry(
+            "/{type}/{id}/_history/{vid}/$erase",
+            &[Verb::Post],
+            post(crate::erase::erase_version),
+        ),
+        entry(
+            "/Patient/{id}/$purge",
+            &[Verb::Post],
+            post(crate::erase::purge),
+        ),
+        entry(
+            "/Composition/$document",
+            &[Verb::Post],
+            post(crate::operation::document_type),
+        ),
+        entry(
+            "/Composition/{id}/$document",
+            BOTH,
+            get(crate::operation::document).post(crate::operation::document),
+        ),
+        entry("/$meta", READ, get(crate::meta::read_system)),
+        entry("/{type}/$meta", READ, get(crate::meta::read_type)),
+        entry(
+            "/{type}/{id}/$meta",
+            BOTH,
+            get(crate::meta::read_instance).post(crate::meta::read_instance),
+        ),
+        entry("/{type}/{id}/$meta-add", WRITE, post(crate::meta::add)),
+        entry(
+            "/{type}/{id}/$meta-delete",
+            WRITE,
+            post(crate::meta::remove),
+        ),
         entry(
             "/Patient/{id}/$everything",
             BOTH,
@@ -537,6 +1015,15 @@ pub struct Bound {
 }
 
 impl Bound {
+    
+    
+    pub async fn holding(addr: SocketAddr, router: Router<()>) -> Result<Bound, Error> {
+        let listener = TcpListener::bind(addr)
+            .await
+            .map_err(|error| Error::Internal(format!("cannot bind {addr}: {error}")))?;
+        Ok(Bound { listener, router })
+    }
+
     pub fn local_addr(&self) -> Result<SocketAddr, Error> {
         self.listener
             .local_addr()
@@ -544,16 +1031,24 @@ impl Bound {
     }
 
     pub async fn serve(self) -> Result<(), Error> {
-        axum::serve(self.listener, self.router)
+        axum::serve(self.listener, Bound::connected(self.router))
             .await
             .map_err(|error| Error::Internal(format!("server error: {error}")))
+    }
+
+    
+    
+    fn connected(
+        router: Router<()>,
+    ) -> axum::extract::connect_info::IntoMakeServiceWithConnectInfo<Router<()>, SocketAddr> {
+        router.into_make_service_with_connect_info::<SocketAddr>()
     }
 
     pub async fn serve_until<S>(self, stop: S) -> Result<(), Error>
     where
         S: std::future::Future<Output = ()> + Send + 'static,
     {
-        axum::serve(self.listener, self.router)
+        axum::serve(self.listener, Bound::connected(self.router))
             .with_graceful_shutdown(stop)
             .await
             .map_err(|error| Error::Internal(format!("server error: {error}")))

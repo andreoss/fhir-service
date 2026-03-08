@@ -48,10 +48,19 @@ fn a_code_system_yields_its_hierarchy() {
 
 #[test]
 fn subsumption_walks_the_hierarchy_in_both_directions() {
-    let under: Vec<String> = descendants(&system(), "mid").iter().map(|held| held.code.clone()).collect();
+    let under: Vec<String> = descendants(&system(), "mid")
+        .iter()
+        .map(|held| held.code.clone())
+        .collect();
     assert_eq!(under, vec!["mid".to_owned(), "leaf".to_owned()]);
-    let over: Vec<String> = ancestors(&system(), "leaf").iter().map(|held| held.code.clone()).collect();
-    assert_eq!(over, vec!["leaf".to_owned(), "mid".to_owned(), "top".to_owned()]);
+    let over: Vec<String> = ancestors(&system(), "leaf")
+        .iter()
+        .map(|held| held.code.clone())
+        .collect();
+    assert_eq!(
+        over,
+        vec!["leaf".to_owned(), "mid".to_owned(), "top".to_owned()]
+    );
     assert!(descendants(&system(), "nonesuch").is_empty());
     assert!(ancestors(&system(), "nonesuch").is_empty());
 }
@@ -74,7 +83,10 @@ fn nesting_is_dropped_when_it_is_excluded() {
     };
     let expansion = expand(&set(), &systems, &request).unwrap();
     assert_eq!(expansion.concepts.len(), 4);
-    assert!(expansion.concepts.iter().all(|held| held.contains.is_empty()));
+    assert!(expansion
+        .concepts
+        .iter()
+        .all(|held| held.contains.is_empty()));
 }
 
 #[test]
@@ -91,7 +103,11 @@ fn a_filter_and_paging_narrow_the_expansion() {
     )
     .unwrap();
     assert_eq!(
-        filtered.concepts.iter().map(|held| held.code.clone()).collect::<Vec<String>>(),
+        filtered
+            .concepts
+            .iter()
+            .map(|held| held.code.clone())
+            .collect::<Vec<String>>(),
         vec!["leaf".to_owned()]
     );
     let paged = expand(
@@ -133,10 +149,17 @@ fn a_display_language_and_designations_are_honoured() {
         ..asked()
     };
     let expansion = expand(&set(), &systems, &request).unwrap();
-    let top = expansion.concepts.iter().find(|held| held.code == "top").unwrap();
+    let top = expansion
+        .concepts
+        .iter()
+        .find(|held| held.code == "top")
+        .unwrap();
     assert_eq!(top.display.as_deref(), Some("Boven"));
     let rendered = expansion_json(&expansion, &request, &stamp());
-    assert_eq!(rendered["expansion"]["contains"][0]["designation"][0]["value"], "Boven");
+    assert_eq!(
+        rendered["expansion"]["contains"][0]["designation"][0]["value"],
+        "Boven"
+    );
     assert_eq!(rendered["resourceType"], "ValueSet");
     assert_eq!(rendered["expansion"]["total"], 4);
 }
@@ -188,7 +211,6 @@ fn the_version_and_the_date_the_set_carries_are_honoured() {
     assert_eq!(expansion.total, 4);
 }
 
-
 #[test]
 fn a_composed_subtree_and_an_exclusion_are_honoured() {
     let composed = json!({
@@ -200,13 +222,24 @@ fn a_composed_subtree_and_an_exclusion_are_honoured() {
         }
     });
     let systems = vec![system()];
-    let expansion = expand(&composed, &systems, &ExpansionRequest { exclude_nested: true, ..asked() }).unwrap();
+    let expansion = expand(
+        &composed,
+        &systems,
+        &ExpansionRequest {
+            exclude_nested: true,
+            ..asked()
+        },
+    )
+    .unwrap();
     assert_eq!(
-        expansion.concepts.iter().map(|held| held.code.clone()).collect::<Vec<String>>(),
+        expansion
+            .concepts
+            .iter()
+            .map(|held| held.code.clone())
+            .collect::<Vec<String>>(),
         vec!["mid".to_owned()]
     );
 }
-
 
 #[test]
 fn an_expansion_is_stamped_and_carries_no_empty_element() {
@@ -246,8 +279,14 @@ fn an_expansion_carries_an_offset_only_when_it_is_paged() {
     );
 
     for request in [
-        ExpansionRequest { count: Some(2), ..asked() },
-        ExpansionRequest { offset: 1, ..asked() },
+        ExpansionRequest {
+            count: Some(2),
+            ..asked()
+        },
+        ExpansionRequest {
+            offset: 1,
+            ..asked()
+        },
     ] {
         let paged = expand(&set(), &[system()], &request).unwrap();
         let rendered = expansion_json(&paged, &request, &stamp());
@@ -269,5 +308,8 @@ fn an_expansion_reports_the_whole_count_beside_the_page_it_carries() {
     let rendered = expansion_json(&paged, &request, &stamp());
     assert_eq!(rendered["expansion"]["total"], 4);
     assert_eq!(rendered["expansion"]["offset"], 1);
-    assert_eq!(rendered["expansion"]["contains"].as_array().map(Vec::len), Some(2));
+    assert_eq!(
+        rendered["expansion"]["contains"].as_array().map(Vec::len),
+        Some(2)
+    );
 }

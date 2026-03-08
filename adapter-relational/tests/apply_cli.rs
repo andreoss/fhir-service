@@ -16,7 +16,9 @@ fn run(namespace: &str, args: &[&str]) -> (i32, String) {
 
 #[tokio::test]
 async fn an_unattended_run_applies_everything_pending() {
-    let Some(pool) = support::engine().await else { return };
+    let Some(pool) = support::engine().await else {
+        return;
+    };
     let namespace = support::namespace("unattended");
     let name = namespace.as_str().to_owned();
 
@@ -33,7 +35,9 @@ async fn an_unattended_run_applies_everything_pending() {
 
 #[tokio::test]
 async fn an_unattended_run_refuses_a_schema_it_does_not_know() {
-    let Some(pool) = support::engine().await else { return };
+    let Some(pool) = support::engine().await else {
+        return;
+    };
     let namespace = support::namespace("ahead");
     let migrator =
         fhir_adapter_relational::migration::Migrator::new(pool.clone(), namespace.clone());
@@ -70,7 +74,9 @@ fn force_without_a_version_is_refused() {
 
 #[tokio::test]
 async fn the_command_reports_and_advances_the_schema() {
-    let Some(pool) = support::engine().await else { return };
+    let Some(pool) = support::engine().await else {
+        return;
+    };
     let namespace = support::namespace("cli");
     let name = namespace.as_str().to_owned();
 

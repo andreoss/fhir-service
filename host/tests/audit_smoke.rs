@@ -4,6 +4,7 @@ use live::{request, spawn_with, stop, Reply};
 use serde_json::{json, Value};
 
 const ISSUER: &str = "https://issuer.example.org";
+const AUDIENCE: &str = "https://service.example.org";
 const KEY: &str = "a-key-the-store-never-sees";
 const SCOPES: &str = "system/*.read system/*.write system/*.export system/*.bulk-delete";
 
@@ -20,6 +21,7 @@ fn token() -> String {
         .unwrap_or(0);
     signing().mint(&json!({
         "iss": ISSUER,
+        "aud": AUDIENCE,
         "sub": "practitioner-1",
         "scope": SCOPES,
         "exp": expiry,
@@ -30,7 +32,11 @@ fn spawn_recording() -> (std::process::Child, u16) {
     let keys = signing().keys().to_string();
     spawn_with(&[
         ("FHIR_AUTH_ISSUER", ISSUER),
-        ("FHIR_AUTH_AUTHORIZE", "https://issuer.example.org/authorize"),
+        ("FHIR_AUTH_AUDIENCE", AUDIENCE),
+        (
+            "FHIR_AUTH_AUTHORIZE",
+            "https://issuer.example.org/authorize",
+        ),
         ("FHIR_AUTH_TOKEN", "https://issuer.example.org/token"),
         ("FHIR_AUTH_KEYS", &keys),
         ("FHIR_AUDIT_KEY", KEY),
@@ -184,7 +190,11 @@ fn live_a_record_removed_through_the_surface_is_detected_as_a_gap() {
     let (child, port) = spawn_recording();
     worked(port);
     let removed = bearing(port, "DELETE", "/AuditEvent/au-000000000002", &[]);
-    assert!(removed.status == 200 || removed.status == 204, "{}", removed.body);
+    assert!(
+        removed.status == 200 || removed.status == 204,
+        "{}",
+        removed.body
+    );
     let report = verified(port);
     stop(child);
     assert_eq!(

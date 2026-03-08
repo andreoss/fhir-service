@@ -93,9 +93,10 @@ fn malformed_input_is_refused() {
 #[test]
 fn an_input_form_the_server_does_not_read_is_refused() {
     assert!(matches!(
-        "ccda".parse::<InputType>().unwrap_err(),
+        "xml".parse::<InputType>().unwrap_err(),
         Error::UnsupportedParameter(_)
     ));
+    assert_eq!("ccda".parse::<InputType>().unwrap(), InputType::Ccda);
     assert_eq!("hl7v2".parse::<InputType>().unwrap(), InputType::Hl7v2);
     assert_eq!("fhir".parse::<InputType>().unwrap(), InputType::Fhir);
     assert_eq!("json".parse::<InputType>().unwrap(), InputType::Json);
@@ -119,7 +120,10 @@ fn the_default_registry_renders_resources_the_definitions_accept() {
     for (root, data) in [
         ("Patient", "PID|1||pt-4||Dee^Eve||19700101|male"),
         ("Patient", "PID|1||pt-5"),
-        ("Observation", "OBX|1|ST|8867-4^Heart rate^http://loinc.org||72"),
+        (
+            "Observation",
+            "OBX|1|ST|8867-4^Heart rate^http://loinc.org||72",
+        ),
         ("Observation", "OBX|1|ST|8867-4||72"),
     ] {
         let value = approved(root, data);
@@ -136,9 +140,18 @@ fn the_default_registry_renders_resources_the_definitions_accept() {
 
 #[test]
 fn a_delimited_date_is_rendered_as_the_date_the_specification_spells() {
-    assert_eq!(approved("Patient", "PID|1||pt-4||||19700101")["birthDate"], "1970-01-01");
-    assert_eq!(approved("Patient", "PID|1||pt-4||||197001")["birthDate"], "1970-01");
-    assert_eq!(approved("Patient", "PID|1||pt-4||||1970")["birthDate"], "1970");
+    assert_eq!(
+        approved("Patient", "PID|1||pt-4||||19700101")["birthDate"],
+        "1970-01-01"
+    );
+    assert_eq!(
+        approved("Patient", "PID|1||pt-4||||197001")["birthDate"],
+        "1970-01"
+    );
+    assert_eq!(
+        approved("Patient", "PID|1||pt-4||||1970")["birthDate"],
+        "1970"
+    );
     assert_eq!(
         approved("Patient", "PID|1||pt-4||||19700101120000")["birthDate"],
         "1970-01-01"

@@ -8,6 +8,11 @@ pub struct Grant {
     pub types: Vec<ResourceType>,
     pub compartments: Vec<Compartment>,
     pub filters: Vec<GrantFilter>,
+    
+    
+    
+    
+    pub every: Vec<Filter>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -51,6 +56,7 @@ impl Grant {
         let narrowed = self
             .narrowing(envelope.resource_type())
             .into_iter()
+            .chain(self.every.iter())
             .all(|filter| filter.matches(envelope.id(), envelope.last_updated(), body));
         narrowed
             && (self.is_open()
@@ -190,6 +196,7 @@ mod tests {
                 resource_type: kind("Observation"),
                 filter: final_only,
             }],
+            every: Vec::new(),
         };
         let (matching, matching_body) = held(&observation("ob-1", "Patient/pt-1"));
         assert!(grant.reaches(&matching, &matching_body));

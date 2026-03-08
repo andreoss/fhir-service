@@ -1,5 +1,6 @@
 pub mod chain;
 pub mod compartment;
+pub mod errata;
 pub mod grant;
 pub mod include;
 pub mod index;
@@ -27,7 +28,7 @@ pub use registry::{
 };
 pub use value::{Comparator, SearchValue, Token, TokenSystem, ValueType};
 
-use crate::{FhirInstant, FhirVersion, ResourceId};
+use crate::{FhirInstant, FhirVersion, ResourceId, ResourceType};
 use serde_json::Value;
 
 pub fn pointers(element: &Value) -> Vec<String> {
@@ -50,6 +51,12 @@ pub struct Filter {
     pub modifier: Modifier,
     pub values: Vec<SearchValue>,
     pub index: Option<String>,
+    
+    
+    
+    
+    
+    pub exempt: Vec<ResourceType>,
 }
 
 impl Filter {
@@ -60,7 +67,22 @@ impl Filter {
             modifier: Modifier::None,
             values,
             index: None,
+            exempt: Vec::new(),
         }
+    }
+
+    pub fn exempting(mut self, types: Vec<ResourceType>) -> Filter {
+        self.exempt = types;
+        self
+    }
+
+    pub fn exempts(&self, body: &Value) -> bool {
+        if self.exempt.is_empty() {
+            return false;
+        }
+        body.get("resourceType")
+            .and_then(Value::as_str)
+            .is_some_and(|held| self.exempt.iter().any(|kind| kind.as_str() == held))
     }
 
     pub fn matches_indexed(&self, elements: &[Value]) -> bool {
@@ -100,6 +122,9 @@ impl Filter {
     }
 
     pub fn matches(&self, id: &ResourceId, last_updated: &FhirInstant, body: &Value) -> bool {
+        if self.exempts(body) {
+            return true;
+        }
         match &self.modifier {
             Modifier::Missing => {
                 let wanted = matches!(self.values.first(), Some(SearchValue::Missing(true)));
@@ -127,6 +152,7 @@ impl Filter {
             },
             values: values.to_vec(),
             index: self.index.clone(),
+            exempt: self.exempt.clone(),
         }
     }
 
@@ -137,6 +163,7 @@ impl Filter {
             modifier: Modifier::None,
             values: values.to_vec(),
             index: self.index.clone(),
+            exempt: self.exempt.clone(),
         }
     }
 
@@ -423,6 +450,7 @@ mod tests {
             modifier,
             values,
             index: Some("urn:p:custom".to_owned()),
+            exempt: Vec::new(),
         }
     }
 
@@ -464,6 +492,7 @@ mod tests {
                 modifier: modifier.clone(),
                 values,
                 index: None,
+                exempt: Vec::new(),
             };
             assert_eq!(
                 held.matches_indexed(std::slice::from_ref(element)),

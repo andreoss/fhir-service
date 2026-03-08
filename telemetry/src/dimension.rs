@@ -75,14 +75,24 @@ pub enum Outcome {
     Success,
     ClientFault,
     ServerFault,
+    
+    
+    
+    Throttled,
 }
 
 impl Outcome {
-    pub const ALL: [Outcome; 3] = [Outcome::Success, Outcome::ClientFault, Outcome::ServerFault];
+    pub const ALL: [Outcome; 4] = [
+        Outcome::Success,
+        Outcome::ClientFault,
+        Outcome::ServerFault,
+        Outcome::Throttled,
+    ];
 
     pub fn of_status(status: u16) -> Outcome {
         match status {
             0..=399 => Outcome::Success,
+            429 => Outcome::Throttled,
             400..=499 => Outcome::ClientFault,
             _ => Outcome::ServerFault,
         }
@@ -91,7 +101,7 @@ impl Outcome {
     pub fn is_failure(&self) -> bool {
         match self {
             Outcome::Success => false,
-            Outcome::ClientFault | Outcome::ServerFault => true,
+            Outcome::ClientFault | Outcome::ServerFault | Outcome::Throttled => true,
         }
     }
 
@@ -100,6 +110,7 @@ impl Outcome {
             Outcome::Success => "success",
             Outcome::ClientFault => "client_fault",
             Outcome::ServerFault => "server_fault",
+            Outcome::Throttled => "throttled",
         }
     }
 

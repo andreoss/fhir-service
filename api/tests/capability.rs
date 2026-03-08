@@ -866,3 +866,91 @@ async fn the_statement_advertises_only_the_formats_the_build_serves() {
         );
     }
 }
+
+async fn header_of(app: &Service, uri: &str, name: &str) -> Option<String> {
+    let request = Request::builder()
+        .method("GET")
+        .uri(uri)
+        .header("host", "localhost")
+        .header("origin", "https://app.example.org")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.router().oneshot(request).await.unwrap();
+    response
+        .headers()
+        .get(name)
+        .and_then(|held| held.to_str().ok())
+        .map(str::to_owned)
+}
+
+#[tokio::test]
+async fn the_discovery_document_is_readable_by_a_browser() {
+    let app = authorized();
+    assert_eq!(
+        header_of(
+            &app,
+            "/.well-known/smart-configuration",
+            "access-control-allow-origin"
+        )
+        .await,
+        Some("*".to_owned())
+    );
+}
+
+#[tokio::test]
+async fn the_capability_statement_is_readable_by_a_browser() {
+    let app = authorized();
+    assert_eq!(
+        header_of(&app, "/metadata", "access-control-allow-origin").await,
+        Some("*".to_owned())
+    );
+}
+
+#[tokio::test]
+async fn a_resource_read_is_readable_by_a_browser() {
+    let app = authorized();
+    assert_eq!(
+        header_of(&app, "/Patient", "access-control-allow-origin").await,
+        Some("*".to_owned())
+    );
+}
+
+#[tokio::test]
+async fn a_browser_preflight_is_answered() {
+    let request = Request::builder()
+        .method("OPTIONS")
+        .uri("/Patient")
+        .header("host", "localhost")
+        .header("origin", "https://app.example.org")
+        .header("access-control-request-method", "GET")
+        .header("access-control-request-headers", "authorization")
+        .body(Body::empty())
+        .unwrap();
+    let response = authorized().router().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    let headers = response.headers();
+    assert_eq!(
+        headers
+            .get("access-control-allow-origin")
+            .and_then(|v| v.to_str().ok()),
+        Some("*")
+    );
+    let allowed = headers
+        .get("access-control-allow-headers")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    assert!(allowed.contains("authorization"), "{allowed}");
+}
+
+#[tokio::test]
+async fn the_headers_a_browser_client_needs_are_exposed() {
+    let app = authorized();
+    let exposed = header_of(&app, "/metadata", "access-control-expose-headers")
+        .await
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    for name in ["etag", "location", "content-location", "last-modified"] {
+        assert!(exposed.contains(name), "{name} missing from {exposed}");
+    }
+}

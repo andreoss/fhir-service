@@ -1,8 +1,6 @@
 use fhir_adapter_memory::MemoryJobStore;
 use fhir_jobs::{Schedule, Watchdog};
-use fhir_store::{
-    JobId, JobKind, JobRequest, JobResult, JobState, JobStore, Lease, StepTicker,
-};
+use fhir_store::{JobId, JobKind, JobRequest, JobResult, JobState, JobStore, Lease, StepTicker};
 use std::sync::Arc;
 
 fn job(raw: &str) -> JobId {
@@ -31,7 +29,10 @@ async fn a_stalled_job_returns_to_the_queue_without_an_operator() {
     let swept = watchdog.sweep().await.unwrap();
 
     assert_eq!(swept.reclaimed, 1);
-    assert_eq!(jobs.fetch(&job("s1")).await.unwrap().state, JobState::Queued);
+    assert_eq!(
+        jobs.fetch(&job("s1")).await.unwrap().state,
+        JobState::Queued
+    );
 }
 
 #[tokio::test]
@@ -93,7 +94,10 @@ async fn a_sweep_leaves_a_job_whose_lease_still_runs_where_it_stands() {
     assert_eq!(after.worker, before.worker);
     assert_eq!(after.lease, before.lease);
     assert_eq!(after.attempt, before.attempt);
-    assert_eq!(after.payload, before.payload, "a live job keeps its request");
+    assert_eq!(
+        after.payload, before.payload,
+        "a live job keeps its request"
+    );
     assert_eq!(after.updated, before.updated);
 }
 
@@ -157,7 +161,11 @@ async fn an_ended_job_is_purged_on_schedule_without_an_operator() {
     assert_eq!(watchdog.sweep().await.unwrap().purged, 0);
 
     ticker.advance(10_000);
-    assert_eq!(watchdog.sweep().await.unwrap().purged, 0, "purged too early");
+    assert_eq!(
+        watchdog.sweep().await.unwrap().purged,
+        0,
+        "purged too early"
+    );
     assert!(jobs.fetch(&job("r1")).await.is_ok());
 
     ticker.advance(20_000);
@@ -187,5 +195,8 @@ async fn a_job_still_running_is_never_purged() {
     let swept = watchdog.sweep().await.unwrap();
 
     assert_eq!(swept.purged, 0);
-    assert_eq!(jobs.fetch(&job("r2")).await.unwrap().state, JobState::Running);
+    assert_eq!(
+        jobs.fetch(&job("r2")).await.unwrap().state,
+        JobState::Running
+    );
 }

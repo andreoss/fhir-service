@@ -7,8 +7,12 @@ pub struct Access {
     pub actor: String,
     pub client: Option<String>,
     pub scopes: Vec<Scope>,
+    pub roles: Vec<String>,
     pub patient: Option<ResourceId>,
     pub secured: bool,
+    
+    
+    pub claims: std::collections::BTreeMap<String, String>,
 }
 
 impl Access {
@@ -17,8 +21,10 @@ impl Access {
             actor: "anonymous".to_owned(),
             client: None,
             scopes: Vec::new(),
+            roles: Vec::new(),
             patient: None,
             secured: false,
+            claims: std::collections::BTreeMap::new(),
         }
     }
 
@@ -31,11 +37,13 @@ impl Access {
                 .unwrap_or_else(|| "unknown".to_owned()),
             client: claims.client.clone(),
             scopes: Scope::parse_all(&claims.scopes),
+            roles: claims.roles.clone(),
             patient: claims
                 .patient
                 .as_deref()
                 .and_then(|id| ResourceId::parse(id).ok()),
             secured: true,
+            claims: claims.carried.clone(),
         }
     }
 
@@ -129,7 +137,10 @@ mod tests {
         let mut carried = claims(&["patient/Observation.rs"]);
         carried.patient = Some("pt-1".to_owned());
         let access = Access::of(&carried);
-        assert_eq!(access.patient.map(|id| id.as_str().to_owned()), Some("pt-1".to_owned()));
+        assert_eq!(
+            access.patient.map(|id| id.as_str().to_owned()),
+            Some("pt-1".to_owned())
+        );
     }
 
     #[test]

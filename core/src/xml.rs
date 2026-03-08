@@ -94,6 +94,50 @@ pub fn from_xml(version: FhirVersion, text: &str) -> Result<Value, Error> {
     Ok(Value::Object(body))
 }
 
+
+
+
+
+
+
+pub fn tree(text: &str) -> Result<Value, Error> {
+    let mut parser = Parser { text, at: 0 };
+    let root = parser.element()?;
+    parser.only_root()?;
+    let mut body = Map::new();
+    body.insert(root.name.clone(), branch(&root));
+    Ok(Value::Object(body))
+}
+
+fn branch(element: &Element) -> Value {
+    if element.children.is_empty() && element.attributes.is_empty() {
+        return Value::String(element.text.clone());
+    }
+    let mut held = Map::new();
+    for (name, value) in &element.attributes {
+        held.insert(name.clone(), Value::String(value.clone()));
+    }
+    if !element.text.is_empty() {
+        held.insert("value".to_owned(), Value::String(element.text.clone()));
+    }
+    for child in &element.children {
+        let rendered = branch(child);
+        match held.remove(&child.name) {
+            None => {
+                held.insert(child.name.clone(), rendered);
+            }
+            Some(Value::Array(mut items)) => {
+                items.push(rendered);
+                held.insert(child.name.clone(), Value::Array(items));
+            }
+            Some(first) => {
+                held.insert(child.name.clone(), Value::Array(vec![first, rendered]));
+            }
+        }
+    }
+    Value::Object(held)
+}
+
 fn written(
     out: &mut String,
     form: Form,
@@ -499,6 +543,10 @@ struct Element {
     attributes: Vec<(String, String)>,
     children: Vec<Element>,
     source: String,
+    
+    
+    
+    text: String,
 }
 
 impl Element {
@@ -537,6 +585,7 @@ impl<'a> Parser<'a> {
                         attributes,
                         children: Vec::new(),
                         source: self.text[start..self.at].to_owned(),
+                        text: String::new(),
                     });
                 }
                 Some('>') => {
@@ -548,7 +597,9 @@ impl<'a> Parser<'a> {
             }
         }
         let mut children = Vec::new();
+        let mut written = String::new();
         loop {
+            written.push_str(self.characters());
             self.seek_tag()?;
             if self.text[self.at..].starts_with("</") {
                 break;
@@ -567,7 +618,22 @@ impl<'a> Parser<'a> {
             attributes,
             children,
             source: self.text[start..self.at].to_owned(),
+            text: written.trim().to_owned(),
         })
+    }
+
+    
+    fn characters(&mut self) -> &'a str {
+        let rest = &self.text[self.at..];
+        if rest.starts_with('<') {
+            return "";
+        }
+        let Some(offset) = rest.find('<') else {
+            return "";
+        };
+        let held = &rest[..offset];
+        self.at += offset;
+        held
     }
 
     fn only_root(&mut self) -> Result<(), Error> {

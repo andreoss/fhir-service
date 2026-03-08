@@ -32,7 +32,9 @@ fn spawn_server(space: &str) -> (Child, u16) {
         .expect("failed to spawn binary");
     let stdout = child.stdout.take().expect("missing stdout");
     let mut line = String::new();
-    let read = BufReader::new(stdout).read_line(&mut line).unwrap_or_default();
+    let read = BufReader::new(stdout)
+        .read_line(&mut line)
+        .unwrap_or_default();
     let port = line
         .trim()
         .rsplit_once(':')

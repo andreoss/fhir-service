@@ -113,7 +113,14 @@ impl Searches {
             Some(raw) if !raw.is_empty() => format!("{}{}?{raw}", base, asked.path),
             _ => format!("{}{}", base, asked.path),
         };
-        let body = search_bundle(&base, &self_url, &page, request.summary, &request.elements);
+        let body = search_bundle(
+            &base,
+            &self_url,
+            &page,
+            request.summary,
+            &request.elements,
+            &request.dropped,
+        );
         let resource = serde_json::from_slice::<Value>(&body).unwrap_or(Value::Null);
         Ok(InteractionEntry::answered("200 OK").carrying(resource))
     }

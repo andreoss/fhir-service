@@ -19,19 +19,39 @@ pub enum JsonOperation {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PathOperation {
-    Add { path: String, name: String, value: Value },
-    Insert { path: String, index: usize, value: Value },
-    Delete { path: String },
-    Replace { path: String, value: Value },
-    Move { path: String, source: usize, destination: usize },
+    Add {
+        path: String,
+        name: String,
+        value: Value,
+    },
+    Insert {
+        path: String,
+        index: usize,
+        value: Value,
+    },
+    Delete {
+        path: String,
+    },
+    Replace {
+        path: String,
+        value: Value,
+    },
+    Move {
+        path: String,
+        source: usize,
+        destination: usize,
+    },
 }
 
 impl Patch {
     pub fn parse(bytes: &[u8]) -> Result<Patch, Error> {
-        let value: Value = serde_json::from_slice(bytes).map_err(|e| Error::InvalidJson(e.to_string()))?;
+        let value: Value =
+            serde_json::from_slice(bytes).map_err(|e| Error::InvalidJson(e.to_string()))?;
         match &value {
             Value::Array(operations) => parse_json_patch(operations),
-            Value::Object(object) if object.get("resourceType") == Some(&Value::String("Parameters".to_owned())) => {
+            Value::Object(object)
+                if object.get("resourceType") == Some(&Value::String("Parameters".to_owned())) =>
+            {
                 parse_path_patch(object)
             }
             _ => Err(Error::InvalidPatch(
@@ -41,7 +61,8 @@ impl Patch {
     }
 
     pub fn apply(&self, document: &[u8]) -> Result<Vec<u8>, Error> {
-        let mut value: Value = serde_json::from_slice(document).map_err(|e| Error::InvalidJson(e.to_string()))?;
+        let mut value: Value =
+            serde_json::from_slice(document).map_err(|e| Error::InvalidJson(e.to_string()))?;
         match self {
             Patch::Json(operations) => {
                 for operation in operations {
@@ -66,13 +87,34 @@ fn parse_json_patch(operations: &[Value]) -> Result<Patch, Error> {
             .ok_or_else(|| Error::InvalidPatch("each operation must be an object".to_owned()))?;
         let op = text(object, "op")?;
         let parsed_operation = match op.as_str() {
-            "add" => JsonOperation::Add { path: text(object, "path")?, value: member(object, "value")? },
-            "remove" => JsonOperation::Remove { path: text(object, "path")? },
-            "replace" => JsonOperation::Replace { path: text(object, "path")?, value: member(object, "value")? },
-            "move" => JsonOperation::Move { from: text(object, "from")?, path: text(object, "path")? },
-            "copy" => JsonOperation::Copy { from: text(object, "from")?, path: text(object, "path")? },
-            "test" => JsonOperation::Test { path: text(object, "path")?, value: member(object, "value")? },
-            other => return Err(Error::InvalidPatch(format!("unsupported operation {other:?}"))),
+            "add" => JsonOperation::Add {
+                path: text(object, "path")?,
+                value: member(object, "value")?,
+            },
+            "remove" => JsonOperation::Remove {
+                path: text(object, "path")?,
+            },
+            "replace" => JsonOperation::Replace {
+                path: text(object, "path")?,
+                value: member(object, "value")?,
+            },
+            "move" => JsonOperation::Move {
+                from: text(object, "from")?,
+                path: text(object, "path")?,
+            },
+            "copy" => JsonOperation::Copy {
+                from: text(object, "from")?,
+                path: text(object, "path")?,
+            },
+            "test" => JsonOperation::Test {
+                path: text(object, "path")?,
+                value: member(object, "value")?,
+            },
+            other => {
+                return Err(Error::InvalidPatch(format!(
+                    "unsupported operation {other:?}"
+                )))
+            }
         };
         parsed.push(parsed_operation);
     }
@@ -90,7 +132,9 @@ fn parse_path_patch(object: &Map<String, Value>) -> Result<Patch, Error> {
             .as_object()
             .ok_or_else(|| Error::InvalidPatch("each parameter must be an object".to_owned()))?;
         if entry.get("name") != Some(&Value::String("operation".to_owned())) {
-            return Err(Error::InvalidPatch("every parameter must be named operation".to_owned()));
+            return Err(Error::InvalidPatch(
+                "every parameter must be named operation".to_owned(),
+            ));
         }
         let parts = entry
             .get("part")
@@ -116,13 +160,18 @@ fn parse_path_operation(parts: &[Value]) -> Result<PathOperation, Error> {
             value: part_value(parts)?,
         }),
         "delete" => Ok(PathOperation::Delete { path }),
-        "replace" => Ok(PathOperation::Replace { path, value: part_value(parts)? }),
+        "replace" => Ok(PathOperation::Replace {
+            path,
+            value: part_value(parts)?,
+        }),
         "move" => Ok(PathOperation::Move {
             path,
             source: part_index(parts, "source")?,
             destination: part_index(parts, "destination")?,
         }),
-        other => Err(Error::InvalidPatch(format!("unsupported operation {other:?}"))),
+        other => Err(Error::InvalidPatch(format!(
+            "unsupported operation {other:?}"
+        ))),
     }
 }
 
@@ -149,7 +198,8 @@ fn part<'a>(parts: &'a [Value], name: &str) -> Option<&'a Map<String, Value>> {
 }
 
 fn part_text(parts: &[Value], name: &str) -> Result<String, Error> {
-    let entry = part(parts, name).ok_or_else(|| Error::InvalidPatch(format!("missing part {name}")))?;
+    let entry =
+        part(parts, name).ok_or_else(|| Error::InvalidPatch(format!("missing part {name}")))?;
     entry
         .iter()
         .find(|(key, _)| key.starts_with("value"))
@@ -159,7 +209,8 @@ fn part_text(parts: &[Value], name: &str) -> Result<String, Error> {
 }
 
 fn part_index(parts: &[Value], name: &str) -> Result<usize, Error> {
-    let entry = part(parts, name).ok_or_else(|| Error::InvalidPatch(format!("missing part {name}")))?;
+    let entry =
+        part(parts, name).ok_or_else(|| Error::InvalidPatch(format!("missing part {name}")))?;
     entry
         .iter()
         .find(|(key, _)| key.starts_with("value"))
@@ -169,7 +220,8 @@ fn part_index(parts: &[Value], name: &str) -> Result<usize, Error> {
 }
 
 fn part_value(parts: &[Value]) -> Result<Value, Error> {
-    let entry = part(parts, "value").ok_or_else(|| Error::InvalidPatch("missing part value".to_owned()))?;
+    let entry =
+        part(parts, "value").ok_or_else(|| Error::InvalidPatch("missing part value".to_owned()))?;
     entry
         .iter()
         .find(|(key, _)| key.starts_with("value"))
@@ -203,7 +255,11 @@ fn resolve<'a>(root: &'a Value, tokens: &[String]) -> Result<&'a Value, Error> {
                     .get(index)
                     .ok_or_else(|| Error::InvalidPatch(format!("index {index} is out of range")))?
             }
-            _ => return Err(Error::InvalidPatch(format!("cannot descend into {token:?}"))),
+            _ => {
+                return Err(Error::InvalidPatch(format!(
+                    "cannot descend into {token:?}"
+                )))
+            }
         };
     }
     Ok(current)
@@ -216,9 +272,15 @@ fn array_index(token: &str, len: usize, appending: bool) -> Result<usize, Error>
     let index = token
         .parse::<usize>()
         .map_err(|_| Error::InvalidPatch(format!("{token:?} is not an array index")))?;
-    let limit = if appending { len } else { len.saturating_sub(1) };
+    let limit = if appending {
+        len
+    } else {
+        len.saturating_sub(1)
+    };
     if index > limit {
-        return Err(Error::InvalidPatch(format!("index {index} is out of range")));
+        return Err(Error::InvalidPatch(format!(
+            "index {index} is out of range"
+        )));
     }
     Ok(index)
 }
@@ -243,7 +305,11 @@ fn parent<'a>(root: &'a mut Value, tokens: &[String]) -> Result<&'a mut Value, E
                     .get_mut(index)
                     .ok_or_else(|| Error::InvalidPatch(format!("index {index} is out of range")))?
             }
-            _ => return Err(Error::InvalidPatch(format!("cannot descend into {token:?}"))),
+            _ => {
+                return Err(Error::InvalidPatch(format!(
+                    "cannot descend into {token:?}"
+                )))
+            }
         };
     }
     Ok(current)
@@ -261,7 +327,9 @@ fn insert_at(root: &mut Value, tokens: &[String], value: Value) -> Result<(), Er
             items.insert(index, value);
             Ok(())
         }
-        _ => Err(Error::InvalidPatch(format!("cannot add {last:?} to a leaf"))),
+        _ => Err(Error::InvalidPatch(format!(
+            "cannot add {last:?} to a leaf"
+        ))),
     }
 }
 
@@ -275,7 +343,9 @@ fn remove_at(root: &mut Value, tokens: &[String]) -> Result<Value, Error> {
             let index = array_index(last, items.len(), false)?;
             Ok(items.remove(index))
         }
-        _ => Err(Error::InvalidPatch(format!("cannot remove {last:?} from a leaf"))),
+        _ => Err(Error::InvalidPatch(format!(
+            "cannot remove {last:?} from a leaf"
+        ))),
     }
 }
 
@@ -294,15 +364,21 @@ fn replace_at(root: &mut Value, tokens: &[String], value: Value) -> Result<(), E
             items[index] = value;
             Ok(())
         }
-        _ => Err(Error::InvalidPatch(format!("cannot replace {last:?} in a leaf"))),
+        _ => Err(Error::InvalidPatch(format!(
+            "cannot replace {last:?} in a leaf"
+        ))),
     }
 }
 
 fn apply_json(root: &mut Value, operation: &JsonOperation) -> Result<(), Error> {
     match operation {
-        JsonOperation::Add { path, value } => insert_at(root, &pointer_tokens(path)?, value.clone()),
+        JsonOperation::Add { path, value } => {
+            insert_at(root, &pointer_tokens(path)?, value.clone())
+        }
         JsonOperation::Remove { path } => remove_at(root, &pointer_tokens(path)?).map(|_| ()),
-        JsonOperation::Replace { path, value } => replace_at(root, &pointer_tokens(path)?, value.clone()),
+        JsonOperation::Replace { path, value } => {
+            replace_at(root, &pointer_tokens(path)?, value.clone())
+        }
         JsonOperation::Move { from, path } => {
             let taken = remove_at(root, &pointer_tokens(from)?)?;
             insert_at(root, &pointer_tokens(path)?, taken)
@@ -330,9 +406,9 @@ fn path_tokens(path: &str) -> Result<Vec<String>, Error> {
         }
         let (name, index) = match segment.split_once('[') {
             Some((name, rest)) => {
-                let digits = rest
-                    .strip_suffix(']')
-                    .ok_or_else(|| Error::InvalidPatch(format!("{segment:?} has an unclosed index")))?;
+                let digits = rest.strip_suffix(']').ok_or_else(|| {
+                    Error::InvalidPatch(format!("{segment:?} has an unclosed index"))
+                })?;
                 (name, Some(digits.to_owned()))
             }
             None => (segment, None),
@@ -349,7 +425,9 @@ fn path_tokens(path: &str) -> Result<Vec<String>, Error> {
 
 fn apply_path(root: &mut Value, operation: &PathOperation) -> Result<(), Error> {
     match operation {
-        PathOperation::Replace { path, value } => replace_at(root, &path_tokens(path)?, value.clone()),
+        PathOperation::Replace { path, value } => {
+            replace_at(root, &path_tokens(path)?, value.clone())
+        }
         PathOperation::Delete { path } => {
             let tokens = path_tokens(path)?;
             match resolve(root, &tokens) {
@@ -371,20 +449,28 @@ fn apply_path(root: &mut Value, operation: &PathOperation) -> Result<(), Error> 
                         Ok(())
                     }
                 },
-                _ => Err(Error::InvalidPatch(format!("cannot add {name:?} to a leaf"))),
+                _ => Err(Error::InvalidPatch(format!(
+                    "cannot add {name:?} to a leaf"
+                ))),
             }
         }
         PathOperation::Insert { path, index, value } => match parent(root, &path_tokens(path)?)? {
             Value::Array(items) => {
                 if *index > items.len() {
-                    return Err(Error::InvalidPatch(format!("index {index} is out of range")));
+                    return Err(Error::InvalidPatch(format!(
+                        "index {index} is out of range"
+                    )));
                 }
                 items.insert(*index, value.clone());
                 Ok(())
             }
             _ => Err(Error::InvalidPatch(format!("{path:?} is not a list"))),
         },
-        PathOperation::Move { path, source, destination } => match parent(root, &path_tokens(path)?)? {
+        PathOperation::Move {
+            path,
+            source,
+            destination,
+        } => match parent(root, &path_tokens(path)?)? {
             Value::Array(items) => {
                 if *source >= items.len() || *destination > items.len().saturating_sub(1) {
                     return Err(Error::InvalidPatch("move is out of range".to_owned()));
@@ -442,7 +528,8 @@ mod tests {
 
     #[test]
     fn json_patch_indexes_an_array_member() {
-        let value = apply(br#"[{"op":"replace","path":"/name/1/family","value":"Second"}]"#).unwrap();
+        let value =
+            apply(br#"[{"op":"replace","path":"/name/1/family","value":"Second"}]"#).unwrap();
         assert_eq!(value["name"][1]["family"], "Second");
         assert_eq!(value["name"][0]["family"], "One");
     }
@@ -646,14 +733,18 @@ mod tests {
         for (source, destination) in [(3, 0), (0, 3)] {
             assert!(
                 matches!(
-                    Patch::parse(&moved(source, destination)).unwrap().apply(&start),
+                    Patch::parse(&moved(source, destination))
+                        .unwrap()
+                        .apply(&start),
                     Err(Error::InvalidPatch(_))
                 ),
                 "move {source} to {destination}"
             );
         }
         assert!(matches!(
-            Patch::parse(&moved(0, 1)).unwrap().apply(br#"{"resourceType":"Patient","id":"pt-1"}"#),
+            Patch::parse(&moved(0, 1))
+                .unwrap()
+                .apply(br#"{"resourceType":"Patient","id":"pt-1"}"#),
             Err(Error::InvalidPatch(_))
         ));
     }
@@ -677,15 +768,22 @@ mod tests {
             (1, ["1", "3", "2"]),
             (0, ["3", "1", "2"]),
         ] {
-            let patched = Patch::parse(&inserted(index)).unwrap().apply(&start).unwrap();
+            let patched = Patch::parse(&inserted(index))
+                .unwrap()
+                .apply(&start)
+                .unwrap();
             assert_eq!(values(&patched), expected, "insert at {index}");
         }
         assert!(matches!(
-            Patch::parse(&inserted(2)).unwrap().apply(&identifiers(&["1"])),
+            Patch::parse(&inserted(2))
+                .unwrap()
+                .apply(&identifiers(&["1"])),
             Err(Error::InvalidPatch(_))
         ));
         assert!(matches!(
-            Patch::parse(&inserted(0)).unwrap().apply(br#"{"resourceType":"Patient","id":"pt-1"}"#),
+            Patch::parse(&inserted(0))
+                .unwrap()
+                .apply(br#"{"resourceType":"Patient","id":"pt-1"}"#),
             Err(Error::InvalidPatch(_))
         ));
     }
@@ -804,8 +902,14 @@ mod tests {
 
     #[test]
     fn a_patch_document_of_another_shape_is_rejected() {
-        assert!(matches!(Patch::parse(br#"{"resourceType":"Patient"}"#), Err(Error::InvalidPatch(_))));
-        assert!(matches!(Patch::parse(b"not json"), Err(Error::InvalidJson(_))));
+        assert!(matches!(
+            Patch::parse(br#"{"resourceType":"Patient"}"#),
+            Err(Error::InvalidPatch(_))
+        ));
+        assert!(matches!(
+            Patch::parse(b"not json"),
+            Err(Error::InvalidJson(_))
+        ));
     }
 
     #[test]

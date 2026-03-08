@@ -4,7 +4,7 @@ use fhir_core::search::{
     Target, TokenSystem,
 };
 use fhir_core::search::{IndexKey, ParameterSpec, SearchValue};
-use fhir_core::{Error, ResourceEnvelope, ResourceId, VersionId};
+use fhir_core::{Error, ResourceEnvelope, ResourceId, ResourceKey, ResourceType, VersionId};
 use fhir_store::{
     system_clock, Clock, HistoryOrder, HistoryPage, HistoryQuery, HistoryScope, IndexFailure,
     IndexReport, Plan, PlanCache, PlanKey, PlanStat, ResourceStore, SearchPage, SearchQuery,
@@ -15,7 +15,21 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 use tokio::sync::{Mutex, OwnedMutexGuard};
 
-type StoreMap = HashMap<ResourceId, Vec<ResourceEnvelope>>;
+
+type StoreMap = HashMap<ResourceKey, Vec<ResourceEnvelope>>;
+
+
+
+fn list_type() -> ResourceType {
+    "List".parse().expect("List is a served type")
+}
+
+
+
+
+fn keys_of<'a>(guard: &'a StoreMap, id: &ResourceId) -> Vec<&'a ResourceKey> {
+    guard.keys().filter(|key| key.id() == id).collect()
+}
 
 fn body_of(envelope: &ResourceEnvelope) -> Result<Value, Error> {
     serde_json::from_slice(envelope.raw()).map_err(|error| Error::InvalidJson(error.to_string()))
@@ -30,7 +44,8 @@ fn reference_of(envelope: &ResourceEnvelope) -> String {
 }
 
 fn list_members(guard: &StoreMap, id: &ResourceId) -> Result<HashSet<String>, Error> {
-    let Some(current) = guard.get(id).and_then(|versions| versions.last()) else {
+    let key = ResourceKey::new(list_type(), id.clone());
+    let Some(current) = guard.get(&key).and_then(|versions| versions.last()) else {
         return Ok(HashSet::new());
     };
     if current.is_deleted() {
@@ -182,8 +197,6 @@ fn admitted(grant: Option<&Grant>, envelope: &ResourceEnvelope, body: &Value) ->
     grant.is_none_or(|grant| grant.reaches(envelope, body))
 }
 
-const INCLUDE_ROUNDS: usize = 5;
-
 fn every_reference(body: &Value, out: &mut Vec<String>) {
     match body {
         Value::Array(items) => items.iter().for_each(|item| every_reference(item, out)),
@@ -216,8 +229,18 @@ fn stored<'a>(guard: &'a StoreMap, text: &str) -> Option<&'a ResourceEnvelope> {
         Some((kind, id)) => (Some(kind), id),
         None => (None, full.as_str()),
     };
-    let current = guard.get(&ResourceId::parse(id).ok()?)?.last()?;
-    if current.is_deleted() || kind.is_some_and(|kind| kind != current.resource_type().as_str()) {
+    let held = ResourceId::parse(id).ok()?;
+    let current = match kind {
+        Some(kind) => {
+            let key = ResourceKey::new(kind.parse::<ResourceType>().ok()?, held);
+            guard.get(&key)?.last()?
+        }
+        None => {
+            let key = keys_of(guard, &held).first().copied()?;
+            guard.get(key)?.last()?
+        }
+    };
+    if current.is_deleted() {
         return None;
     }
     Some(current)
@@ -228,12 +251,13 @@ fn pulled_in(
     entries: &[ResourceEnvelope],
     rules: &[Include],
     grant: Option<&Grant>,
-) -> Result<Vec<ResourceEnvelope>, Error> {
+    depth: usize,
+) -> Result<(Vec<ResourceEnvelope>, bool), Error> {
     let mut seen: HashSet<String> = entries.iter().map(reference_of).collect();
     let mut included: Vec<ResourceEnvelope> = Vec::new();
     let mut frontier: Vec<ResourceEnvelope> = entries.to_vec();
     let mut round = 0;
-    while !frontier.is_empty() && round < INCLUDE_ROUNDS {
+    while !frontier.is_empty() && round < depth {
         let mut found: Vec<ResourceEnvelope> = Vec::new();
         for rule in rules.iter().filter(|rule| round == 0 || rule.iterate) {
             match rule.direction {
@@ -297,7 +321,7 @@ fn pulled_in(
         frontier = found;
         round += 1;
     }
-    Ok(included)
+    Ok((included, !frontier.is_empty()))
 }
 
 fn order(matches: &mut [(ResourceEnvelope, Value)], keys: &[SortKey]) {
@@ -499,35 +523,37 @@ impl ResourceStore for MemoryStore {
             .inner
             .write()
             .map_err(|_| Error::Internal("store lock poisoned".to_owned()))?;
-        if guard.contains_key(envelope.id()) {
-            return Err(Error::Duplicate(format!(
-                "id {:?} already exists",
-                envelope.id().as_str()
-            )));
+        let key = ResourceKey::of(&envelope);
+        if guard.contains_key(&key) {
+            return Err(Error::Duplicate(format!("{key} already exists")));
         }
         let first: VersionId = "1".parse()?;
         let stored = envelope.stored_with(first, (self.clock)())?;
-        guard.insert(envelope.id().clone(), vec![stored.clone()]);
+        guard.insert(key, vec![stored.clone()]);
         Ok(stored)
     }
 
-    async fn read(&self, id: &ResourceId) -> Result<ResourceEnvelope, Error> {
+    async fn read(&self, key: &ResourceKey) -> Result<ResourceEnvelope, Error> {
         let guard = self
             .inner
             .read()
             .map_err(|_| Error::Internal("store lock poisoned".to_owned()))?;
-        match guard.get(id).and_then(|versions| versions.last()) {
+        match guard.get(key).and_then(|versions| versions.last()) {
             Some(current) => Ok(current.clone()),
             None => Err(Error::NotFound),
         }
     }
 
-    async fn vread(&self, id: &ResourceId, version: &VersionId) -> Result<ResourceEnvelope, Error> {
+    async fn vread(
+        &self,
+        key: &ResourceKey,
+        version: &VersionId,
+    ) -> Result<ResourceEnvelope, Error> {
         let guard = self
             .inner
             .read()
             .map_err(|_| Error::Internal("store lock poisoned".to_owned()))?;
-        match guard.get(id) {
+        match guard.get(key) {
             Some(versions) => versions
                 .iter()
                 .find(|stored| stored.version_id() == version)
@@ -568,7 +594,17 @@ impl ResourceStore for MemoryStore {
             Plan::Indexed { .. } => indexed_ids(query)
                 .unwrap_or_default()
                 .iter()
-                .filter_map(|id| guard.get(id))
+                .flat_map(|id| match query.types.is_empty() {
+                    false => query
+                        .types
+                        .iter()
+                        .filter_map(|kind| guard.get(&ResourceKey::new(*kind, id.clone())))
+                        .collect::<Vec<&Vec<ResourceEnvelope>>>(),
+                    true => keys_of(&guard, id)
+                        .into_iter()
+                        .filter_map(|key| guard.get(key))
+                        .collect(),
+                })
                 .collect(),
             Plan::Scan => guard.values().collect(),
         };
@@ -619,12 +655,19 @@ impl ResourceStore for MemoryStore {
             .take(query.count)
             .map(|(envelope, _)| envelope)
             .collect();
-        let included = pulled_in(&guard, &entries, &query.includes, grant)?;
+        let (included, bounded) = pulled_in(
+            &guard,
+            &entries,
+            &query.includes,
+            grant,
+            query.include_depth,
+        )?;
         Ok(SearchPage {
             entries,
             included,
             total,
             offset: query.offset,
+            bounded,
         })
     }
 
@@ -700,14 +743,14 @@ impl ResourceStore for MemoryStore {
     async fn reindex_resource(
         &self,
         specs: &[ParameterSpec],
-        id: &ResourceId,
+        key: &ResourceKey,
     ) -> Result<Vec<IndexReport>, Error> {
         let guard = self
             .inner
             .read()
             .map_err(|_| Error::Internal("store lock poisoned".to_owned()))?;
         let current = guard
-            .get(id)
+            .get(key)
             .and_then(|versions| versions.last())
             .ok_or(Error::NotFound)?;
         let body = body_of(current)?;
@@ -782,7 +825,8 @@ impl ResourceStore for MemoryStore {
             .map_err(|_| Error::Internal("store lock poisoned".to_owned()))?;
         let mut matches: Vec<ResourceEnvelope> = match scope {
             HistoryScope::Instance(resource_type, id) => {
-                let versions = guard.get(id).ok_or(Error::NotFound)?;
+                let key = ResourceKey::new(*resource_type, id.clone());
+                let versions = guard.get(&key).ok_or(Error::NotFound)?;
                 if versions
                     .first()
                     .is_none_or(|first| first.resource_type() != *resource_type)
@@ -870,7 +914,7 @@ impl ResourceStore for MemoryStore {
             .inner
             .write()
             .map_err(|_| Error::Internal("store lock poisoned".to_owned()))?;
-        let versions = match guard.get_mut(envelope.id()) {
+        let versions = match guard.get_mut(&ResourceKey::of(&envelope)) {
             Some(versions) => versions,
             None => return Err(Error::NotFound),
         };
@@ -904,7 +948,7 @@ impl ResourceStore for MemoryStore {
             .inner
             .write()
             .map_err(|_| Error::Internal("store lock poisoned".to_owned()))?;
-        if let Some(versions) = guard.get(envelope.id()) {
+        if let Some(versions) = guard.get(&ResourceKey::of(&envelope)) {
             if let Some(held) = versions
                 .iter()
                 .find(|version| version.version_id() == envelope.version_id())
@@ -919,19 +963,19 @@ impl ResourceStore for MemoryStore {
             }
         }
         guard
-            .entry(envelope.id().clone())
+            .entry(ResourceKey::of(&envelope))
             .or_default()
             .push(envelope);
         Ok(true)
     }
 
-    async fn delete(&self, id: &ResourceId) -> Result<ResourceEnvelope, Error> {
+    async fn delete(&self, key: &ResourceKey) -> Result<ResourceEnvelope, Error> {
         let _hold = self.hold().await;
         let mut guard = self
             .inner
             .write()
             .map_err(|_| Error::Internal("store lock poisoned".to_owned()))?;
-        let versions = guard.get_mut(id).ok_or(Error::NotFound)?;
+        let versions = guard.get_mut(key).ok_or(Error::NotFound)?;
         let current = versions.last().ok_or(Error::NotFound)?.clone();
         if current.is_deleted() {
             return Err(Error::Deleted);
@@ -939,7 +983,7 @@ impl ResourceStore for MemoryStore {
         let marker = ResourceEnvelope::deleted_marker(
             current.version(),
             current.resource_type(),
-            id.clone(),
+            key.id().clone(),
             next_version(current.version_id())?,
             (self.clock)(),
         );
@@ -947,25 +991,61 @@ impl ResourceStore for MemoryStore {
         Ok(marker)
     }
 
-    async fn hard_delete(&self, id: &ResourceId) -> Result<(), Error> {
+    async fn hard_delete(&self, key: &ResourceKey) -> Result<(), Error> {
         let _hold = self.hold().await;
         let mut guard = self
             .inner
             .write()
             .map_err(|_| Error::Internal("store lock poisoned".to_owned()))?;
-        match guard.remove(id) {
+        match guard.remove(key) {
             Some(_) => Ok(()),
             None => Err(Error::NotFound),
         }
     }
 
-    async fn purge_history(&self, id: &ResourceId) -> Result<usize, Error> {
+    async fn erase_versions(&self, key: &ResourceKey, through: &VersionId) -> Result<usize, Error> {
         let _hold = self.hold().await;
         let mut guard = self
             .inner
             .write()
             .map_err(|_| Error::Internal("store lock poisoned".to_owned()))?;
-        let versions = guard.get_mut(id).ok_or(Error::NotFound)?;
+        let versions = guard.get_mut(key).ok_or(Error::NotFound)?;
+        let at = versions
+            .iter()
+            .position(|held| held.version_id() == through)
+            .ok_or(Error::NotFound)?;
+        let taken = at + 1;
+        versions.drain(..taken);
+        if versions.is_empty() {
+            guard.remove(key);
+        }
+        Ok(taken)
+    }
+
+    async fn empty(&self) -> Result<usize, Error> {
+        let _hold = self.hold().await;
+        let mut guard = self
+            .inner
+            .write()
+            .map_err(|_| Error::Internal("store lock poisoned".to_owned()))?;
+        let held = guard.len();
+        guard.clear();
+        drop(guard);
+        let mut indexes = self
+            .indexes
+            .write()
+            .map_err(|_| Error::Internal("index lock poisoned".to_owned()))?;
+        indexes.clear();
+        Ok(held)
+    }
+
+    async fn purge_history(&self, key: &ResourceKey) -> Result<usize, Error> {
+        let _hold = self.hold().await;
+        let mut guard = self
+            .inner
+            .write()
+            .map_err(|_| Error::Internal("store lock poisoned".to_owned()))?;
+        let versions = guard.get_mut(key).ok_or(Error::NotFound)?;
         let purged = versions.len().saturating_sub(1);
         if let Some(current) = versions.last().cloned() {
             *versions = vec![current];

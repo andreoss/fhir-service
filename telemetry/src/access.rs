@@ -80,7 +80,10 @@ mod tests {
         assert_eq!(guarded.admits(Some(CREDENTIAL)), Admission::Granted);
         assert_eq!(guarded.admits(None), Admission::Refused);
         assert_eq!(guarded.admits(Some("")), Admission::Refused);
-        assert_eq!(guarded.admits(Some("a-reader-credentia")), Admission::Refused);
+        assert_eq!(
+            guarded.admits(Some("a-reader-credentia")),
+            Admission::Refused
+        );
         assert_eq!(
             guarded.admits(Some("a-reader-credential-and-more")),
             Admission::Refused

@@ -10,9 +10,9 @@ impl Namespace {
         let valid = !raw.is_empty()
             && raw.len() <= LIMIT
             && raw.starts_with(|first: char| first.is_ascii_lowercase())
-            && raw
-                .chars()
-                .all(|letter| letter.is_ascii_lowercase() || letter.is_ascii_digit() || letter == '_');
+            && raw.chars().all(|letter| {
+                letter.is_ascii_lowercase() || letter.is_ascii_digit() || letter == '_'
+            });
         match valid {
             true => Ok(Namespace(raw.to_owned())),
             false => Err(Error::Config(format!(
@@ -48,7 +48,15 @@ mod tests {
 
     #[test]
     fn a_name_carrying_a_quote_is_refused() {
-        for raw in ["", "Public", "1abc", "a b", "a\"b", "a;drop", &"a".repeat(LIMIT + 1)] {
+        for raw in [
+            "",
+            "Public",
+            "1abc",
+            "a b",
+            "a\"b",
+            "a;drop",
+            &"a".repeat(LIMIT + 1),
+        ] {
             assert!(Namespace::parse(raw).is_err(), "{raw:?} should be refused");
         }
     }

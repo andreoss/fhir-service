@@ -24,6 +24,7 @@ const BUNDLE: &str = "Bundle";
 const OUTCOME: &str = "OperationOutcome";
 const TRANSACTION: &str = "transaction";
 const BATCH: &str = "batch";
+const DOCUMENT: &str = "document";
 const IF_NONE_EXIST: &str = "if-none-exist";
 const SCOPE: &str = "x-scope";
 
@@ -37,18 +38,55 @@ pub async fn process(
     let value: Value =
         serde_json::from_slice(&body).map_err(|error| Error::InvalidJson(error.to_string()))?;
     let incoming = Incoming::parse(&value)?;
+    
+    
+    state.limits.admits_entries(incoming.entries.len())?;
     let grant = granted(&headers)?;
     let access = Arc::new(crate::access::access_of(&state, &headers).await?);
+    let provenance = crate::provenance::carried(&headers, state.version)?;
     let entries = Arc::new(incoming.entries);
-    match incoming.kind {
-        Kind::Transaction => transaction(&state, &headers, &entries, &access, grant.as_ref()).await,
-        Kind::Batch => Ok(batch(&state, &headers, &entries, &access, grant.as_ref()).await),
+    if let Kind::Document = incoming.kind {
+        return crate::document::received(&state, &value, &headers).await;
     }
+    match incoming.kind {
+        Kind::Document => unreachable!("a document was answered above"),
+        Kind::Transaction => {
+            transaction(
+                &state,
+                &headers,
+                &entries,
+                &access,
+                grant.as_ref(),
+                provenance,
+            )
+            .await
+        }
+        Kind::Batch => Ok(batch(
+            &state,
+            &headers,
+            &entries,
+            &access,
+            grant.as_ref(),
+            provenance,
+        )
+        .await),
+    }
+}
+
+fn written_references(taken: &[Value]) -> Vec<String> {
+    taken
+        .iter()
+        .filter_map(|entry| entry["response"]["location"].as_str())
+        .filter_map(crate::provenance::reference_from)
+        .collect()
 }
 
 enum Kind {
     Transaction,
     Batch,
+    
+    
+    Document,
 }
 
 impl Kind {
@@ -56,6 +94,7 @@ impl Kind {
         match self {
             Kind::Transaction => "transaction-response",
             Kind::Batch => "batch-response",
+            Kind::Document => "document",
         }
     }
 }
@@ -82,6 +121,7 @@ impl Incoming {
         let kind = match value["type"].as_str() {
             Some(TRANSACTION) => Kind::Transaction,
             Some(BATCH) => Kind::Batch,
+            Some(DOCUMENT) => Kind::Document,
             Some(other) => return Err(Error::InvalidEnvelope(format!("bundle type {other:?}"))),
             None => {
                 return Err(Error::InvalidEnvelope(
@@ -268,6 +308,7 @@ async fn transaction(
     entries: &[Result<Entry, Error>],
     access: &Access,
     grant: Option<&Grant>,
+    provenance: Option<Value>,
 ) -> Result<Response, AppError> {
     let scope = state.store.begin().await?;
     let router = crate::app::over(state, scope.store());
@@ -282,12 +323,22 @@ async fn transaction(
         places.note(&entries[index], outcome.location.as_deref());
         taken[index] = Some(outcome);
     }
-    scope.commit().await?;
-    let listed = taken
+    let listed: Vec<Value> = taken
         .into_iter()
         .flatten()
         .map(|outcome| outcome.to_entry())
         .collect();
+    let scoped = AppState {
+        store: scope.store(),
+        ..state.clone()
+    };
+    if let Err(error) =
+        crate::provenance::record(&scoped, access, provenance, &written_references(&listed)).await
+    {
+        scope.rollback().await?;
+        return Err(error.into());
+    }
+    scope.commit().await?;
     Ok(replied(
         Kind::Transaction,
         listed,
@@ -301,6 +352,7 @@ async fn batch(
     entries: &Arc<Vec<Result<Entry, Error>>>,
     access: &Arc<Access>,
     grant: Option<&Grant>,
+    provenance: Option<Value>,
 ) -> Response {
     let router = crate::app::over(state, Arc::clone(&state.store));
     let mut listed = vec![Value::Null; entries.len()];
@@ -308,6 +360,11 @@ async fn batch(
     match linked(entries) {
         true => sequential(&router, headers, entries, access, grant, &mut listed).await,
         false => parallel(&router, headers, entries, access, grant, &gate, &mut listed).await,
+    }
+    if let Err(error) =
+        crate::provenance::record(state, access, provenance, &written_references(&listed)).await
+    {
+        return AppError::from(error).into_response_now();
     }
     replied(Kind::Batch, listed, Return::asked_for(headers))
 }
@@ -465,6 +522,14 @@ fn built(outer: &HeaderMap, entry: &Entry, places: &Places) -> Result<Request<Bo
     }
     if let Some(credential) = outer.get(header::AUTHORIZATION) {
         builder = builder.header(header::AUTHORIZATION, credential.clone());
+    }
+    
+    
+    
+    for name in [crate::tenancy::HEADER, crate::tenancy::REVEAL] {
+        if let Some(value) = outer.get(name) {
+            builder = builder.header(name, value.clone());
+        }
     }
     builder
         .body(Body::from(places.applied(entry)))

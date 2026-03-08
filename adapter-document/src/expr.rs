@@ -268,15 +268,42 @@ impl Compiler {
         code: Option<&str>,
         variable: &str,
     ) -> Bson {
+        
+        
+        
+        
+        
+        let named_ucum = match system {
+            TokenSystem::Exact(held) => held == fhir_core::ucum::UCUM,
+            TokenSystem::Any | TokenSystem::Absent => true,
+        };
+        let scale = code
+            .filter(|_| named_ucum)
+            .and_then(|held| fhir_core::ucum::canonical(1.0, None, Some(held)));
+        let (asked_system, asked_code) = match scale {
+            Some((_, base)) => (
+                TokenSystem::Exact(fhir_core::ucum::UCUM.to_owned()),
+                Some(base),
+            ),
+            None => (system.clone(), code),
+        };
         let measure = match number {
             SearchValue::Number {
                 comparator,
                 value,
                 tolerance,
-            } => self.number_condition(*comparator, *value, *tolerance, field(variable, "value")),
+            } => {
+                let factor = scale.map(|(factor, _)| factor).unwrap_or(1.0);
+                self.number_condition(
+                    *comparator,
+                    *value * factor,
+                    *tolerance * factor,
+                    field(variable, "value"),
+                )
+            }
             _ => Bson::Boolean(false),
         };
-        let system = match system {
+        let system = match &asked_system {
             TokenSystem::Any => Bson::Boolean(true),
             TokenSystem::Absent => all(vec![
                 equals(optional(variable, "system"), Bson::Null),
@@ -286,7 +313,7 @@ impl Compiler {
                 equals(field(variable, "system"), Bson::String(name.clone()))
             }
         };
-        let unit = match code {
+        let unit = match asked_code {
             None => Bson::Boolean(true),
             Some(text) => equals(field(variable, "code"), Bson::String(text.to_owned())),
         };
@@ -634,6 +661,22 @@ impl Compiler {
     }
 
     pub fn filter(&mut self, filter: &Filter) -> Result<Bson, Error> {
+        let judged = self.judged(filter)?;
+        if filter.exempt.is_empty() {
+            return Ok(judged);
+        }
+        let names: Vec<Bson> = filter
+            .exempt
+            .iter()
+            .map(|kind| Bson::String(kind.as_str().to_owned()))
+            .collect();
+        Ok(any(vec![
+            Bson::Document(doc! {"$in": ["$resource_type", names]}),
+            judged,
+        ]))
+    }
+
+    fn judged(&mut self, filter: &Filter) -> Result<Bson, Error> {
         if matches!(filter.modifier, Modifier::Missing) {
             let absent = matches!(filter.values.first(), Some(SearchValue::Missing(true)));
             return Ok(match &filter.target {
@@ -710,6 +753,9 @@ impl Compiler {
                 )),
                 narrowed,
             ]));
+        }
+        for held in &grant.every {
+            parts.push(self.filter(held)?);
         }
         if !grant.types.is_empty() {
             let names: Vec<Bson> = grant
@@ -1011,6 +1057,7 @@ mod tests {
                 id: fhir_core::ResourceId::parse("p1").unwrap(),
             }],
             filters: Vec::new(),
+            every: Vec::new(),
         };
         let text = compiler
             .grant(&grant)
@@ -1035,7 +1082,6 @@ mod tests {
         let mut compiler = Compiler::new();
         let mut stages = Vec::new();
         let chain = Chain {
-            
             name: "subject.name".to_owned(),
             link: "subject".to_owned(),
             target: def("Observation", "subject").target.clone(),

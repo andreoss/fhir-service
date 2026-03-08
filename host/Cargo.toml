@@ -2,6 +2,8 @@
 name = "fhir-host"
 version = "0.1.0"
 edition = "2021"
+license = "GPL-3.0-only"
+publish = false
 
 [dependencies]
 fhir-adapter-document = { path = "../adapter-document", optional = true }
@@ -24,6 +26,7 @@ backend-document = ["dep:fhir-adapter-document"]
 [dev-dependencies]
 fhir-core = { path = "../core", features = ["fixtures"] }
 fhir-shadow = { path = "../shadow" }
+fhir-tools = { path = "../tools/tools" }
 jsonwebtoken = { version = "10", features = ["rust_crypto"] }
 mongodb = "3"
 serde_json = "1"

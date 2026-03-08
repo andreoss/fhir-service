@@ -330,8 +330,35 @@ fn quantity_matches(
                 TokenSystem::Absent => stored_system.is_none(),
                 TokenSystem::Exact(wanted) => stored_system == Some(wanted.as_str()),
             };
+            if !system_ok {
+                return false;
+            }
+            let Some(held) = map.get("value") else {
+                return false;
+            };
+            
+            
+            
+            
+            let named_ucum = match system {
+                TokenSystem::Exact(held) => held == crate::ucum::UCUM,
+                TokenSystem::Any | TokenSystem::Absent => true,
+            };
+            if let (Some(wanted), Some(stored), Some(number_value)) =
+                (code.filter(|_| named_ucum), stored_code, held.as_f64())
+            {
+                let asked = crate::ucum::canonical(1.0, None, Some(wanted));
+                let carried = crate::ucum::canonical(number_value, stored_system, Some(stored));
+                if let (Some((factor, one)), Some((value, other))) = (asked, carried) {
+                    if one != other {
+                        return false;
+                    }
+                    let scaled = Value::from(value / factor);
+                    return number.matches(&scaled);
+                }
+            }
             let code_ok = code.is_none_or(|wanted| stored_code == Some(wanted));
-            system_ok && code_ok && map.get("value").is_some_and(|value| number.matches(value))
+            code_ok && number.matches(held)
         }
         Value::Number(_) | Value::String(_) => {
             matches!(system, TokenSystem::Any) && code.is_none() && number.matches(element)

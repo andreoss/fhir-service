@@ -8,7 +8,7 @@ use serde_json::{Map, Value};
 use uuid::Uuid;
 
 use crate::history::Summary;
-use crate::query::{pairs, param};
+pub(crate) use crate::query::{pairs, param};
 use crate::token::{decode, encode, scope, scope_of, with_token};
 
 pub(crate) const CONTROL: [&str; 9] = [
@@ -84,6 +84,22 @@ pub struct SearchRequest {
     pub query: SearchQuery,
     pub summary: Summary,
     pub elements: Vec<String>,
+    
+    
+    
+    pub dropped: Vec<String>,
+    
+    
+    
+    pub named: Named,
+}
+
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Named {
+    pub count: bool,
+    pub sort: bool,
+    pub total: bool,
 }
 
 impl SearchRequest {
@@ -102,8 +118,70 @@ impl SearchRequest {
             query,
             summary: control.summary,
             elements: control.elements,
+            dropped: Vec::new(),
+            named: Named {
+                count: param(raw, "_count").is_some(),
+                sort: param(raw, "_sort").is_some(),
+                total: param(raw, "_total").is_some(),
+            },
         })
     }
+
+    
+    
+    
+    
+    pub fn parse_leniently(
+        registry: &Registry,
+        base_type: Option<ResourceType>,
+        raw: Option<&str>,
+    ) -> Result<(SearchRequest, Option<String>), Error> {
+        let (kept, dropped) = understood(registry, base_type, raw);
+        let mut request = SearchRequest::parse(registry, base_type, kept.as_deref())?;
+        request.dropped = dropped;
+        Ok((request, kept))
+    }
+}
+
+
+
+
+
+
+pub fn understood(
+    registry: &Registry,
+    base_type: Option<ResourceType>,
+    raw: Option<&str>,
+) -> (Option<String>, Vec<String>) {
+    let Some(text) = raw.filter(|held| !held.is_empty()) else {
+        return (None, Vec::new());
+    };
+    let mut kept: Vec<&str> = Vec::new();
+    let mut dropped = Vec::new();
+    for segment in text.split('&').filter(|part| !part.is_empty()) {
+        if answerable(registry, base_type, segment) {
+            kept.push(segment);
+            continue;
+        }
+        let name = segment
+            .split_once('=')
+            .map(|(held, _)| held)
+            .unwrap_or(segment);
+        dropped.push(crate::query::decoded(name));
+    }
+    let kept = match kept.is_empty() {
+        true => None,
+        false => Some(kept.join("&")),
+    };
+    (kept, dropped)
+}
+
+fn answerable(registry: &Registry, base_type: Option<ResourceType>, segment: &str) -> bool {
+    let alone = Some(segment);
+    let unsupported = |error: &Error| matches!(error, Error::UnsupportedParameter(_));
+    !parse_query(registry, base_type, alone).is_err_and(|error| unsupported(&error))
+        && !ResultControl::parse(alone).is_err_and(|error| unsupported(&error))
+        && !sort_of(registry, base_type, alone).is_err_and(|error| unsupported(&error))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -182,6 +260,17 @@ fn sort_of(
     let Some(text) = param(raw, "_sort") else {
         return Ok(Vec::new());
     };
+    sort_keys(registry, base_type, &text)
+}
+
+
+
+
+pub(crate) fn sort_keys(
+    registry: &Registry,
+    base_type: Option<ResourceType>,
+    text: &str,
+) -> Result<Vec<SortKey>, Error> {
     text.split(',')
         .filter(|part| !part.is_empty())
         .map(|part| {
@@ -208,8 +297,9 @@ pub fn search_bundle(
     page: &SearchPage,
     summary: Summary,
     elements: &[String],
+    dropped: &[String],
 ) -> Vec<u8> {
-    bundle_of(base, self_url, page, summary, elements, "match")
+    bundle_of(base, self_url, page, summary, elements, "match", dropped)
 }
 
 pub fn includes_bundle(
@@ -218,10 +308,51 @@ pub fn includes_bundle(
     page: &SearchPage,
     summary: Summary,
     elements: &[String],
+    dropped: &[String],
 ) -> Vec<u8> {
-    bundle_of(base, self_url, page, summary, elements, "include")
+    bundle_of(base, self_url, page, summary, elements, "include", dropped)
 }
 
+
+
+
+fn ignored_entry(dropped: &[String]) -> Value {
+    let listed = dropped.join(", ");
+    let outcome = fhir_core::OperationOutcome {
+        id: None,
+        severity: fhir_core::IssueSeverity::Warning,
+        code: fhir_core::IssueCode::NotSupported,
+        diagnostics: Some(format!(
+            "this search ignored parameters it cannot answer, as Prefer: handling=lenient asks: {listed}"
+        )),
+    };
+    let resource: Value = serde_json::from_slice(&outcome.to_fhir_json()).unwrap_or(Value::Null);
+    serde_json::json!({
+        "search": {"mode": "outcome"},
+        "resource": resource,
+    })
+}
+
+
+
+fn bounded_entry() -> Value {
+    let outcome = fhir_core::OperationOutcome {
+        id: None,
+        severity: fhir_core::IssueSeverity::Warning,
+        code: fhir_core::IssueCode::Processing,
+        diagnostics: Some(
+            "an iterating include stopped at the depth this instance allows; there may be more"
+                .to_owned(),
+        ),
+    };
+    let resource: Value = serde_json::from_slice(&outcome.to_fhir_json()).unwrap_or(Value::Null);
+    serde_json::json!({
+        "search": {"mode": "outcome"},
+        "resource": resource,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
 fn bundle_of(
     base: &str,
     self_url: &str,
@@ -229,14 +360,33 @@ fn bundle_of(
     summary: Summary,
     elements: &[String],
     mode: &str,
+    dropped: &[String],
 ) -> Vec<u8> {
     let mut links = vec![serde_json::json!({ "relation": "self", "url": self_url })];
     let consumed = page.offset + page.entries.len();
+    let scope = scope_of(self_url);
+    let at = |offset: usize| with_token(self_url, &encode(offset, &scope));
+    
+    
+    let step = page.entries.len();
     if page.total.is_some_and(|total| consumed < total) && !page.entries.is_empty() {
+        links.push(serde_json::json!({ "relation": "next", "url": at(consumed) }));
+    }
+    
+    
+    
+    if page.offset > 0 {
+        links.push(serde_json::json!({ "relation": "first", "url": at(0) }));
         links.push(serde_json::json!({
-            "relation": "next",
-            "url": with_token(self_url, &encode(consumed, &scope_of(self_url))),
+            "relation": "previous",
+            "url": at(page.offset.saturating_sub(step.max(1))),
         }));
+    }
+    if let Some(total) = page.total.filter(|total| *total > 0 && step > 0) {
+        let last = ((total - 1) / step) * step;
+        if last != page.offset {
+            links.push(serde_json::json!({ "relation": "last", "url": at(last) }));
+        }
     }
     let mut bundle = Map::new();
     bundle.insert(
@@ -259,6 +409,12 @@ fn bundle_of(
             .iter()
             .map(|found| entry(base, found, "include", summary, elements)),
     );
+    if !dropped.is_empty() {
+        rendered.push(ignored_entry(dropped));
+    }
+    if page.bounded {
+        rendered.push(bounded_entry());
+    }
     if !rendered.is_empty() {
         bundle.insert("entry".to_owned(), Value::Array(rendered));
     }
@@ -396,6 +552,7 @@ fn filter(
         modifier,
         values,
         index: def.url.clone(),
+        exempt: Vec::new(),
     })
 }
 
@@ -426,6 +583,7 @@ fn collection(
         },
         values,
         index: def.url.clone(),
+        exempt: Vec::new(),
     })
 }
 
@@ -576,9 +734,10 @@ fn forward(
     match next {
         Some(next) => Ok(Criterion::Linked(Chain {
             name: name.to_owned(),
-            
-            
-            link: head.split_once(':').map_or(head, |(param, _)| param).to_owned(),
+            link: head
+                .split_once(':')
+                .map_or(head, |(param, _)| param)
+                .to_owned(),
             target: def.target.clone(),
             types,
             direction: ChainDirection::Forward,
@@ -857,8 +1016,6 @@ mod tests {
         assert_eq!(forward.link, "subject", "the index is keyed by the link");
         assert_eq!(forward.direction, ChainDirection::Forward);
 
-        
-        
         let narrowed = held("Observation", "subject:Patient._id=101");
         assert_eq!(narrowed.link, "subject");
 
@@ -866,7 +1023,6 @@ mod tests {
         assert_eq!(reverse.link, "subject");
         assert_eq!(reverse.direction, ChainDirection::Reverse);
 
-        
         let deep = held("Observation", "subject.general-practitioner._id=7");
         assert_eq!(deep.link, "subject");
         match deep.next.as_ref() {

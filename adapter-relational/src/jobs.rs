@@ -1,7 +1,7 @@
-use fhir_store::Namespace;
 use crate::store::faulted;
 use async_trait::async_trait;
 use fhir_core::Error;
+use fhir_store::Namespace;
 use fhir_store::{
     system_ticker, JobFilter, JobId, JobKind, JobProgress, JobRecord, JobRequest, JobResult,
     JobSignal, JobState, JobStore, Lease, Ticker, RETRY_BACKOFF,
@@ -210,7 +210,6 @@ impl JobStore for RelationalJobStore {
         Ok(claimed)
     }
 
-
     async fn heartbeat(
         &self,
         id: &JobId,
@@ -238,7 +237,11 @@ impl JobStore for RelationalJobStore {
             .bind(now)
             .bind(keep)
             .bind(progress.done.min(i64::MAX as u64) as i64)
-            .bind(progress.total.map(|total| total.min(i64::MAX as u64) as i64))
+            .bind(
+                progress
+                    .total
+                    .map(|total| total.min(i64::MAX as u64) as i64),
+            )
             .bind(progress.detail.as_deref())
             .bind(id.as_str())
             .bind(worker)

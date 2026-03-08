@@ -13,7 +13,8 @@ use tower::ServiceExt;
 
 const ISSUER: &str = "https://issuer.example.org";
 const KEY: &str = "a-key-the-store-never-sees";
-const EVERYTHING: &str = "system/*.cruds system/*.read system/*.write system/*.export system/*.bulk-delete";
+const EVERYTHING: &str =
+    "system/*.cruds system/*.read system/*.write system/*.export system/*.bulk-delete";
 
 fn signing() -> &'static Issuer {
     static HELD: OnceLock<Issuer> = OnceLock::new();
@@ -72,7 +73,12 @@ async fn call(app: &Service, method: &str, uri: &str, body: &[u8]) -> Reply {
         .expect("a request");
     let response = app.router().oneshot(request).await.expect("a response");
     let status = response.status();
-    let bytes = response.into_body().collect().await.expect("a body").to_bytes();
+    let bytes = response
+        .into_body()
+        .collect()
+        .await
+        .expect("a body")
+        .to_bytes();
     Reply {
         status,
         body: String::from_utf8_lossy(&bytes).into_owned(),
@@ -99,11 +105,7 @@ fn parameter(body: &str, name: &str) -> Value {
         .expect("a parameters body")
         .get("parameter")
         .and_then(Value::as_array)
-        .and_then(|held| {
-            held.iter()
-                .find(|entry| entry["name"] == name)
-                .cloned()
-        })
+        .and_then(|held| held.iter().find(|entry| entry["name"] == name).cloned())
         .unwrap_or(Value::Null)
 }
 
@@ -122,6 +124,7 @@ async fn stored(store: &Arc<MemoryStore>, sequence: u64) -> Value {
     let id = fhir_api::trail::identifier(sequence)
         .parse::<ResourceId>()
         .expect("a record id");
+    let id = fhir_core::ResourceKey::new("AuditEvent".parse().unwrap(), id);
     let envelope = store.read(&id).await.expect("the record is stored");
     serde_json::from_slice(envelope.raw()).expect("a record body")
 }
@@ -129,7 +132,10 @@ async fn stored(store: &Arc<MemoryStore>, sequence: u64) -> Value {
 async fn replace(store: &Arc<MemoryStore>, body: &Value) {
     let bytes = serde_json::to_vec(body).expect("a record serializes");
     let envelope = ResourceEnvelope::parse(FhirVersion::R4, &bytes).expect("a record parses");
-    store.update(envelope, None).await.expect("the record is replaced");
+    store
+        .update(envelope, None)
+        .await
+        .expect("the record is replaced");
 }
 
 async fn count(store: &Arc<MemoryStore>) -> usize {
@@ -184,9 +190,8 @@ async fn a_record_whose_digest_changed_is_detected() {
     let (app, store, _) = recording();
     worked(&app).await;
     let mut record = stored(&store, 2).await;
-    at(&mut record, "urn:fhir-service:audit-digest")["valueString"] = json!(
-        "1111111111111111111111111111111111111111111111111111111111111111"
-    );
+    at(&mut record, "urn:fhir-service:audit-digest")["valueString"] =
+        json!("1111111111111111111111111111111111111111111111111111111111111111");
     replace(&store, &record).await;
     let report = call(&app, "GET", "/AuditEvent/$verify", &[]).await;
     assert!(!verified(&report.body), "{}", report.body);
@@ -212,6 +217,7 @@ async fn a_deleted_record_is_detected_as_a_gap() {
     let id = fhir_api::trail::identifier(2)
         .parse::<ResourceId>()
         .expect("a record id");
+    let id = fhir_core::ResourceKey::new("AuditEvent".parse().unwrap(), id);
     store.hard_delete(&id).await.expect("the record is removed");
     let report = call(&app, "GET", "/AuditEvent/$verify", &[]).await;
     assert!(!verified(&report.body), "{}", report.body);
@@ -225,6 +231,7 @@ async fn a_record_dropped_from_the_front_is_detected() {
     let id = fhir_api::trail::identifier(1)
         .parse::<ResourceId>()
         .expect("a record id");
+    let id = fhir_core::ResourceKey::new("AuditEvent".parse().unwrap(), id);
     store.hard_delete(&id).await.expect("the record is removed");
     let report = call(&app, "GET", "/AuditEvent/$verify", &[]).await;
     assert!(!verified(&report.body), "{}", report.body);
@@ -239,6 +246,7 @@ async fn a_record_dropped_from_the_end_is_detected_against_the_head_held_apart()
     let id = fhir_api::trail::identifier(head.sequence)
         .parse::<ResourceId>()
         .expect("a record id");
+    let id = fhir_core::ResourceKey::new("AuditEvent".parse().unwrap(), id);
     store.hard_delete(&id).await.expect("the record is removed");
     let records = trail.collected().await.expect("the trail reads back");
     assert_eq!(
@@ -309,6 +317,7 @@ async fn a_retained_trail_that_loses_another_record_is_still_caught() {
     let id = fhir_api::trail::identifier(middle)
         .parse::<ResourceId>()
         .expect("a record id");
+    let id = fhir_core::ResourceKey::new("AuditEvent".parse().unwrap(), id);
     store.hard_delete(&id).await.expect("the record is removed");
     let report = call(&app, "GET", "/AuditEvent/$verify", &[]).await;
     assert!(!verified(&report.body), "{}", report.body);
@@ -469,7 +478,10 @@ async fn a_partial_horizon_removes_the_old_and_the_survivors_still_verify() {
     let later = call(&app, "GET", "/Patient/pt-a1", &[]).await;
     assert_eq!(later.status, StatusCode::OK, "{}", later.body);
     let before = count(&store).await;
-    assert!(before >= 4, "the horizon must fall inside the trail: {before}");
+    assert!(
+        before >= 4,
+        "the horizon must fall inside the trail: {before}"
+    );
 
     let removal = call(
         &app,
@@ -482,9 +494,16 @@ async fn a_partial_horizon_removes_the_old_and_the_survivors_still_verify() {
     let removed = parameter(&removal.body, "removed")["valueUnsignedInt"]
         .as_u64()
         .expect("a removal says how much it removed");
-    assert_eq!(removed, 2, "only what lies before the horizon goes: {}", removal.body);
+    assert_eq!(
+        removed, 2,
+        "only what lies before the horizon goes: {}",
+        removal.body
+    );
 
-    assert!(count(&store).await > 0, "a partial horizon leaves survivors");
+    assert!(
+        count(&store).await > 0,
+        "a partial horizon leaves survivors"
+    );
 
     let survivors = fhir_api::trail::collected(store.as_ref() as &dyn ResourceStore)
         .await

@@ -15,6 +15,7 @@ fn asked<'a>(body: &'a serde_json::Value) -> Request<'a> {
         resource_type: None,
         id: None,
         profile: None,
+        resolved: None,
         mode: Mode::Update,
         body,
     }
@@ -60,15 +61,40 @@ fn a_profile_the_resource_does_not_claim_is_an_error() {
     let body = json!({"resourceType": "Patient", "id": "pt-1"});
     let mut request = asked(&body);
     request.profile = Some("http://x/StructureDefinition/one");
-    assert!(validate(&request).has_errors());
-    let claimed = json!({
+    let report = validate(&request);
+    assert!(report.has_errors());
+    assert!(
+        report.to_fhir_json_text().contains("does not claim"),
+        "{}",
+        report.to_fhir_json_text()
+    );
+}
+
+#[test]
+fn the_base_profile_of_a_type_is_checked_by_the_structural_pass() {
+    let body = json!({
         "resourceType": "Patient",
         "id": "pt-1",
-        "meta": {"profile": ["http://x/StructureDefinition/one"]}
+        "meta": {"profile": ["http://hl7.org/fhir/StructureDefinition/Patient"]}
     });
-    let mut held = asked(&claimed);
-    held.profile = Some("http://x/StructureDefinition/one");
-    assert!(!validate(&held).has_errors());
+    let mut request = asked(&body);
+    request.profile = Some("http://hl7.org/fhir/StructureDefinition/Patient");
+    let report = validate(&request);
+    assert!(!report.has_errors(), "{}", report.to_fhir_json_text());
+}
+
+#[test]
+fn the_base_profile_of_another_type_is_refused() {
+    let body = json!({
+        "resourceType": "Patient",
+        "id": "pt-1",
+        "meta": {"profile": ["http://hl7.org/fhir/StructureDefinition/Observation"]}
+    });
+    let mut request = asked(&body);
+    request.profile = Some("http://hl7.org/fhir/StructureDefinition/Observation");
+    let report = validate(&request);
+    assert!(report.has_errors(), "{}", report.to_fhir_json_text());
+    assert!(report.to_fhir_json_text().contains("not a Patient"));
 }
 
 #[test]
@@ -78,7 +104,8 @@ fn a_narrative_is_checked_when_the_resource_carries_one() {
         "text": {"status": "invented", "div": "<div>a</div>"}
     });
     assert!(validate(&asked(&bad_status)).has_errors());
-    let bad_div = json!({"resourceType": "Patient", "text": {"status": "generated", "div": "plain"}});
+    let bad_div =
+        json!({"resourceType": "Patient", "text": {"status": "generated", "div": "plain"}});
     assert!(validate(&asked(&bad_div)).has_errors());
     let missing = json!({"resourceType": "Patient", "text": {"status": "generated"}});
     assert!(validate(&asked(&missing)).has_errors());
@@ -184,7 +211,10 @@ fn an_element_outside_the_definitions_names_the_structure_rule() {
     let body = json!({"resourceType": "Patient", "favourite": "tea"});
     let report = validate(&asked(&body));
     assert!(report.has_errors());
-    assert!(report.to_fhir_json_text().contains("structure"), "not named");
+    assert!(
+        report.to_fhir_json_text().contains("structure"),
+        "not named"
+    );
 }
 
 #[test]
@@ -192,7 +222,10 @@ fn a_malformed_narrative_names_the_narrative_rule() {
     let body = json!({"resourceType": "Patient", "text": {"status": "invented", "div": "x"}});
     let report = validate(&asked(&body));
     assert!(report.has_errors());
-    assert!(report.to_fhir_json_text().contains("narrative"), "not named");
+    assert!(
+        report.to_fhir_json_text().contains("narrative"),
+        "not named"
+    );
 }
 
 #[test]
@@ -209,7 +242,7 @@ fn a_profile_of_another_type_names_the_profile_rule() {
 }
 
 #[test]
-fn a_profile_the_definitions_do_not_carry_is_reported_as_unchecked() {
+fn a_profile_that_cannot_be_resolved_is_refused_rather_than_reported_as_checked() {
     let body = json!({
         "resourceType": "Patient",
         "meta": {"profile": ["http://example.test/StructureDefinition/local"]}
@@ -222,9 +255,13 @@ fn a_profile_the_definitions_do_not_carry_is_reported_as_unchecked() {
         .iter()
         .find(|issue| issue.expression.as_deref() == Some("meta.profile"))
         .expect("the profile is named");
-    assert_eq!(held.severity, fhir_core::IssueSeverity::Information);
-    assert_eq!(held.code, fhir_core::IssueCode::Informational);
-    assert!(!report.has_errors(), "{}", report.to_fhir_json_text());
+    assert_eq!(held.severity, fhir_core::IssueSeverity::Error);
+    assert!(
+        held.diagnostics.contains("could not be resolved"),
+        "{}",
+        held.diagnostics
+    );
+    assert!(report.has_errors(), "{}", report.to_fhir_json_text());
 }
 
 #[test]

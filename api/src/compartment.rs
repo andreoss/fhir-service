@@ -40,13 +40,18 @@ pub fn definitions_bundle(version: FhirVersion, base: &str, self_url: &str) -> V
         })
         .collect();
     let mut bundle = Map::new();
-    bundle.insert("resourceType".to_owned(), Value::String("Bundle".to_owned()));
+    bundle.insert(
+        "resourceType".to_owned(),
+        Value::String("Bundle".to_owned()),
+    );
     bundle.insert("id".to_owned(), Value::String(Uuid::new_v4().to_string()));
     bundle.insert("type".to_owned(), Value::String("searchset".to_owned()));
     bundle.insert("total".to_owned(), Value::from(entries.len()));
     bundle.insert(
         "link".to_owned(),
-        Value::Array(vec![serde_json::json!({"relation": "self", "url": self_url})]),
+        Value::Array(vec![
+            serde_json::json!({"relation": "self", "url": self_url}),
+        ]),
     );
     bundle.insert("entry".to_owned(), Value::Array(entries));
     serde_json::to_vec(&Value::Object(bundle)).expect("bundle is serializable")
@@ -63,7 +68,10 @@ mod tests {
         let value = definition_json(&def, "http://localhost");
         assert_eq!(value["resourceType"], "CompartmentDefinition");
         assert_eq!(value["code"], "Patient");
-        assert_eq!(value["url"], "http://localhost/CompartmentDefinition/Patient");
+        assert_eq!(
+            value["url"],
+            "http://localhost/CompartmentDefinition/Patient"
+        );
         assert_eq!(value["resource"][0]["code"], "Patient");
         assert!(value["resource"]
             .as_array()

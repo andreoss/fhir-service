@@ -1,5 +1,7 @@
 use crate::body::{Encoding, LazyBody};
-use fhir_core::{Error, FhirInstant, FhirVersion, ResourceEnvelope, ResourceId, ResourceType, VersionId};
+use fhir_core::{
+    Error, FhirInstant, FhirVersion, ResourceEnvelope, ResourceId, ResourceType, VersionId,
+};
 use sqlx::postgres::PgRow;
 use sqlx::Row;
 
@@ -46,21 +48,33 @@ pub struct Record {
 
 impl Record {
     pub fn of(row: &PgRow) -> Result<Record, Error> {
-        let spec: String = row.try_get("spec_version").map_err(|_| wrong("spec version"))?;
+        let spec: String = row
+            .try_get("spec_version")
+            .map_err(|_| wrong("spec version"))?;
         let resource_type: String = row.try_get("resource_type").map_err(|_| wrong("type"))?;
         let id: String = row.try_get("resource_id").map_err(|_| wrong("id"))?;
-        let number: i64 = row.try_get("version_number").map_err(|_| wrong("version"))?;
-        let updated: String = row.try_get("last_updated").map_err(|_| wrong("write time"))?;
-        let encoding: String = row.try_get("body_encoding").map_err(|_| wrong("body encoding"))?;
+        let number: i64 = row
+            .try_get("version_number")
+            .map_err(|_| wrong("version"))?;
+        let updated: String = row
+            .try_get("last_updated")
+            .map_err(|_| wrong("write time"))?;
+        let encoding: String = row
+            .try_get("body_encoding")
+            .map_err(|_| wrong("body encoding"))?;
         let stored: Vec<u8> = row.try_get("body").map_err(|_| wrong("body"))?;
         Ok(Record {
-            surrogate: row.try_get("surrogate_id").map_err(|_| wrong("surrogate key"))?,
+            surrogate: row
+                .try_get("surrogate_id")
+                .map_err(|_| wrong("surrogate key"))?,
             resource_type: resource_type.parse::<ResourceType>()?,
             id: ResourceId::parse(&id)?,
             version: VersionId::parse(&number.to_string())?,
             spec: spec.parse::<FhirVersion>()?,
             last_updated: FhirInstant::parse(&updated)?,
-            deleted: row.try_get("is_deleted").map_err(|_| wrong("delete flag"))?,
+            deleted: row
+                .try_get("is_deleted")
+                .map_err(|_| wrong("delete flag"))?,
             body: LazyBody::new(stored, Encoding::parse(&encoding)?),
         })
     }

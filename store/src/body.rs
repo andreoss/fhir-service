@@ -73,11 +73,7 @@ impl LazyBody {
         }
         let unpacked = decoded(&self.stored, self.encoding)?;
         let _ = self.unpacked.set(unpacked);
-        Ok(self
-            .unpacked
-            .get()
-            .map(Vec::as_slice)
-            .unwrap_or_default())
+        Ok(self.unpacked.get().map(Vec::as_slice).unwrap_or_default())
     }
 
     pub fn stored_len(&self) -> usize {
@@ -112,7 +108,12 @@ mod tests {
         let raw = format!(r#"{{"note":"{}"}}"#, "repeat ".repeat(200)).into_bytes();
         let (stored, encoding) = encoded(&raw);
         assert_eq!(encoding, Encoding::Packed);
-        assert!(stored.len() < raw.len() / 4, "{} vs {}", stored.len(), raw.len());
+        assert!(
+            stored.len() < raw.len() / 4,
+            "{} vs {}",
+            stored.len(),
+            raw.len()
+        );
         assert_eq!(decoded(&stored, encoding).unwrap(), raw);
     }
 

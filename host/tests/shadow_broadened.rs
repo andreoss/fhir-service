@@ -8,7 +8,8 @@ use live::{spawn_with, stop};
 use std::io::{BufRead, BufReader};
 use std::process::{Child, Command, Stdio};
 
-const REQUIRED: &str = "the relational engine is required and none answered; start the services named in compose.yaml";
+const REQUIRED: &str =
+    "the relational engine is required and none answered; start the services named in compose.yaml";
 
 fn url() -> String {
     std::env::var("FHIR_DATABASE_URL")
@@ -86,17 +87,30 @@ impl ConfiguredHttpSide {
     fn memory(label: &str, version: &str) -> (Self, Child) {
         let (child, port) = spawn_memory(version);
         let inner = HttpSide::of(label, "127.0.0.1", port);
-        (Self { inner, default_headers: Vec::new() }, child)
+        (
+            Self {
+                inner,
+                default_headers: Vec::new(),
+            },
+            child,
+        )
     }
 
     fn relational(label: &str, version: &str, namespace: &str) -> (Self, Child) {
         let (child, port) = spawn_relational(version, namespace);
         let inner = HttpSide::of(label, "127.0.0.1", port);
-        (Self { inner, default_headers: Vec::new() }, child)
+        (
+            Self {
+                inner,
+                default_headers: Vec::new(),
+            },
+            child,
+        )
     }
 
     fn accepting(mut self, media_type: &str) -> Self {
-        self.default_headers.push(("accept".to_owned(), media_type.to_owned()));
+        self.default_headers
+            .push(("accept".to_owned(), media_type.to_owned()));
         self
     }
 }
@@ -122,13 +136,7 @@ impl Side for ConfiguredHttpSide {
     }
 }
 
-fn run_shadow_plan(
-    left: &dyn Side,
-    right: &dyn Side,
-    plan: &Plan,
-    gate: &Gate,
-    description: &str,
-) {
+fn run_shadow_plan(left: &dyn Side, right: &dyn Side, plan: &Plan, gate: &Gate, description: &str) {
     println!("\n=== {description} ===");
     let run = shadow(plan, left, right).expect("shadow run failed");
     let report = compare(plan, &run, gate);
@@ -150,7 +158,13 @@ fn memory_vs_relational_r4_json() {
     let (left, left_child) = ConfiguredHttpSide::memory("memory-r4", "R4");
     let (right, right_child) = ConfiguredHttpSide::relational("relational-r4", "R4", &namespace);
 
-    run_shadow_plan(&left, &right, &plan, &gate, "Memory vs Relational (R4, JSON)");
+    run_shadow_plan(
+        &left,
+        &right,
+        &plan,
+        &gate,
+        "Memory vs Relational (R4, JSON)",
+    );
 
     stop(left_child);
     stop(right_child);
@@ -164,11 +178,18 @@ fn memory_vs_relational_r4_xml() {
     let gate = Gate::agreed();
 
     let (left, left_child) = ConfiguredHttpSide::memory("memory-r4-xml", "R4");
-    let (right, right_child) = ConfiguredHttpSide::relational("relational-r4-xml", "R4", &namespace);
+    let (right, right_child) =
+        ConfiguredHttpSide::relational("relational-r4-xml", "R4", &namespace);
     let left = left.accepting("application/fhir+xml");
     let right = right.accepting("application/fhir+xml");
 
-    run_shadow_plan(&left, &right, &plan, &gate, "Memory vs Relational (R4, XML)");
+    run_shadow_plan(
+        &left,
+        &right,
+        &plan,
+        &gate,
+        "Memory vs Relational (R4, XML)",
+    );
 
     stop(left_child);
     stop(right_child);
@@ -229,8 +250,10 @@ fn all_versions_memory_xml() {
     let gate = Gate::agreed();
 
     for version in VERSIONS {
-        let (left, left_child) = ConfiguredHttpSide::memory(&format!("left-{version}-xml"), version);
-        let (right, right_child) = ConfiguredHttpSide::memory(&format!("right-{version}-xml"), version);
+        let (left, left_child) =
+            ConfiguredHttpSide::memory(&format!("left-{version}-xml"), version);
+        let (right, right_child) =
+            ConfiguredHttpSide::memory(&format!("right-{version}-xml"), version);
         let left = left.accepting("application/fhir+xml");
         let right = right.accepting("application/fhir+xml");
 
@@ -257,7 +280,8 @@ fn memory_vs_relational_all_versions_json() {
     for version in VERSIONS {
         let namespace = schema();
         let (left, left_child) = ConfiguredHttpSide::memory(&format!("memory-{version}"), version);
-        let (right, right_child) = ConfiguredHttpSide::relational(&format!("relational-{version}"), version, &namespace);
+        let (right, right_child) =
+            ConfiguredHttpSide::relational(&format!("relational-{version}"), version, &namespace);
 
         let run = shadow(&plan, &left, &right).expect("shadow run failed");
         let report = compare(&plan, &run, &gate);
@@ -287,8 +311,13 @@ fn memory_vs_relational_all_versions_xml() {
 
     for version in VERSIONS {
         let namespace = schema();
-        let (left, left_child) = ConfiguredHttpSide::memory(&format!("memory-{version}-xml"), version);
-        let (right, right_child) = ConfiguredHttpSide::relational(&format!("relational-{version}-xml"), version, &namespace);
+        let (left, left_child) =
+            ConfiguredHttpSide::memory(&format!("memory-{version}-xml"), version);
+        let (right, right_child) = ConfiguredHttpSide::relational(
+            &format!("relational-{version}-xml"),
+            version,
+            &namespace,
+        );
         let left = left.accepting("application/fhir+xml");
         let right = right.accepting("application/fhir+xml");
 
