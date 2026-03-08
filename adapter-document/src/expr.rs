@@ -779,7 +779,7 @@ impl Compiler {
         };
         let (variables, membership) = match chain.direction {
             ChainDirection::Forward => {
-                let held = links(&chain.name, &link);
+                let held = links(&chain.link, &link);
                 let reached = Bson::Document(doc! {"$anyElementTrue": {"$map": {
                     "input": "$$links",
                     "as": &link,
@@ -794,7 +794,7 @@ impl Compiler {
                 (doc! {"links": held}, reached)
             }
             ChainDirection::Reverse => {
-                let held = links(&chain.name, &link);
+                let held = links(&chain.link, &link);
                 let reached = Bson::Document(doc! {"$anyElementTrue": {"$map": {
                     "input": held,
                     "as": &link,
@@ -1035,7 +1035,9 @@ mod tests {
         let mut compiler = Compiler::new();
         let mut stages = Vec::new();
         let chain = Chain {
-            name: "subject".to_owned(),
+            
+            name: "subject.name".to_owned(),
+            link: "subject".to_owned(),
             target: def("Observation", "subject").target.clone(),
             types: vec![kind("Patient")],
             direction: ChainDirection::Forward,

@@ -576,6 +576,9 @@ fn forward(
     match next {
         Some(next) => Ok(Criterion::Linked(Chain {
             name: name.to_owned(),
+            
+            
+            link: head.split_once(':').map_or(head, |(param, _)| param).to_owned(),
             target: def.target.clone(),
             types,
             direction: ChainDirection::Forward,
@@ -605,6 +608,7 @@ fn reverse(registry: &Registry, name: &str, rest: &str, raw: &str) -> Result<Cri
     let next = criterion(registry, Some(source_type), remainder, raw)?;
     Ok(Criterion::Linked(Chain {
         name: name.to_owned(),
+        link: link.to_owned(),
         target: def.target.clone(),
         types: vec![source_type],
         direction: ChainDirection::Reverse,
@@ -825,5 +829,49 @@ mod tests {
                 .summary,
             Summary::Full
         );
+    }
+
+    
+    
+    
+    
+    
+    
+    
+    #[test]
+    fn a_chain_keeps_the_link_apart_from_the_whole_spelling() {
+        use fhir_core::search::{Chain, ChainDirection, Criterion};
+
+        let held = |base: &str, raw: &str| -> Chain {
+            let kind: Option<ResourceType> = Some(base.parse().unwrap());
+            let query = parse_query(&Registry::new(), kind, Some(raw))
+                .unwrap_or_else(|error| panic!("{raw} does not parse: {error}"));
+            match query.chains.first().cloned() {
+                Some(chain) => chain,
+                None => panic!("{raw} produced no chain"),
+            }
+        };
+
+        let forward = held("Observation", "subject._id=101");
+        assert_eq!(forward.name, "subject._id");
+        assert_eq!(forward.link, "subject", "the index is keyed by the link");
+        assert_eq!(forward.direction, ChainDirection::Forward);
+
+        
+        
+        let narrowed = held("Observation", "subject:Patient._id=101");
+        assert_eq!(narrowed.link, "subject");
+
+        let reverse = held("Patient", "_has:Observation:subject:status=final");
+        assert_eq!(reverse.link, "subject");
+        assert_eq!(reverse.direction, ChainDirection::Reverse);
+
+        
+        let deep = held("Observation", "subject.general-practitioner._id=7");
+        assert_eq!(deep.link, "subject");
+        match deep.next.as_ref() {
+            Criterion::Linked(inner) => assert_eq!(inner.link, "general-practitioner"),
+            Criterion::Direct(_) => panic!("the second link is not a chain"),
+        }
     }
 }

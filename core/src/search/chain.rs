@@ -16,7 +16,14 @@ pub enum Criterion {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Chain {
+    
+    
     pub name: String,
+    
+    
+    
+    
+    pub link: String,
     pub target: Target,
     pub types: Vec<ResourceType>,
     pub direction: ChainDirection,
@@ -54,6 +61,7 @@ mod tests {
         let def = lookup(Some(kind(resource_type)), name).expect("the parameter is published");
         Chain {
             name: format!("{name}.{}", spelled(&next)),
+            link: name.to_owned(),
             target: def.target.clone(),
             types: def.targets.iter().map(|held| kind(held)).collect(),
             direction,

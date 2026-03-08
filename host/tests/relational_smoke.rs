@@ -758,6 +758,14 @@ fn a_search_names_the_members_of_a_collection_over_the_relational_backend() {
             "/List/lst-1",
             r#"{"resourceType":"List","id":"lst-1","status":"current","mode":"working","entry":[{"item":{"reference":"Patient/102"}}]}"#,
         ),
+        (
+            "/Observation/ob-1",
+            r#"{"resourceType":"Observation","id":"ob-1","status":"final","code":{"text":"weight"},"subject":{"reference":"Patient/101"}}"#,
+        ),
+        (
+            "/Observation/ob-2",
+            r#"{"resourceType":"Observation","id":"ob-2","status":"final","code":{"text":"weight"},"subject":{"reference":"Patient/102"}}"#,
+        ),
     ] {
         let reply = request(
             port,
@@ -773,6 +781,11 @@ fn a_search_names_the_members_of_a_collection_over_the_relational_backend() {
     let inverted = request(port, "GET", "/Patient?_in:not=Group/grp-1", &[], &[]);
     let by_list = request(port, "GET", "/Patient?_in=List/lst-1", &[], &[]);
     let absent = request(port, "GET", "/Patient?_in=Group/grp-2", &[], &[]);
+    let chained = request(port, "GET", "/Observation?subject._in=Group/grp-1", &[], &[]);
+    
+    
+    
+    let chained_by_id = request(port, "GET", "/Observation?subject._id=101", &[], &[]);
     stop(child);
     drop_schema(&namespace);
 
@@ -780,6 +793,12 @@ fn a_search_names_the_members_of_a_collection_over_the_relational_backend() {
         by_group.status, 200,
         "the members are answered: {}",
         by_group.body
+    );
+    assert_eq!(
+        json(&chained_by_id.body)["total"],
+        1,
+        "a forward chain finds nothing: {}",
+        chained_by_id.body
     );
     assert_eq!(json(&by_group.body)["total"], 1, "{}", by_group.body);
     assert_eq!(
@@ -803,4 +822,16 @@ fn a_search_names_the_members_of_a_collection_over_the_relational_backend() {
         by_list.body
     );
     assert_eq!(json(&absent.body)["total"], 0, "{}", absent.body);
+    assert_eq!(
+        chained.status, 200,
+        "the chained form is answered: {}",
+        chained.body
+    );
+    assert_eq!(json(&chained.body)["total"], 1, "{}", chained.body);
+    assert_eq!(
+        json(&chained.body)["entry"][0]["resource"]["id"],
+        "ob-1",
+        "{}",
+        chained.body
+    );
 }

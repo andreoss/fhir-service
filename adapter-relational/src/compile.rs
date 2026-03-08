@@ -705,7 +705,9 @@ impl<'a> Compiler<'a> {
                 format!("{far}.resource_type = any({bound})")
             }
         };
-        let name = self.text(&chain.name);
+        
+        
+        let name = self.text(&chain.link);
         let slot = self.text(MAIN);
         let resource = self.store.table("resource");
         let references = self.store.table("index_reference");

@@ -89,7 +89,10 @@ fn code_set(id: &str, url: &str, codes: &[&str]) -> ResourceEnvelope {
 async fn seeded(store: &dyn fhir_store::ResourceStore) {
     store.create(patient("p1", "Stone", true)).await.unwrap();
     store.create(patient("p2", "Rivers", false)).await.unwrap();
-    store.create(patient("p3", "Stonewall", true)).await.unwrap();
+    store
+        .create(patient("p3", "Stonewall", true))
+        .await
+        .unwrap();
     store
         .create(observation("v1", "code-1", 4.5, "Patient/p1"))
         .await
@@ -103,7 +106,10 @@ async fn seeded(store: &dyn fhir_store::ResourceStore) {
 pub async fn selection(store: &dyn fhir_store::ResourceStore) {
     seeded(store).await;
 
-    let by_id = store.search(&query("Patient", vec![filter("Patient", "_id", "p1")])).await.unwrap();
+    let by_id = store
+        .search(&query("Patient", vec![filter("Patient", "_id", "p1")]))
+        .await
+        .unwrap();
     assert_eq!(ids(&by_id), vec!["p1"]);
     assert_eq!(by_id.total, Some(1));
 
@@ -124,13 +130,19 @@ pub async fn selection(store: &dyn fhir_store::ResourceStore) {
     assert_eq!(found, vec!["p1", "p3"]);
 
     let by_code = store
-        .search(&query("Observation", vec![filter("Observation", "code", "urn:s|code-1")]))
+        .search(&query(
+            "Observation",
+            vec![filter("Observation", "code", "urn:s|code-1")],
+        ))
         .await
         .unwrap();
     assert_eq!(ids(&by_code), vec!["v1"]);
 
     let by_wrong_system = store
-        .search(&query("Observation", vec![filter("Observation", "code", "urn:other|code-1")]))
+        .search(&query(
+            "Observation",
+            vec![filter("Observation", "code", "urn:other|code-1")],
+        ))
         .await
         .unwrap();
     assert!(by_wrong_system.entries.is_empty());
@@ -145,19 +157,28 @@ pub async fn selection(store: &dyn fhir_store::ResourceStore) {
     assert_eq!(ids(&by_quantity), vec!["v2"]);
 
     let by_reference = store
-        .search(&query("Observation", vec![filter("Observation", "subject", "Patient/p1")]))
+        .search(&query(
+            "Observation",
+            vec![filter("Observation", "subject", "Patient/p1")],
+        ))
         .await
         .unwrap();
     assert_eq!(ids(&by_reference), vec!["v1"]);
 
     let by_bare_reference = store
-        .search(&query("Observation", vec![filter("Observation", "subject", "p2")]))
+        .search(&query(
+            "Observation",
+            vec![filter("Observation", "subject", "p2")],
+        ))
         .await
         .unwrap();
     assert_eq!(ids(&by_bare_reference), vec!["v2"]);
 
     let by_date = store
-        .search(&query("Patient", vec![filter("Patient", "birthdate", "1980")]))
+        .search(&query(
+            "Patient",
+            vec![filter("Patient", "birthdate", "1980")],
+        ))
         .await
         .unwrap();
     assert_eq!(by_date.total, Some(3));
@@ -171,7 +192,10 @@ pub async fn selection(store: &dyn fhir_store::ResourceStore) {
     let conjunction = store
         .search(&query(
             "Patient",
-            vec![filter("Patient", "_id", "p1"), filter("Patient", "active", "false")],
+            vec![
+                filter("Patient", "_id", "p1"),
+                filter("Patient", "active", "false"),
+            ],
         ))
         .await
         .unwrap();
@@ -240,7 +264,12 @@ pub async fn qualifiers(store: &dyn fhir_store::ResourceStore) {
     let narrative = store
         .search(&query(
             "Patient",
-            vec![qualified("Patient", "identifier", Modifier::OfType, "urn:t|mr|abc")],
+            vec![qualified(
+                "Patient",
+                "identifier",
+                Modifier::OfType,
+                "urn:t|mr|abc",
+            )],
         ))
         .await
         .unwrap();
@@ -267,7 +296,12 @@ pub async fn qualifiers(store: &dyn fhir_store::ResourceStore) {
     let in_set = store
         .search(&query(
             "Observation",
-            vec![qualified("Observation", "code", Modifier::In, "urn:set:one")],
+            vec![qualified(
+                "Observation",
+                "code",
+                Modifier::In,
+                "urn:set:one",
+            )],
         ))
         .await
         .unwrap();
@@ -275,7 +309,12 @@ pub async fn qualifiers(store: &dyn fhir_store::ResourceStore) {
     let out_of_set = store
         .search(&query(
             "Observation",
-            vec![qualified("Observation", "code", Modifier::NotIn, "urn:set:one")],
+            vec![qualified(
+                "Observation",
+                "code",
+                Modifier::NotIn,
+                "urn:set:one",
+            )],
         ))
         .await
         .unwrap();
@@ -287,15 +326,24 @@ pub async fn ordering(store: &dyn fhir_store::ResourceStore) {
     let sorted = |direction| SearchQuery {
         sort: vec![SortKey {
             name: "name".to_owned(),
-            target: lookup(Some(kind("Patient")), "name").unwrap().target.clone(),
+            target: lookup(Some(kind("Patient")), "name")
+                .unwrap()
+                .target
+                .clone(),
             direction,
         }],
         ..SearchQuery::of_type(kind("Patient"))
     };
 
-    let ascending = store.search(&sorted(SortDirection::Ascending)).await.unwrap();
+    let ascending = store
+        .search(&sorted(SortDirection::Ascending))
+        .await
+        .unwrap();
     assert_eq!(ids(&ascending), vec!["p2", "p1", "p3"]);
-    let descending = store.search(&sorted(SortDirection::Descending)).await.unwrap();
+    let descending = store
+        .search(&sorted(SortDirection::Descending))
+        .await
+        .unwrap();
     assert_eq!(ids(&descending), vec!["p3", "p1", "p2"]);
 
     let paged = SearchQuery {
@@ -322,7 +370,10 @@ pub async fn ordering(store: &dyn fhir_store::ResourceStore) {
 
     let deleted = store.delete(&id("p1")).await.unwrap();
     assert!(deleted.is_deleted());
-    let after = store.search(&SearchQuery::of_type(kind("Patient"))).await.unwrap();
+    let after = store
+        .search(&SearchQuery::of_type(kind("Patient")))
+        .await
+        .unwrap();
     assert_eq!(after.total, Some(2));
 }
 
@@ -332,8 +383,16 @@ pub async fn linking(store: &dyn fhir_store::ResourceStore) {
 
     let chained = SearchQuery {
         chains: vec![Chain {
-            name: "subject".to_owned(),
-            target: lookup(Some(kind("Observation")), "subject").unwrap().target.clone(),
+            
+            
+            
+            
+            name: "subject.name".to_owned(),
+            link: "subject".to_owned(),
+            target: lookup(Some(kind("Observation")), "subject")
+                .unwrap()
+                .target
+                .clone(),
             types: vec![kind("Patient")],
             direction: ChainDirection::Forward,
             next: Box::new(Criterion::Direct(filter("Patient", "name", "Stone"))),
@@ -344,8 +403,12 @@ pub async fn linking(store: &dyn fhir_store::ResourceStore) {
 
     let reverse = SearchQuery {
         chains: vec![Chain {
-            name: "subject".to_owned(),
-            target: lookup(Some(kind("Observation")), "subject").unwrap().target.clone(),
+            name: "_has:Observation:subject:code".to_owned(),
+            link: "subject".to_owned(),
+            target: lookup(Some(kind("Observation")), "subject")
+                .unwrap()
+                .target
+                .clone(),
             types: vec![kind("Observation")],
             direction: ChainDirection::Reverse,
             next: Box::new(Criterion::Direct(filter("Observation", "code", "code-2"))),
@@ -399,7 +462,10 @@ pub async fn linking(store: &dyn fhir_store::ResourceStore) {
         }),
         ..SearchQuery::of_type(kind("Observation"))
     };
-    assert_eq!(ids(&store.search(&in_compartment).await.unwrap()), vec!["v1"]);
+    assert_eq!(
+        ids(&store.search(&in_compartment).await.unwrap()),
+        vec!["v1"]
+    );
 
     let granted = SearchQuery {
         grant: Some(Grant {
@@ -444,7 +510,10 @@ pub async fn linking(store: &dyn fhir_store::ResourceStore) {
     };
     let mut reached = ids(&store.search(&untouched).await.unwrap());
     reached.sort();
-    assert!(reached.contains(&"p1".to_owned()) && reached.contains(&"p2".to_owned()), "{reached:?}");
+    assert!(
+        reached.contains(&"p1".to_owned()) && reached.contains(&"p2".to_owned()),
+        "{reached:?}"
+    );
 
     let pulled = SearchQuery {
         filters: vec![filter("Patient", "_id", "p1")],
@@ -481,12 +550,20 @@ pub async fn composites(store: &dyn fhir_store::ResourceStore) {
         .unwrap();
     let paired = query(
         "Observation",
-        vec![filter("Observation", "code-value-quantity", "urn:s|code-1$4.5|urn:u|mg")],
+        vec![filter(
+            "Observation",
+            "code-value-quantity",
+            "urn:s|code-1$4.5|urn:u|mg",
+        )],
     );
     assert_eq!(ids(&store.search(&paired).await.unwrap()), vec!["c1"]);
     let mismatched = query(
         "Observation",
-        vec![filter("Observation", "code-value-quantity", "urn:s|code-1$9|urn:u|mg")],
+        vec![filter(
+            "Observation",
+            "code-value-quantity",
+            "urn:s|code-1$9|urn:u|mg",
+        )],
     );
     assert!(store.search(&mismatched).await.unwrap().entries.is_empty());
     let _ = SearchValue::Missing(true);
@@ -541,7 +618,10 @@ pub async fn targeted_index(store: &dyn fhir_store::ResourceStore) {
             .map(|entry| entry.id().as_str().to_owned())
             .collect()
     };
-    assert_eq!(found(store.search(&banded("high")).await.unwrap()), vec!["t1"]);
+    assert_eq!(
+        found(store.search(&banded("high")).await.unwrap()),
+        vec!["t1"]
+    );
 
     store.update(band("t1", "low"), None).await.unwrap();
     let reports = store
@@ -554,7 +634,12 @@ pub async fn targeted_index(store: &dyn fhir_store::ResourceStore) {
     assert_eq!(reports[0].values, 1);
     assert!(reports[0].failures.is_empty());
 
-    assert!(store.search(&banded("high")).await.unwrap().entries.is_empty());
+    assert!(store
+        .search(&banded("high"))
+        .await
+        .unwrap()
+        .entries
+        .is_empty());
     let mut low = found(store.search(&banded("low")).await.unwrap());
     low.sort();
     assert_eq!(low, vec!["t1", "t2"]);
@@ -575,5 +660,8 @@ pub async fn targeted_index(store: &dyn fhir_store::ResourceStore) {
     let missing = store
         .reindex_resource(std::slice::from_ref(&spec), &crate::fixture::id("nobody"))
         .await;
-    assert!(matches!(missing, Err(fhir_core::Error::NotFound)), "{missing:?}");
+    assert!(
+        matches!(missing, Err(fhir_core::Error::NotFound)),
+        "{missing:?}"
+    );
 }
