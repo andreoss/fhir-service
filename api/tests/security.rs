@@ -1063,3 +1063,40 @@ async fn an_expired_or_forged_token_introspects_as_inactive() {
         assert!(!reply.body.contains(&offered), "{reason}");
     }
 }
+
+#[tokio::test]
+async fn an_issuer_that_cannot_be_reached_is_a_bounded_refusal_and_not_a_fault() {
+    
+    
+    
+    let store = MemoryStore::with_clock(Arc::new(|| {
+        FhirInstant::parse("2026-09-06T04:00:00.000Z").unwrap()
+    }));
+    let app = Service::new(Arc::new(store), FhirVersion::R4, Vec::new())
+        .with_authorization(Authorization::new(
+            "https://127.0.0.1:1",
+            "https://127.0.0.1:1/a",
+            "https://127.0.0.1:1/t",
+        ))
+        .enforcing(Arc::new(fhir_api::DiscoveredKeys::new(
+            std::time::Duration::from_millis(200),
+        )))
+        .expect("an authorization is configured");
+    let request = Request::builder()
+        .method("GET")
+        .uri("/Patient")
+        .header("host", "localhost")
+        .header("authorization", format!("Bearer {}", token("system/*.rs")))
+        .body(Body::empty())
+        .expect("a request");
+    let response = app.router().oneshot(request).await.expect("an answer");
+    assert_eq!(
+        response.status(),
+        StatusCode::SERVICE_UNAVAILABLE,
+        "a dependency that is down is a 503 with a retry hint, as PERS-08 asks"
+    );
+    assert!(
+        response.headers().contains_key("retry-after"),
+        "and it says when to come back"
+    );
+}
