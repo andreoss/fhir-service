@@ -14,5 +14,12 @@ stages:
   - name: coverage
     run: cargo llvm-cov --workspace --locked --summary-only --json --output-path scratch/coverage.json && cargo run --quiet --bin gate -- scratch/coverage.json 85
     gate: 85
+  
+  
+  
+  
+  
+  - name: conformance
+    run: sh ci/conformance.sh
   - name: publish
     run: sh ci/publish.sh
