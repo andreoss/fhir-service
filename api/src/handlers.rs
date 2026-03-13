@@ -1758,7 +1758,12 @@ pub(crate) fn within(
         return Ok(());
     };
     let body = serde_json::from_slice::<Value>(envelope.raw()).unwrap_or(Value::Null);
-    match grant.reaches(envelope, &body) {
+    if grant.reaches(envelope, &body) {
+        return Ok(());
+    }
+    
+    
+    match crate::logged_in::reading_itself(access, action, envelope) {
         true => Ok(()),
         false => Err(Error::NotFound),
     }

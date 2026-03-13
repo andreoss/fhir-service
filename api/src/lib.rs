@@ -22,6 +22,7 @@ pub mod interaction;
 pub mod introspect;
 pub mod job;
 pub mod limits;
+pub mod logged_in;
 pub mod measure;
 pub mod membership;
 pub mod meta;
