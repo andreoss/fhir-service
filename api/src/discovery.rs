@@ -46,15 +46,30 @@ impl DiscoveredKeys {
         }
     }
 
+    
+    
+    
+    
+    
+    
+    
+    
     pub fn pinning<P>(mut self, issuer: &str, thumbprints: P) -> DiscoveredKeys
     where
         P: IntoIterator<Item = String>,
     {
-        self.pinned.insert(
-            origin_of(issuer),
-            thumbprints.into_iter().collect::<Vec<String>>(),
-        );
-        self
+        let held: Vec<String> = thumbprints
+            .into_iter()
+            .map(|thumbprint| thumbprint.trim().to_owned())
+            .filter(|thumbprint| !thumbprint.is_empty())
+            .collect();
+        match held.is_empty() {
+            true => self,
+            false => {
+                self.pinned.insert(origin_of(issuer), held);
+                self
+            }
+        }
     }
 
     fn pins(&self, issuer: &str) -> Option<&Vec<String>> {
@@ -585,5 +600,38 @@ mod trust_anchor_tests {
             "this test runs in an environment that names no anchor"
         );
         assert!(roots().expect("the public roots load").len() > 100);
+    }
+}
+
+#[cfg(test)]
+mod pinning_nothing {
+    use super::*;
+
+    #[test]
+    fn pinning_no_thumbprint_is_not_pinning() {
+        let held = DiscoveredKeys::new(std::time::Duration::from_secs(1))
+            .pinning("https://issuer.example.org", Vec::<String>::new());
+        assert!(
+            held.pins("https://issuer.example.org").is_none(),
+            "an empty list is an operator who named no pins, not one who pinned \
+             a set nothing can satisfy"
+        );
+    }
+
+    #[test]
+    fn pinning_a_blank_thumbprint_is_not_pinning_either() {
+        let held = DiscoveredKeys::new(std::time::Duration::from_secs(1))
+            .pinning("https://issuer.example.org", ["  ".to_owned()]);
+        assert!(held.pins("https://issuer.example.org").is_none());
+    }
+
+    #[test]
+    fn a_named_thumbprint_is_still_pinned() {
+        let held = DiscoveredKeys::new(std::time::Duration::from_secs(1))
+            .pinning("https://issuer.example.org", ["abc".to_owned()]);
+        assert_eq!(
+            held.pins("https://issuer.example.org").map(Vec::len),
+            Some(1)
+        );
     }
 }
