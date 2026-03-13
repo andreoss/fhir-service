@@ -24,4 +24,9 @@ COPY --from=build /src/target/release/instances /usr/local/bin/instances
 COPY --from=build /src/target/release/probe /usr/local/bin/probe
 USER served
 EXPOSE ${PORT}
+
+
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD ["/usr/local/bin/probe", "127.0.0.1:8080", "/health"]
 ENTRYPOINT ["/usr/local/bin/fhir-host"]

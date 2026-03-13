@@ -24,9 +24,33 @@ spec:
       labels:
         app: ${FHIR_NAME}
     spec:
+      
+      
+      
+      
+      
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      automountServiceAccountToken: false
       containers:
         - name: service
           image: ${FHIR_IMAGE}
+          securityContext:
+            allowPrivilegeEscalation: false
+            privileged: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 10001
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
           ports:
             - containerPort: ${FHIR_PORT}
           envFrom:
@@ -70,6 +94,14 @@ spec:
               path: /health
               port: ${FHIR_PORT}
             periodSeconds: 10
+          
+          
+          volumeMounts:
+            - name: scratch
+              mountPath: /tmp
+      volumes:
+        - name: scratch
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: Service

@@ -9,6 +9,11 @@ stages:
     run: cargo fmt --all --check
   - name: dependencies
     run: cargo deny --all-features check advisories licenses bans sources
+  
+  
+  
+  - name: hardening
+    run: sh ci/hardening.sh
   - name: bill of materials
     run: cargo cyclonedx --format json --all-features -p fhir-host && mkdir -p scratch && mv host/bill-of-materials.json scratch/bill-of-materials.json
   - name: coverage

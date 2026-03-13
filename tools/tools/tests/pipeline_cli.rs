@@ -28,6 +28,9 @@ fn the_pipeline_runs_build_tests_analysis_coverage_and_publish() {
             "analysis",
             "format",
             "dependencies",
+            
+            
+            "hardening",
             "bill of materials",
             "coverage",
             
