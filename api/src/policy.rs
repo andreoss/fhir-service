@@ -1,34 +1,12 @@
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 use fhir_core::security::scope::{DataAction, Scope};
 use fhir_core::security::Access;
 use fhir_core::{Error, ResourceType};
 use fhir_store::{ResourceStore, SearchQuery};
 use serde_json::Value;
 
-
-
 pub const FHIR_USER: &str = "fhirUser";
 
 pub const ACCESS_POLICY: &str = "AccessPolicy";
-
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Policies {
@@ -40,9 +18,6 @@ impl Policies {
         Policies::default()
     }
 
-    
-    
-    
     pub fn on() -> Result<Policies, Error> {
         fhir_core::resource_type::register(ACCESS_POLICY)?;
         Ok(Policies { on: true })
@@ -53,7 +28,6 @@ impl Policies {
     }
 }
 
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Policy {
     pub subjects: Vec<String>,
@@ -61,9 +35,6 @@ pub struct Policy {
 }
 
 impl Policy {
-    
-    
-    
     pub fn parse(body: &Value) -> Policy {
         let texts = |name: &str| {
             body.get(name)
@@ -87,9 +58,6 @@ impl Policy {
         }
     }
 
-    
-    
-    
     pub fn names(&self, user: &str) -> bool {
         self.subjects.iter().any(|held| same_user(held, user))
     }
@@ -101,9 +69,6 @@ impl Policy {
     }
 }
 
-
-
-
 fn same_user(one: &str, other: &str) -> bool {
     let tail = |held: &str| {
         let trimmed = held.trim_end_matches('/');
@@ -114,12 +79,6 @@ fn same_user(one: &str, other: &str) -> bool {
     };
     !one.is_empty() && !other.is_empty() && tail(one) == tail(other)
 }
-
-
-
-
-
-
 
 pub async fn naming(store: &dyn ResourceStore, user: &str) -> Result<Vec<Policy>, Error> {
     let Ok(kind) = ACCESS_POLICY.parse::<ResourceType>() else {
@@ -135,7 +94,6 @@ pub async fn naming(store: &dyn ResourceStore, user: &str) -> Result<Vec<Policy>
         .collect())
 }
 
-
 pub fn user_of(access: &Access) -> Option<&str> {
     access
         .claims
@@ -143,9 +101,6 @@ pub fn user_of(access: &Access) -> Option<&str> {
         .map(String::as_str)
         .filter(|held| !held.is_empty())
 }
-
-
-
 
 pub async fn require(
     policies: Policies,

@@ -7,10 +7,6 @@ pub const READ_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub const HEALTH: &str = "/health";
 
-
-
-
-
 pub const ENV_HEADER: &str = "FHIR_TOOL_HEADER";
 
 fn extra() -> String {
@@ -45,11 +41,7 @@ pub fn status(address: &str, path: &str) -> Result<u16, Error> {
         .ok_or_else(|| Error::Internal(format!("the address answered {response:?}")))
 }
 
-
 pub type Reply = (u16, Vec<(String, String)>, String);
-
-
-
 
 pub fn send_typed(
     address: &str,

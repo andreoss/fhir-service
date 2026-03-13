@@ -268,11 +268,6 @@ impl Compiler {
         code: Option<&str>,
         variable: &str,
     ) -> Bson {
-        
-        
-        
-        
-        
         let named_ucum = match system {
             TokenSystem::Exact(held) => held == fhir_core::ucum::UCUM,
             TokenSystem::Any | TokenSystem::Absent => true,

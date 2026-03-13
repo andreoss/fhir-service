@@ -222,9 +222,7 @@ pub struct BulkDeleteRequest {
     pub hard: bool,
     pub purge: bool,
     pub soft_deleted: bool,
-    
-    
-    
+
     pub before: Option<String>,
 }
 
@@ -260,9 +258,6 @@ impl BulkDeleteRequest {
         Value::Object(carried)
     }
 }
-
-
-
 
 fn written_before(before: &str) -> Result<fhir_core::search::Filter, Error> {
     let def = fhir_core::search::lookup(None, "_lastUpdated")
@@ -549,8 +544,6 @@ impl JobHandler for BulkUpdateJob {
         Ok(outcome)
     }
 }
-
-
 
 fn logical(reference: &str) -> Result<fhir_core::ResourceKey, Error> {
     reference.parse::<fhir_core::ResourceKey>()

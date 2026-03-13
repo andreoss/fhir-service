@@ -1,11 +1,3 @@
-
-
-
-
-
-
-
-
 use axum::extract::State;
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -14,12 +6,7 @@ use std::sync::{Arc, RwLock};
 
 const FHIR_JSON: &str = "application/fhir+json";
 
-
-
-
 const LOCKED: u16 = 423;
-
-
 
 #[derive(Debug, Clone, Default)]
 pub struct Busy {
@@ -31,7 +18,6 @@ impl Busy {
         Busy::default()
     }
 
-    
     pub fn during(&self, what: &str) -> Held {
         if let Ok(mut held) = self.held.write() {
             *held = Some(what.to_owned());
@@ -49,8 +35,6 @@ impl Busy {
         }
     }
 }
-
-
 
 pub struct Held {
     busy: Busy,

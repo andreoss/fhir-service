@@ -1,12 +1,3 @@
-
-
-
-
-
-
-
-
-
 use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::header::{self, HeaderMap, HeaderValue};
@@ -24,9 +15,6 @@ use crate::handlers::{allowed_doing, AppError};
 
 const BINARY: &str = "Binary";
 
-
-
-
 pub const HELD_TYPES: [&str; 6] = [
     "application/pdf",
     "text/plain",
@@ -36,11 +24,7 @@ pub const HELD_TYPES: [&str; 6] = [
     "application/json",
 ];
 
-
-
-
 pub const HELD_BYTES: usize = 1024 * 1024;
-
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Artifacts {
@@ -70,9 +54,6 @@ impl Artifacts {
             .any(|held| held.eq_ignore_ascii_case(&name))
     }
 }
-
-
-
 
 pub fn is_artifact(path: &str, headers: &HeaderMap) -> bool {
     if !path.starts_with("/Binary") {
@@ -206,9 +187,7 @@ pub async fn read(
     if stored.is_deleted() {
         return Err(Error::Deleted.into());
     }
-    
-    
-    
+
     if !is_artifact("/Binary", &headers) {
         return Ok(crate::handlers::rendered(stored.raw().to_vec()));
     }

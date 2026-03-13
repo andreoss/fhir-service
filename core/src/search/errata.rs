@@ -1,31 +1,8 @@
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 use crate::search::published::Published;
-
-
 
 const GROUPED: &str = "DeviceUseStatement";
 
-
 const GROUP: &str = "Group";
-
-
 
 pub fn corrected(held: &mut Published) -> bool {
     patient_reaches_a_patient(held);
@@ -34,11 +11,6 @@ pub fn corrected(held: &mut Published) -> bool {
     !held.paths.is_empty()
 }
 
-
-
-
-
-
 fn patient_reaches_a_patient(held: &mut Published) {
     if held.name != "patient" || held.kind == GROUPED {
         return;
@@ -46,19 +18,12 @@ fn patient_reaches_a_patient(held: &mut Published) {
     held.targets.retain(|target| target != GROUP);
 }
 
-
-
-
-
 fn names_a_type(path: &str) -> bool {
     path.split('.')
         .next()
         .and_then(|first| first.chars().next())
         .is_some_and(char::is_uppercase)
 }
-
-
-
 
 fn context_names_the_expression(held: &mut Published) {
     if held.kind != "StructureDefinition" || held.name != "ext-context" {

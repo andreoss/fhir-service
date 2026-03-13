@@ -1,11 +1,3 @@
-
-
-
-
-
-
-
-
 use crate::http;
 use crate::population::Record;
 use fhir_core::{Error, FhirVersion};
@@ -14,8 +6,6 @@ use std::collections::{BTreeMap, BTreeSet};
 
 const FHIR_JSON: &str = "application/fhir+json";
 
-
-
 pub fn predicted(records: &[Record]) -> BTreeMap<String, usize> {
     let mut held = BTreeMap::new();
     for record in records.iter().filter(|record| !record.deleted()) {
@@ -23,7 +13,6 @@ pub fn predicted(records: &[Record]) -> BTreeMap<String, usize> {
     }
     held
 }
-
 
 pub fn observed(
     address: &str,
@@ -49,16 +38,12 @@ pub fn observed(
     Ok(held)
 }
 
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Difference {
     pub resource_type: String,
     pub predicted: usize,
     pub observed: usize,
 }
-
-
-
 
 pub fn differences(
     predicted: &BTreeMap<String, usize>,
@@ -79,9 +64,6 @@ pub fn differences(
     }
     held
 }
-
-
-
 
 pub fn validated(address: &str, host: &str, records: &[Record]) -> Result<Vec<String>, Error> {
     let mut refused = Vec::new();
@@ -108,7 +90,6 @@ pub fn validated(address: &str, host: &str, records: &[Record]) -> Result<Vec<St
     Ok(refused)
 }
 
-
 pub fn everything(address: &str, host: &str, patient: &str) -> Result<BTreeSet<String>, Error> {
     let path = format!("/Patient/{patient}/$everything");
     let (status, _, body) = http::send_typed(address, host, "GET", &path, FHIR_JSON, "")?;
@@ -131,12 +112,6 @@ pub fn everything(address: &str, host: &str, patient: &str) -> Result<BTreeSet<S
         })
         .collect())
 }
-
-
-
-
-
-
 
 pub fn built(records: &[Record], patient: &str) -> (BTreeSet<String>, BTreeSet<String>) {
     use fhir_core::search::{compartment::definition, lookup};
@@ -170,7 +145,6 @@ pub fn built(records: &[Record], patient: &str) -> (BTreeSet<String>, BTreeSet<S
     let _ = patient;
     (expected, undecidable)
 }
-
 
 #[derive(Debug, Clone)]
 pub struct Figures {

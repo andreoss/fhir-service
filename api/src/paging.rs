@@ -1,30 +1,12 @@
-
-
-
-
-
-
-
-
-
-
-
-
-
 use fhir_core::Error;
 
 pub const DEFAULT_SIZE: usize = 20;
 pub const DEFAULT_LIMIT: usize = 100;
 
-
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Counting {
-    
-    
     None,
-    
-    
-    
+
     #[default]
     Accurate,
 }
@@ -48,7 +30,6 @@ impl Counting {
     }
 }
 
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Paging {
     size: usize,
@@ -69,9 +50,6 @@ impl Default for Paging {
 }
 
 impl Paging {
-    
-    
-    
     pub fn new(size: usize, limit: usize) -> Result<Paging, Error> {
         if size == 0 || limit == 0 {
             return Err(Error::Config(
@@ -114,8 +92,6 @@ impl Paging {
         self.total
     }
 
-    
-    
     pub fn count_of(&self, asked: Option<usize>) -> usize {
         match asked {
             Some(held) => held.min(self.limit),

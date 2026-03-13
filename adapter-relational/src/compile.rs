@@ -195,11 +195,6 @@ impl<'a> Compiler<'a> {
         code: Option<&str>,
         alias: &str,
     ) -> String {
-        
-        
-        
-        
-        
         let named_ucum = match system {
             TokenSystem::Exact(held) => held == fhir_core::ucum::UCUM,
             TokenSystem::Any | TokenSystem::Absent => true,

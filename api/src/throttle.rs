@@ -8,9 +8,6 @@ use tokio::sync::Semaphore;
 
 const FHIR_JSON: &str = "application/fhir+json";
 
-
-
-
 const EXEMPT: [&str; 4] = [
     "/health",
     "/metadata",
@@ -18,12 +15,7 @@ const EXEMPT: [&str; 4] = [
     crate::scrape::METRICS,
 ];
 
-
 const RETRY_AFTER: u64 = 1;
-
-
-
-
 
 #[derive(Debug, Clone, Default)]
 pub struct Throttle {
@@ -32,8 +24,6 @@ pub struct Throttle {
 }
 
 impl PartialEq for Throttle {
-    
-    
     fn eq(&self, other: &Throttle) -> bool {
         self.at_once == other.at_once && self.is_bounded() == other.is_bounded()
     }

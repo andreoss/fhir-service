@@ -1,12 +1,3 @@
-
-
-
-
-
-
-
-
-
 use axum::extract::{Path, RawQuery, State};
 use axum::http::header::HeaderMap;
 use axum::response::Response;
@@ -18,8 +9,6 @@ use serde_json::{json, Map, Value};
 
 use crate::app::AppState;
 use crate::handlers::{allowed, AppError};
-
-
 
 struct Asked {
     query: Option<String>,
@@ -45,8 +34,6 @@ impl Asked {
         crate::operation::resource_of(&self.body, name).cloned()
     }
 
-    
-    
     fn coding(&self) -> Option<(Option<String>, String)> {
         if let Some(code) = self.text("code") {
             return Some((self.text("system"), code));
@@ -91,7 +78,6 @@ fn told(result: bool, message: &str) -> Vec<Value> {
     ]
 }
 
-
 fn all_of(system: &Value) -> Vec<Coding> {
     flattened(&concepts(system))
 }
@@ -102,8 +88,6 @@ async fn stored(state: &AppState, resource_type: &str, id: &str) -> Result<Value
     let found = state.store.read(&ResourceKey::new(kind, held)).await?;
     serde_json::from_slice(found.raw()).map_err(|error| Error::InvalidJson(error.to_string()))
 }
-
-
 
 pub async fn value_set_validate_code(
     State(state): State<AppState>,
@@ -184,8 +168,6 @@ async fn validated_against(
     Ok(answered(parameters))
 }
 
-
-
 pub async fn code_system_validate_code(
     State(state): State<AppState>,
     RawQuery(query): RawQuery,
@@ -245,8 +227,6 @@ fn code_in(system: &Value, asked: &Asked) -> Result<Response, Error> {
     Ok(answered(parameters))
 }
 
-
-
 pub async fn lookup(
     State(state): State<AppState>,
     RawQuery(query): RawQuery,
@@ -286,8 +266,6 @@ pub async fn lookup(
     }
     Ok(answered(parameters))
 }
-
-
 
 pub async fn subsumes(
     State(state): State<AppState>,
@@ -331,8 +309,6 @@ pub async fn subsumes(
         json!({"name": "outcome", "valueCode": "not-subsumed"}),
     ]))
 }
-
-
 
 pub async fn find_matches(
     State(state): State<AppState>,
@@ -385,8 +361,6 @@ pub async fn find_matches(
         .collect();
     Ok(answered(parameters))
 }
-
-
 
 pub async fn translate(
     State(state): State<AppState>,
@@ -491,11 +465,6 @@ fn translated(maps: &[Value], asked: &Asked) -> Result<Response, Error> {
     parameters.extend(matches);
     Ok(answered(parameters))
 }
-
-
-
-
-
 
 pub async fn closure(
     State(state): State<AppState>,

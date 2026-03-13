@@ -1,83 +1,72 @@
 use sha2::{Digest, Sha256};
 use std::fmt::Write as _;
 
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Class {
-    
     Status,
-    
+
     OutcomeIssue,
-    
+
     Content,
-    
+
     Concurrency,
-    
+
     SearchSet,
-    
+
     SearchOrder,
-    
+
     BundleEntry,
-    
+
     PagingLink,
-    
+
     ServerIdentity,
-    
+
     Representation,
-    
+
     Unreached,
 }
 
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Severity {
-    
     Blocking,
-    
+
     Serious,
-    
+
     Noted,
 }
 
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Allowance {
-    
     Empty,
-    
+
     Recorded,
 }
 
-
 #[derive(Clone, Debug)]
 pub struct Rule {
-    
     pub class: Class,
-    
+
     pub severity: Severity,
-    
+
     pub allowance: Allowance,
-    
+
     pub because: &'static str,
 }
 
-
 #[derive(Clone, Debug)]
 pub struct Exemption {
-    
     pub class: Class,
-    
+
     pub about: &'static str,
-    
+
     pub detail: &'static str,
-    
+
     pub because: &'static str,
-    
+
     pub rests_on: &'static str,
 }
 
 impl Exemption {
-    
     pub fn covers(&self, class: Class, case: &str, shape: &str, detail: &str) -> bool {
         if self.class != class {
             return false;
@@ -88,7 +77,6 @@ impl Exemption {
         self.detail.is_empty() || detail.contains(self.detail)
     }
 
-    
     pub fn written(&self) -> String {
         format!(
             "excused: {} | {} | {} | {} | rests on {}",
@@ -107,46 +95,37 @@ impl Exemption {
     }
 }
 
-
 #[derive(Clone, Debug)]
 pub struct Tally {
-    
     pub class: Class,
-    
+
     pub count: usize,
 }
 
-
 #[derive(Clone, Debug)]
 pub struct RunFacts {
-    
     pub cases_planned: usize,
-    
+
     pub cases_compared: usize,
-    
+
     pub covered: Vec<String>,
-    
+
     pub tallies: Vec<Tally>,
 }
 
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Breach {
-    
     pub class: Option<Class>,
-    
+
     pub reason: String,
 }
 
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Verdict {
-    
     Passed,
-    
+
     Failed(Vec<Breach>),
 }
-
 
 pub struct Gate {
     rules: Vec<Rule>,
@@ -156,7 +135,6 @@ pub struct Gate {
 }
 
 impl Gate {
-    
     pub fn of(rules: Vec<Rule>, least_cases: usize, must_cover: Vec<&'static str>) -> Gate {
         Gate {
             rules,
@@ -166,18 +144,15 @@ impl Gate {
         }
     }
 
-    
     pub fn excusing(mut self, exemptions: Vec<Exemption>) -> Gate {
         self.exemptions = exemptions;
         self
     }
 
-    
     pub fn exemptions(&self) -> &[Exemption] {
         &self.exemptions
     }
 
-    
     pub fn excusing_of(
         &self,
         class: Class,
@@ -190,7 +165,6 @@ impl Gate {
             .find(|excused| excused.covers(class, case, shape, detail))
     }
 
-    
     pub fn agreed() -> Gate {
         Gate::of(
             vec![
@@ -416,22 +390,18 @@ impl Gate {
         ])
     }
 
-    
     pub fn rules(&self) -> &[Rule] {
         &self.rules
     }
 
-    
     pub fn least_cases(&self) -> usize {
         self.least_cases
     }
 
-    
     pub fn must_cover(&self) -> &[&'static str] {
         &self.must_cover
     }
 
-    
     pub fn rule(&self, class: Class) -> &Rule {
         self.rules
             .iter()
@@ -439,7 +409,6 @@ impl Gate {
             .expect("every class is governed")
     }
 
-    
     pub fn fingerprint(&self) -> String {
         let mut digest = Sha256::new();
         digest.update(self.terms().as_bytes());
@@ -450,7 +419,6 @@ impl Gate {
         hex
     }
 
-    
     pub fn render(&self) -> String {
         format!("acceptance gate {}\n{}", self.fingerprint(), self.terms())
     }
@@ -480,7 +448,6 @@ impl Gate {
         text
     }
 
-    
     pub fn judge(&self, run: &RunFacts) -> Verdict {
         let mut breaches = Vec::new();
         if run.cases_compared < self.least_cases {
@@ -540,7 +507,6 @@ impl Gate {
 }
 
 impl Class {
-    
     pub const ALL: [Class; 11] = [
         Class::Status,
         Class::OutcomeIssue,
@@ -555,7 +521,6 @@ impl Class {
         Class::Unreached,
     ];
 
-    
     pub fn name(&self) -> &'static str {
         match self {
             Class::Status => "status",
@@ -574,7 +539,6 @@ impl Class {
 }
 
 impl Severity {
-    
     pub fn name(&self) -> &'static str {
         match self {
             Severity::Blocking => "blocking",

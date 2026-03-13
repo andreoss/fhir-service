@@ -92,13 +92,10 @@ impl Field {
         self.shape.as_deref()
     }
 
-    
     pub fn required(&self) -> bool {
         self.required
     }
 
-    
-    
     pub fn codes(&self) -> &[String] {
         &self.codes
     }
@@ -261,8 +258,6 @@ impl Model {
         })
     }
 
-    
-    
     pub fn elements(&self, node: &str) -> Vec<&str> {
         match self.nodes.get(node) {
             None => Vec::new(),
@@ -312,11 +307,6 @@ impl Model {
             return;
         };
         if !self.resources.contains(name) {
-            
-            
-            
-            
-            
             if crate::resource_type::is_registered(name) {
                 return;
             }

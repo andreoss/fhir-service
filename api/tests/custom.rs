@@ -8,8 +8,6 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 use tower::ServiceExt;
 
-
-
 fn service() -> Service {
     let store = MemoryStore::with_clock(Arc::new(|| {
         FhirInstant::parse("2026-09-06T04:00:00.000Z").unwrap()

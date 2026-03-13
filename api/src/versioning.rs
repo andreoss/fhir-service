@@ -2,17 +2,13 @@ use fhir_core::{Error, FhirVersion, ResourceType};
 use std::collections::HashMap;
 use std::str::FromStr;
 
-
-
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Policy {
-    
     NoVersion,
-    
+
     #[default]
     Versioned,
-    
+
     VersionedUpdate,
 }
 
@@ -56,10 +52,6 @@ pub struct Versioning {
 }
 
 impl Versioning {
-    
-    
-    
-    
     pub fn parse(raw: &str, version: FhirVersion) -> Result<Versioning, Error> {
         let mut held = Versioning::default();
         for part in raw

@@ -1,6 +1,3 @@
-
-
-
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use fhir_adapter_memory::MemoryStore;

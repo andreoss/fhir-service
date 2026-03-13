@@ -1,20 +1,3 @@
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 use crate::search::value::ValueType;
 use crate::FhirVersion;
 use serde_json::Value;
@@ -33,7 +16,6 @@ fn generated(version: FhirVersion) -> &'static str {
         FhirVersion::R5 => R5,
     }
 }
-
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Published {
@@ -67,12 +49,6 @@ fn texts(held: &Value) -> Vec<String> {
         .map(str::to_owned)
         .collect()
 }
-
-
-
-
-
-
 
 pub fn all() -> Vec<Published> {
     let mut held: BTreeMap<(String, String), Published> = BTreeMap::new();
@@ -129,8 +105,6 @@ pub fn all() -> Vec<Published> {
             }
             entry
         })
-        
-        
         .filter_map(
             |mut entry| match crate::search::errata::corrected(&mut entry) {
                 true => Some(entry),

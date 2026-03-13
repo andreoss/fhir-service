@@ -1066,9 +1066,6 @@ async fn an_expired_or_forged_token_introspects_as_inactive() {
 
 #[tokio::test]
 async fn an_issuer_that_cannot_be_reached_is_a_bounded_refusal_and_not_a_fault() {
-    
-    
-    
     let store = MemoryStore::with_clock(Arc::new(|| {
         FhirInstant::parse("2026-09-06T04:00:00.000Z").unwrap()
     }));

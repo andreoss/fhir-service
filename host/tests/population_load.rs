@@ -1,11 +1,3 @@
-
-
-
-
-
-
-
-
 mod live;
 
 use fhir_core::FhirVersion;

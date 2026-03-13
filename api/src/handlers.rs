@@ -194,8 +194,6 @@ pub async fn create(
     ))
 }
 
-
-
 fn registered_type(value: &Value) -> Result<(), Error> {
     match crate::profile::defines_a_type(value) {
         None => Ok(()),
@@ -558,10 +556,6 @@ pub async fn method_not_allowed() -> Result<Response, AppError> {
     Err(Error::MethodNotAllowed.into())
 }
 
-
-
-
-
 fn under_policy(
     state: &AppState,
     resource_type: ResourceType,
@@ -578,9 +572,6 @@ fn under_policy(
     Ok(())
 }
 
-
-
-
 async fn after_policy(state: &AppState, written: &ResourceEnvelope) -> Result<(), Error> {
     if state.versioning.of(written.resource_type()).keeps_history() {
         return Ok(());
@@ -588,8 +579,6 @@ async fn after_policy(state: &AppState, written: &ResourceEnvelope) -> Result<()
     state.store.purge_history(&ResourceKey::of(written)).await?;
     Ok(())
 }
-
-
 
 async fn profiled(state: &AppState, created: bool, value: &Value) -> Result<(), Error> {
     if !state.allowed_profiles.accepts(value) {
@@ -636,9 +625,7 @@ impl Written {
 enum Written {
     Created(ResourceEnvelope),
     Updated(ResourceEnvelope),
-    
-    
-    
+
     Unchanged(ResourceEnvelope),
 }
 
@@ -648,8 +635,6 @@ impl Written {
             Written::Created(stored) => answered(respond_created(stored, host), stored, asked),
             Written::Updated(stored) => answered(respond_updated(stored, host), stored, asked),
             Written::Unchanged(stored) => match asked {
-                
-                
                 Some(Return::Outcome) => {
                     let (mut parts, _) = respond_updated(stored, host).into_parts();
                     let body = crate::unchanged::outcome().to_fhir_json();
@@ -735,13 +720,7 @@ async fn upsert(
     expected: Option<&VersionId>,
 ) -> Result<Written, Error> {
     let offered = envelope.clone();
-    
-    
-    
-    
-    
-    
-    
+
     let before = match state.unchanged.is_on() {
         false => None,
         true => state.store.read(&ResourceKey::of(&envelope)).await.ok(),
@@ -762,8 +741,7 @@ async fn upsert(
     let held = before.map(|current| current.version_id().clone());
     match state.store.update(envelope, expected).await {
         Ok(stored) if recreated => Ok(Written::Created(stored)),
-        
-        
+
         Ok(stored) if held.as_ref() == Some(stored.version_id()) => Ok(Written::Unchanged(stored)),
         Ok(stored) => Ok(Written::Updated(stored)),
         Err(Error::VersionConflict) => Err(contended(state.version)),
@@ -786,8 +764,7 @@ async fn patch_stored(
     let patched = Patch::parse(body)?.apply(current.raw())?;
     let mut value: Value =
         serde_json::from_slice(&patched).map_err(|error| Error::InvalidJson(error.to_string()))?;
-    
-    
+
     tenanted(state, access, headers, &mut value)?;
     shortened(state, headers, &mut value);
     let envelope = write_envelope(state.version, resource_type, value.clone(), current.id())?;
@@ -855,7 +832,6 @@ async fn single_match(
         _ => Err(Error::MultipleMatches),
     }
 }
-
 
 fn key(resource_type: ResourceType, id: &ResourceId) -> ResourceKey {
     ResourceKey::new(resource_type, id.clone())
@@ -949,9 +925,6 @@ fn etag(envelope: &ResourceEnvelope) -> String {
     WeakEtag::from(envelope.version_id()).to_string()
 }
 
-
-
-
 fn location(base: &str, envelope: &ResourceEnvelope) -> String {
     let base = match base.trim().is_empty() {
         true => "http://localhost",
@@ -964,7 +937,6 @@ fn location(base: &str, envelope: &ResourceEnvelope) -> String {
         envelope.version_id()
     )
 }
-
 
 pub(crate) fn addressed(state: &AppState, headers: &HeaderMap) -> String {
     state.forwarding.base(headers)
@@ -1180,9 +1152,6 @@ pub async fn search_type(
     respond_search(&state, Some(resource_type), path, query, &headers).await
 }
 
-
-
-
 pub async fn search_type_form(
     State(state): State<AppState>,
     Path(type_name): Path<String>,
@@ -1393,8 +1362,7 @@ pub async fn parameter_reindex(
     )
     .await?;
     let wanted = param(query.as_deref(), "url");
-    
-    
+
     let _held = state.busy.during("a reindex");
     Ok(rendered(
         parameter::reindex(&state, wanted.as_deref()).await?,
@@ -1505,9 +1473,6 @@ async fn respond_search(
     respond_page(state, request, path, kept, headers).await
 }
 
-
-
-
 fn paged(state: &AppState, request: &mut SearchRequest) -> Result<(), Error> {
     let paging = &state.paging;
     request.query.count = match request.named.count {
@@ -1520,8 +1485,7 @@ fn paged(state: &AppState, request: &mut SearchRequest) -> Result<(), Error> {
             crate::paging::Counting::Accurate => fhir_store::TotalMode::Accurate,
         };
     }
-    
-    
+
     if matches!(request.summary, crate::history::Summary::Count) {
         request.query.total = fhir_store::TotalMode::Accurate;
         request.query.count = 0;
@@ -1534,9 +1498,6 @@ fn paged(state: &AppState, request: &mut SearchRequest) -> Result<(), Error> {
     }
     Ok(())
 }
-
-
-
 
 pub(crate) fn parsed_search(
     state: &AppState,
@@ -1551,9 +1512,7 @@ pub(crate) fn parsed_search(
             raw.map(str::to_owned),
         ),
     };
-    
-    
-    
+
     if state.restricted.is_on() {
         if let Some(refused) = request
             .query
@@ -1650,10 +1609,6 @@ pub(crate) async fn judged(
     resource_type: Option<ResourceType>,
     id: Option<&ResourceId>,
 ) -> Result<(), Error> {
-    
-    
-    
-    
     let mut decision = access
         .require(action, resource_type)
         .and_then(|()| state.roles.require(access, action, resource_type));
@@ -1696,17 +1651,9 @@ pub(crate) fn confining(
         true => crate::access::granted(&state.registry, access, action)?,
         false => grant_of(headers)?,
     };
-    
-    
-    
+
     state.tenancy.confining(grant, access, headers)
 }
-
-
-
-
-
-
 
 async fn over_current(
     state: &AppState,
@@ -1724,16 +1671,12 @@ async fn over_current(
     within(state, access, headers, DataAction::Write, &current)
 }
 
-
-
 fn shortened(state: &AppState, headers: &HeaderMap, value: &mut Value) {
     if state.references.is_on() {
         let base = addressed(state, headers);
         state.references.stored(value, &base);
     }
 }
-
-
 
 fn tenanted(
     state: &AppState,
@@ -1761,8 +1704,7 @@ pub(crate) fn within(
     if grant.reaches(envelope, &body) {
         return Ok(());
     }
-    
-    
+
     match crate::logged_in::reading_itself(access, action, envelope) {
         true => Ok(()),
         false => Err(Error::NotFound),
@@ -1799,9 +1741,6 @@ pub(crate) fn served(version: fhir_core::FhirVersion, name: &str) -> Result<Reso
     }
 }
 
-
-
-
 pub(crate) fn served_here(state: &AppState, name: &str) -> Result<ResourceType, Error> {
     let held = served(state.version, name)?;
     match state.restricted.serves(held) {
@@ -1809,8 +1748,6 @@ pub(crate) fn served_here(state: &AppState, name: &str) -> Result<ResourceType, 
         false => Err(state.restricted.refuse(held)),
     }
 }
-
-
 
 pub async fn description(State(state): State<AppState>) -> Result<Response, AppError> {
     let held = crate::openapi::document(state.version, &crate::app::served());

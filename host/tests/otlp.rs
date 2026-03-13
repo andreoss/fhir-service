@@ -1,5 +1,3 @@
-
-
 use fhir_host::otlp::Collector;
 use fhir_telemetry::{Dimensions, Held, Operation, Outcome, Telemetry, Traces};
 use serde_json::Value;
@@ -10,8 +8,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 const PATIENCE: Duration = Duration::from_secs(10);
-
-
 
 fn collecting(count: usize) -> (String, Receiver<(String, Value)>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("a port");

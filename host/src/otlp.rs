@@ -1,16 +1,3 @@
-
-
-
-
-
-
-
-
-
-
-
-
-
 use fhir_core::Error;
 use fhir_telemetry::{Event, Telemetry, Traces};
 use serde_json::{json, Value};
@@ -23,13 +10,9 @@ const PATIENCE: Duration = Duration::from_secs(5);
 const TRACES: &str = "/v1/traces";
 const METRICS: &str = "/v1/metrics";
 
-
 pub const PUSH_SECONDS: u64 = 15;
 
-
 const SERVICE: &str = "fhir-service";
-
-
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Collector {
@@ -86,7 +69,6 @@ impl Collector {
         Ok(())
     }
 
-    
     pub fn push_metrics(&self, telemetry: &Telemetry) -> Result<(), String> {
         let at = now_nanos();
         let mut points = Vec::new();
@@ -159,9 +141,6 @@ impl Traces for Collector {
     }
 }
 
-
-
-
 fn span_id(event: &Event) -> String {
     match &event.correlation {
         Some(correlation) => correlation.to_string().chars().take(16).collect(),
@@ -194,7 +173,6 @@ fn now_nanos() -> u128 {
         .unwrap_or_default()
 }
 
-
 pub fn spawn_metrics(collector: Collector, telemetry: Arc<Telemetry>) {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(Duration::from_secs(PUSH_SECONDS));
@@ -202,8 +180,7 @@ pub fn spawn_metrics(collector: Collector, telemetry: Arc<Telemetry>) {
             ticker.tick().await;
             let collector = collector.clone();
             let telemetry = Arc::clone(&telemetry);
-            
-            
+
             let _ = tokio::task::spawn_blocking(move || collector.push_metrics(&telemetry)).await;
         }
     });

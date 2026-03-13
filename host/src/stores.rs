@@ -28,9 +28,6 @@ pub async fn open(config: &Config) -> Result<Stores, Error> {
     Ok((store, jobs, outputs))
 }
 
-
-
-
 pub async fn resources_for(
     config: &Config,
     version: fhir_core::FhirVersion,

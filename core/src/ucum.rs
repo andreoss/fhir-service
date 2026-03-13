@@ -1,14 +1,3 @@
-
-
-
-
-
-
-
-
-
-
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Dimension {
     Mass,
@@ -17,15 +6,11 @@ pub enum Dimension {
     Time,
 }
 
-
 struct Unit {
     code: &'static str,
     dimension: Dimension,
     base: f64,
 }
-
-
-
 
 const UNITS: &[Unit] = &[
     Unit {
@@ -150,17 +135,11 @@ const UNITS: &[Unit] = &[
     },
 ];
 
-
-
-
 pub const UCUM: &str = "http://unitsofmeasure.org";
 
 fn unit(code: &str) -> Option<&'static Unit> {
     UNITS.iter().find(|held| held.code == code)
 }
-
-
-
 
 pub fn canonical(
     value: f64,
@@ -176,7 +155,6 @@ pub fn canonical(
         .find(|other| other.dimension == held.dimension && other.base == 1.0)?;
     Some((value * held.base, base.code))
 }
-
 
 pub fn comparable(one: &str, other: &str) -> bool {
     match (unit(one), unit(other)) {

@@ -63,9 +63,6 @@ fn hex(byte: u8) -> Option<u8> {
     }
 }
 
-
-
-
 pub fn encoded(text: &str) -> String {
     let mut held = String::with_capacity(text.len());
     for byte in text.bytes() {

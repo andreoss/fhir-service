@@ -32,8 +32,6 @@ impl Telemetry {
         }
     }
 
-    
-    
     pub fn tracing(self, traces: Arc<dyn Traces>) -> Telemetry {
         Telemetry {
             traces: Some(traces),
@@ -41,7 +39,6 @@ impl Telemetry {
         }
     }
 
-    
     pub fn alarming(self, alarm: Arc<dyn Alarm>) -> Telemetry {
         Telemetry {
             alarm: Some(alarm),
@@ -72,16 +69,11 @@ impl Telemetry {
         if self.limiter.admits(event.dimensions) {
             self.sink.write(&line);
         }
-        
-        
-        
-        
-        
+
         if event.dimensions.outcome == Outcome::ServerFault {
             self.alert(&line);
         }
-        
-        
+
         if let Some(traces) = &self.traces {
             traces.span(&event);
         }
@@ -92,8 +84,6 @@ impl Telemetry {
             return;
         };
         if let Err(reason) = alarm.raise(line) {
-            
-            
             self.sink
                 .write(&format!("alert=failed reason={reason:?} for {line}"));
         }

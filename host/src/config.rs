@@ -65,71 +65,47 @@ pub const ENV_INCLUDE_DEPTH: &str = "FHIR_INCLUDE_DEPTH";
 
 pub const ENV_ALLOWED_PROFILES: &str = "FHIR_ALLOWED_PROFILES";
 
-
 pub const ENV_SECURITY_HEADERS: &str = "FHIR_SECURITY_HEADERS";
-
 
 pub const ENV_TYPES: &str = "FHIR_TYPES";
 
-
 pub const ENV_PARAMETERS: &str = "FHIR_PARAMETERS";
-
 
 pub const ENV_TRUST_PROXY: &str = "FHIR_TRUST_PROXY";
 
-
-
 pub const ENV_REFERENCES: &str = "FHIR_REFERENCES";
-
 
 pub const ENV_PAGE_SIZE: &str = "FHIR_PAGE_SIZE";
 
-
 pub const ENV_PAGE_LIMIT: &str = "FHIR_PAGE_LIMIT";
-
 
 pub const ENV_DEFAULT_SORT: &str = "FHIR_DEFAULT_SORT";
 
-
 pub const ENV_DEFAULT_TOTAL: &str = "FHIR_DEFAULT_TOTAL";
-
 
 pub const ENV_MAX_BODY: &str = "FHIR_MAX_BODY";
 
-
 pub const ENV_MAX_ENTRIES: &str = "FHIR_MAX_ENTRIES";
-
-
 
 pub const ENV_UNCHANGED: &str = "FHIR_UNCHANGED";
 
-
 pub const ENV_DEFAULT_FORMAT: &str = "FHIR_DEFAULT_FORMAT";
-
 
 pub const ENV_PRELOAD: &str = "FHIR_PRELOAD";
 
-
 pub const ENV_RESET: &str = "FHIR_RESET";
-
 
 pub const ENV_OTLP: &str = "FHIR_OTLP";
 
-
 pub const ENV_ALERT: &str = "FHIR_ALERT";
-
 
 pub const ENV_ACCESS_POLICY: &str = "FHIR_ACCESS_POLICY";
 
-
 pub const ENV_TENANCY: &str = "FHIR_TENANCY";
-
 
 pub const ENV_TENANT_CLAIM: &str = "FHIR_TENANT_CLAIM";
 
-
 pub const ENV_ADMINISTRATION: &str = "FHIR_ADMINISTRATION";
-
 
 pub const ENV_VERSIONS: &str = "FHIR_VERSIONS";
 
@@ -195,8 +171,7 @@ pub struct Config {
     pub retention: fhir_jobs::Retention,
     pub capabilities: fhir_api::Capabilities,
     pub allowed_profiles: fhir_api::AllowedProfiles,
-    
-    
+
     pub versions: Vec<FhirVersion>,
     pub administration: fhir_api::Administration,
     pub tenancy: fhir_api::Tenancy,

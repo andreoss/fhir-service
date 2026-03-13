@@ -1,5 +1,3 @@
-
-
 mod live;
 
 use fhir_core::FhirVersion;
@@ -94,12 +92,6 @@ fn everything_returns_the_compartment_the_generator_built() {
     }
     stop(child);
 }
-
-
-
-
-
-
 
 #[test]
 fn a_clinical_date_filter_selects_by_the_time_the_generator_assigned() {

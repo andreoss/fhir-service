@@ -1,17 +1,3 @@
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 use fhir_core::search::registry::{for_type_in, lookup, Target};
 use fhir_core::search::value::ValueType;
 use fhir_core::{FhirVersion, ResourceType};
@@ -28,8 +14,6 @@ fn paths(resource_type: &str, name: &str) -> Vec<String> {
         other => panic!("{resource_type}.{name} is {other:?}, not a path"),
     }
 }
-
-
 
 #[test]
 fn the_patient_parameter_names_only_patient() {
@@ -49,10 +33,6 @@ fn the_patient_parameter_names_only_patient() {
         );
     }
 }
-
-
-
-
 
 #[test]
 fn the_date_parameters_the_erratum_names_are_dates_that_index_something() {
@@ -79,10 +59,6 @@ fn the_date_parameters_the_erratum_names_are_dates_that_index_something() {
         );
     }
 }
-
-
-
-
 
 #[test]
 fn no_parameter_path_begins_with_a_type_name() {
@@ -111,9 +87,6 @@ fn no_parameter_path_begins_with_a_type_name() {
     }
 }
 
-
-
-
 #[test]
 fn the_context_parameter_indexes_something_with_a_value_in_it() {
     let Some(def) = lookup(Some(kind("StructureDefinition")), "ext-context") else {
@@ -130,9 +103,6 @@ fn the_context_parameter_indexes_something_with_a_value_in_it() {
         );
     }
 }
-
-
-
 
 #[test]
 fn no_path_carries_fhirpath_syntax() {

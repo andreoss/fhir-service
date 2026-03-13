@@ -1,21 +1,7 @@
-
-
-
-
-
-
-
-
-
-
-
-
-
 use fhir_core::{Error, FhirVersion};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
-
 
 const CODES: [&str; 5] = [
     "Patient",
@@ -28,8 +14,6 @@ const CODES: [&str; 5] = [
 fn artifact(directory: &Path, version: FhirVersion) -> std::path::PathBuf {
     directory.join(format!("{}-profiles-resources.json", version.as_str()))
 }
-
-
 
 pub fn read(
     directory: &Path,
@@ -81,8 +65,6 @@ pub fn read(
     }
     Ok(held)
 }
-
-
 
 pub fn source(held: &BTreeMap<String, BTreeMap<String, BTreeSet<String>>>) -> String {
     let mut text = String::new();

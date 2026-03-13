@@ -46,14 +46,6 @@ impl DiscoveredKeys {
         }
     }
 
-    
-    
-    
-    
-    
-    
-    
-    
     pub fn pinning<P>(mut self, issuer: &str, thumbprints: P) -> DiscoveredKeys
     where
         P: IntoIterator<Item = String>,
@@ -108,9 +100,7 @@ impl DiscoveredKeys {
             true => authority.to_owned(),
             false => format!("{authority}:{}", if secured { 443 } else { 80 }),
         };
-        
-        
-        
+
         let unreachable =
             |reason: String| Error::Unavailable(format!("the issuer cannot be reached: {reason}"));
         let exchange = async {
@@ -161,13 +151,7 @@ async fn plain(mut socket: TcpStream, request: &[u8]) -> Result<Vec<u8>, Error> 
     Ok(raw)
 }
 
-
-
-
-
 pub const ENV_ISSUER_CA: &str = "FHIR_ISSUER_CA";
-
-
 
 fn roots() -> Result<tokio_rustls::rustls::RootCertStore, Error> {
     let mut roots = tokio_rustls::rustls::RootCertStore::empty();
@@ -204,9 +188,6 @@ fn roots() -> Result<tokio_rustls::rustls::RootCertStore, Error> {
     Ok(roots)
 }
 
-
-
-
 fn certificates_in(text: &str) -> Result<Vec<Vec<u8>>, Error> {
     const OPENS: &str = "-----BEGIN CERTIFICATE-----";
     const CLOSES: &str = "-----END CERTIFICATE-----";
@@ -241,9 +222,6 @@ async fn authenticated(socket: TcpStream, host: &str, request: &[u8]) -> Result<
         .map_err(|_| failed("the issuer address names no server".to_owned()))?;
     let connector = tokio_rustls::TlsConnector::from(std::sync::Arc::new(settings));
     let mut stream = connector.connect(named, socket).await.map_err(|error| {
-        
-        
-        
         Error::Unavailable(format!(
             "the issuer was not authenticated: {error}; where it is served by an internal \
              authority, name that authority in {ENV_ISSUER_CA}"
@@ -593,7 +571,6 @@ mod trust_anchor_tests {
 
     #[test]
     fn an_instance_naming_no_anchor_trusts_the_public_roots_alone() {
-        
         let held = std::env::var(ENV_ISSUER_CA);
         assert!(
             held.is_err() || held.as_deref() == Ok(""),

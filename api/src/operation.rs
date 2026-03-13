@@ -222,8 +222,6 @@ async fn validated(
     Ok(rendered(report.to_fhir_json()))
 }
 
-
-
 fn declared(body: &Value) -> Option<&str> {
     body.get("meta")?
         .get("profile")?
@@ -308,8 +306,6 @@ pub async fn everything(
 
 const CLINICAL_DATE: &str = "date";
 
-
-
 type DateGroup = (Vec<String>, Vec<ResourceType>);
 
 fn window(
@@ -368,10 +364,6 @@ fn window(
     Ok(filters)
 }
 
-
-
-
-
 fn dated(state: &AppState, types: &[ResourceType]) -> Result<Vec<DateGroup>, Error> {
     let mut groups: BTreeMap<Vec<String>, Vec<ResourceType>> = BTreeMap::new();
     for kind in types {
@@ -391,10 +383,6 @@ fn listed(raw: &str) -> Result<Vec<ResourceType>, Error> {
         .map(str::parse::<ResourceType>)
         .collect()
 }
-
-
-
-
 
 fn accepted(
     query: Option<&str>,
@@ -697,13 +685,6 @@ pub(crate) const DOCUMENT_PARAMS: [&str; 2] = ["id", "persist"];
 
 const COMPOSITION: &str = "Composition";
 
-
-
-
-
-
-
-
 pub async fn document(
     State(state): State<AppState>,
     Path(id_text): Path<String>,
@@ -835,7 +816,6 @@ fn outcome_issue(diagnostics: &str) -> Value {
     })
 }
 
-
 fn references_of(body: &Value) -> Vec<String> {
     let mut held = Vec::new();
     gather_references(body, &mut held);
@@ -867,11 +847,6 @@ fn gather_references(value: &Value, held: &mut Vec<String>) {
 
 pub(crate) const LASTN_PARAMS: [&str; 3] = ["patient", "subject", "category"];
 
-
-
-
-
-
 pub async fn last_n(
     State(state): State<AppState>,
     RawQuery(query): RawQuery,
@@ -901,8 +876,7 @@ pub async fn last_n(
             .filter(|held| *held > 0)
             .ok_or_else(|| Error::InvalidParameter(format!("max {raw:?} is not a count")))?,
     };
-    
-    
+
     let mut narrowing: Vec<String> = Vec::new();
     for (name, value) in crate::query::pairs(query.as_deref()) {
         if name == "max" || LASTN_PARAMS.contains(&name.as_str()) {
@@ -957,7 +931,6 @@ pub async fn last_n(
     )))
 }
 
-
 fn sorted_by_date(
     state: &AppState,
     observation: ResourceType,
@@ -974,7 +947,6 @@ fn sorted_by_date(
         direction: fhir_store::SortDirection::Descending,
     }])
 }
-
 
 fn coded(body: &Value) -> String {
     let code = body.get("code");
@@ -998,12 +970,6 @@ fn coded(body: &Value) -> String {
     }
 }
 
-
-
-
-
-
-
 pub async fn snapshot(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -1017,12 +983,6 @@ pub async fn snapshot(
         serde_json::to_vec(&held).map_err(|error| Error::Internal(error.to_string()))?,
     ))
 }
-
-
-
-
-
-
 
 pub async fn represented(
     State(state): State<AppState>,
@@ -1041,10 +1001,7 @@ pub async fn represented(
         )
         .into());
     }
-    
-    
-    
-    
+
     let value: Value =
         serde_json::from_slice(&body).map_err(|error| Error::InvalidJson(error.to_string()))?;
     let named = value

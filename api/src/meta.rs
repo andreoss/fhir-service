@@ -1,11 +1,3 @@
-
-
-
-
-
-
-
-
 use axum::extract::{Path, State};
 use axum::http::header::HeaderMap;
 use axum::response::Response;
@@ -17,14 +9,9 @@ use serde_json::{json, Map, Value};
 use crate::app::AppState;
 use crate::handlers::{allowed, AppError};
 
-
-
-
-
 const LABELS: [&str; 3] = ["profile", "security", "tag"];
 
 const SERVER_OWNED: [&str; 2] = ["versionId", "lastUpdated"];
-
 
 fn labels_of(body: &Value) -> Map<String, Value> {
     let mut held = Map::new();
@@ -48,7 +35,6 @@ fn answered(meta: Map<String, Value>) -> Response {
         serde_json::to_vec(&body).expect("a parameters resource is serializable"),
     )
 }
-
 
 fn supplied(body: &[u8]) -> Result<Map<String, Value>, Error> {
     let parsed: Value =
@@ -94,7 +80,6 @@ fn named_meta(parsed: &Value) -> Option<Value> {
         .get("valueMeta")
         .cloned()
 }
-
 
 fn added(current: &mut Map<String, Value>, supplied: &Map<String, Value>) {
     for (name, values) in supplied {
@@ -174,9 +159,6 @@ pub async fn read_system(
     allowed(&state, &headers, DataAction::Read, None, None).await?;
     Ok(answered(gathered(&state, None).await?))
 }
-
-
-
 
 async fn gathered(
     state: &AppState,
@@ -271,7 +253,6 @@ async fn changed(
     state.store.update(envelope, None).await?;
     Ok(answered(labels))
 }
-
 
 fn written(state: &AppState, value: &Value, labels: &Map<String, Value>) -> Result<(), Error> {
     let mut candidate = value.clone();

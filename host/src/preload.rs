@@ -1,23 +1,8 @@
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 use fhir_core::validate::{validate, Mode, Request};
 use fhir_core::{Error, FhirVersion, ResourceEnvelope};
 use fhir_store::ResourceStore;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
-
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Loaded {
@@ -28,10 +13,6 @@ pub struct Loaded {
 
 const JSON: &str = "json";
 const NDJSON: &str = "ndjson";
-
-
-
-
 
 pub fn read(directory: &Path, version: FhirVersion) -> Result<Vec<Value>, Error> {
     let mut files: Vec<PathBuf> = std::fs::read_dir(directory)
@@ -80,8 +61,6 @@ pub fn read(directory: &Path, version: FhirVersion) -> Result<Vec<Value>, Error>
     Ok(held)
 }
 
-
-
 pub async fn load(
     store: &dyn ResourceStore,
     version: FhirVersion,
@@ -97,9 +76,7 @@ pub async fn load(
         let envelope = ResourceEnvelope::parse_supplied(version, &bytes)?;
         let key = fhir_core::ResourceKey::of(&envelope);
         let before = store.read(&key).await.ok();
-        
-        
-        
+
         let written = match store.update(envelope.clone(), None).await {
             Ok(written) => written,
             Err(Error::NotFound) => store.create(envelope).await?,
@@ -129,9 +106,6 @@ fn entries_of(bundle: &Value) -> Vec<Value> {
         })
         .unwrap_or_default()
 }
-
-
-
 
 fn judge(resource: &Value, version: FhirVersion) -> Result<(), Error> {
     let named = || {

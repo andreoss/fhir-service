@@ -1,14 +1,3 @@
-
-
-
-
-
-
-
-
-
-
-
 use crate::http;
 use crate::population::Record;
 use fhir_core::Error;
@@ -18,7 +7,6 @@ use std::time::{Duration, Instant};
 const POLL_EVERY: Duration = Duration::from_millis(200);
 const NDJSON: &str = "application/fhir+ndjson";
 const FHIR_JSON: &str = "application/fhir+json";
-
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Loaded {
@@ -35,7 +23,6 @@ fn header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
         .map(|(_, value)| value.as_str())
 }
 
-
 fn path_of(location: &str) -> String {
     match location.find("://") {
         None => location.to_owned(),
@@ -45,8 +32,6 @@ fn path_of(location: &str) -> String {
         },
     }
 }
-
-
 
 pub fn import(address: &str, host: &str, rows: &str, patience: Duration) -> Result<Loaded, Error> {
     let (status, headers, body) =
@@ -84,7 +69,6 @@ pub fn import(address: &str, host: &str, rows: &str, patience: Duration) -> Resu
     }
 }
 
-
 fn retry_after(headers: &[(String, String)]) -> Option<Duration> {
     header(headers, "retry-after")?
         .trim()
@@ -92,8 +76,6 @@ fn retry_after(headers: &[(String, String)]) -> Option<Duration> {
         .ok()
         .map(Duration::from_secs)
 }
-
-
 
 fn counted(submitted: usize, body: &str) -> Loaded {
     let held: Value = serde_json::from_str(body).unwrap_or(Value::Null);
@@ -109,17 +91,6 @@ fn counted(submitted: usize, body: &str) -> Loaded {
             .unwrap_or_default(),
     }
 }
-
-
-
-
-
-
-
-
-
-
-
 
 pub fn transactions(records: &[Record]) -> Vec<Value> {
     let mut writes = Vec::new();
@@ -157,11 +128,6 @@ pub fn transactions(records: &[Record]) -> Vec<Value> {
     held
 }
 
-
-
-
-
-
 pub fn remove(address: &str, host: &str, records: &[Record]) -> Result<usize, Error> {
     let mut removed = 0;
     for record in records.iter().filter(|record| record.deleted()) {
@@ -178,8 +144,6 @@ pub fn remove(address: &str, host: &str, records: &[Record]) -> Result<usize, Er
     }
     Ok(removed)
 }
-
-
 
 pub fn load(
     address: &str,
@@ -206,11 +170,6 @@ pub fn load(
     Ok(loaded)
 }
 
-
-
-
-
-
 pub fn pending(address: &str, host: &str, records: &[Record]) -> Result<Vec<Record>, Error> {
     let mut held = Vec::new();
     for record in records {
@@ -227,8 +186,6 @@ pub fn pending(address: &str, host: &str, records: &[Record]) -> Result<Vec<Reco
     }
     Ok(held)
 }
-
-
 
 fn matches(body: &str, record: &Record) -> bool {
     let Some(wanted) = record.current() else {
@@ -247,7 +204,6 @@ fn stripped(body: &Value) -> Value {
     }
     next
 }
-
 
 pub fn transact(address: &str, host: &str, bundle: &Value) -> Result<Loaded, Error> {
     let body = bundle.to_string();
@@ -278,8 +234,6 @@ pub fn transact(address: &str, host: &str, bundle: &Value) -> Result<Loaded, Err
         failures,
     })
 }
-
-
 
 pub fn rows(records: &[Record]) -> String {
     let mut text = String::new();

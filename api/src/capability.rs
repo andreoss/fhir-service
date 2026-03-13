@@ -350,14 +350,10 @@ pub fn statement(state: &AppState, base: &str) -> Value {
     let surface = surface();
     let operations = operations();
     let reverse = reverse_includes(state);
-    
-    
-    
+
     let resources: Vec<Value> = ResourceType::served(state.version)
         .into_iter()
         .filter(|kind| !kind.is_custom())
-        
-        
         .filter(|kind| state.restricted.serves(*kind))
         .map(|kind| resource_entry(state, kind, &surface, &operations, &reverse, base))
         .collect();

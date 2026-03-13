@@ -1,38 +1,32 @@
-
 #[derive(Clone, Debug)]
 pub struct Case {
-    
     pub shape: &'static str,
-    
+
     pub name: String,
-    
+
     pub method: &'static str,
-    
+
     pub path: String,
-    
+
     pub headers: Vec<(String, String)>,
-    
+
     pub body: String,
 }
-
 
 pub struct Plan {
     cases: Vec<Case>,
 }
 
-
 #[derive(Clone, Debug)]
 pub struct Answer {
-    
     pub status: u16,
-    
+
     pub headers: Vec<(String, String)>,
-    
+
     pub body: String,
 }
 
 impl Answer {
-    
     pub fn header(&self, name: &str) -> Option<&str> {
         self.headers
             .iter()
@@ -88,17 +82,14 @@ fn with_header(mut case: Case, name: &str, value: &str) -> Case {
 }
 
 impl Plan {
-    
     pub fn of(cases: Vec<Case>) -> Plan {
         Plan { cases }
     }
 
-    
     pub fn cases(&self) -> &[Case] {
         &self.cases
     }
 
-    
     pub fn shapes(&self) -> Vec<&'static str> {
         let mut shapes: Vec<&'static str> = self.cases.iter().map(|case| case.shape).collect();
         shapes.sort_unstable();
@@ -106,7 +97,6 @@ impl Plan {
         shapes
     }
 
-    
     pub fn agreed() -> Plan {
         let mut cases = Vec::new();
         cases.push(with_body(

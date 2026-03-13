@@ -94,12 +94,6 @@ pub fn from_xml(version: FhirVersion, text: &str) -> Result<Value, Error> {
     Ok(Value::Object(body))
 }
 
-
-
-
-
-
-
 pub fn tree(text: &str) -> Result<Value, Error> {
     let mut parser = Parser { text, at: 0 };
     let root = parser.element()?;
@@ -543,9 +537,7 @@ struct Element {
     attributes: Vec<(String, String)>,
     children: Vec<Element>,
     source: String,
-    
-    
-    
+
     text: String,
 }
 
@@ -622,7 +614,6 @@ impl<'a> Parser<'a> {
         })
     }
 
-    
     fn characters(&mut self) -> &'a str {
         let rest = &self.text[self.at..];
         if rest.starts_with('<') {

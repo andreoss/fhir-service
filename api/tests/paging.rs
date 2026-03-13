@@ -173,7 +173,7 @@ async fn an_include_that_reaches_its_bound_says_so() {
         include_depth: 1,
         ..Capabilities::default()
     });
-    
+
     for index in 0..4 {
         let mut body = json!({"resourceType": "Organization", "id": format!("org-{index}")});
         if index < 3 {

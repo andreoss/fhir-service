@@ -10,8 +10,7 @@ pub struct Access {
     pub roles: Vec<String>,
     pub patient: Option<ResourceId>,
     pub secured: bool,
-    
-    
+
     pub claims: std::collections::BTreeMap<String, String>,
 }
 

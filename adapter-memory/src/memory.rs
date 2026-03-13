@@ -15,17 +15,11 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 use tokio::sync::{Mutex, OwnedMutexGuard};
 
-
 type StoreMap = HashMap<ResourceKey, Vec<ResourceEnvelope>>;
-
-
 
 fn list_type() -> ResourceType {
     "List".parse().expect("List is a served type")
 }
-
-
-
 
 fn keys_of<'a>(guard: &'a StoreMap, id: &ResourceId) -> Vec<&'a ResourceKey> {
     guard.keys().filter(|key| key.id() == id).collect()

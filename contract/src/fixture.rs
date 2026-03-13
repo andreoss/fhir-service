@@ -11,8 +11,6 @@ pub fn envelope(resource_type: &str, id: &str, body: &str) -> ResourceEnvelope {
     ResourceEnvelope::parse(FhirVersion::R4, &bytes).expect("fixture body is a valid envelope")
 }
 
-
-
 pub fn secured(
     resource_type: &str,
     id: &str,
@@ -45,7 +43,6 @@ pub fn observation(id: &str, code: &str, value: f64, subject: &str) -> ResourceE
         ),
     )
 }
-
 
 pub fn key(resource_type: &str, value: &str) -> ResourceKey {
     ResourceKey::new(

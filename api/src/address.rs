@@ -1,20 +1,4 @@
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 use axum::http::header::{self, HeaderMap};
-
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Forwarding {
@@ -22,13 +6,10 @@ pub struct Forwarding {
 }
 
 impl Forwarding {
-    
-    
     pub fn untrusted() -> Forwarding {
         Forwarding::default()
     }
 
-    
     pub fn trusted() -> Forwarding {
         Forwarding { trusted: true }
     }
@@ -37,8 +18,6 @@ impl Forwarding {
         self.trusted
     }
 
-    
-    
     pub fn base(&self, headers: &HeaderMap) -> String {
         let host = self.host(headers);
         format!("{}://{host}", self.scheme(headers))
@@ -74,8 +53,6 @@ impl Forwarding {
         }
     }
 }
-
-
 
 fn first(headers: &HeaderMap, name: &str) -> Option<String> {
     headers

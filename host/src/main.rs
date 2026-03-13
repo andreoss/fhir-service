@@ -51,8 +51,7 @@ async fn run() -> Result<(), Error> {
         spawn_watchdog(Arc::clone(jobs));
         spawn_retention(Arc::clone(jobs), config.retention.clone());
     }
-    
-    
+
     if let Some(directory) = &config.preload {
         let held = fhir_host::preload::read(directory, config.version)?;
         let loaded = fhir_host::preload::load(store.as_ref(), config.version, &held).await?;
@@ -93,8 +92,6 @@ async fn run() -> Result<(), Error> {
     }
     served
 }
-
-
 
 async fn assembled(
     config: &fhir_host::Config,
@@ -234,9 +231,6 @@ fn spawn_watchdog(jobs: Arc<dyn fhir_store::JobStore>) {
         }
     });
 }
-
-
-
 
 fn spawn_retention(jobs: Arc<dyn fhir_store::JobStore>, retention: fhir_jobs::Retention) {
     if retention.is_empty() {

@@ -158,12 +158,6 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    
-    
-    
-    
-    
-    
     const PUBLISHED: &[(&str, &str, &[&str])] = &[
         ("Patient", "Patient", &["link"]),
         (

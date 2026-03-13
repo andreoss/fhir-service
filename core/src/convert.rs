@@ -5,7 +5,6 @@ use std::str::FromStr;
 
 pub const DEFAULT_COLLECTION: &str = "urn:template-collection:default";
 
-
 const CLINICAL_DOCUMENT: &str = "ClinicalDocument";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

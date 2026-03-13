@@ -1,24 +1,3 @@
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 use axum::extract::{ConnectInfo, Request, State};
 use axum::http::{StatusCode, Uri};
 use axum::middleware::Next;
@@ -26,9 +5,7 @@ use axum::response::{IntoResponse, Response};
 use fhir_core::{Error, IssueCode, OperationOutcome};
 use std::net::{IpAddr, SocketAddr};
 
-
 pub const DOOR: &str = "/administration";
-
 
 const TYPES: &[&str] = &[
     "SearchParameter",
@@ -38,15 +15,10 @@ const TYPES: &[&str] = &[
     "CodeSystem",
     "ConceptMap",
     "OperationDefinition",
-    
-    
     "AccessPolicy",
 ];
 
-
 const OPERATIONS: &[&str] = &["$reindex", "$refresh", "$preload", "$reset"];
-
-
 
 const CLINICAL: &[&str] = &[
     "$expand",
@@ -56,8 +28,6 @@ const CLINICAL: &[&str] = &[
     "$subsumes",
     "$closure",
 ];
-
-
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Network {
@@ -95,8 +65,6 @@ impl Network {
         Ok(Network { at, bits })
     }
 
-    
-    
     pub fn holds(&self, address: IpAddr) -> bool {
         let address = unmapped(address);
         match (self.at, address) {
@@ -110,8 +78,6 @@ impl Network {
         }
     }
 }
-
-
 
 fn unmapped(address: IpAddr) -> IpAddr {
     match address {
@@ -136,22 +102,16 @@ fn leading(one: &[u8], other: &[u8], bits: u8) -> bool {
     one[whole] & mask == other[whole] & mask
 }
 
-
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Administration {
     networks: Option<Vec<Network>>,
 }
 
 impl Administration {
-    
-    
     pub fn off() -> Administration {
         Administration::default()
     }
 
-    
-    
-    
     pub fn restricted_to<I, S>(networks: I) -> Result<Administration, Error>
     where
         I: IntoIterator<Item = S>,
@@ -183,7 +143,6 @@ impl Administration {
     }
 }
 
-
 pub fn administrative(path: &str) -> bool {
     let path = path.trim_start_matches('/');
     let mut parts = path.split('/');
@@ -206,9 +165,6 @@ pub fn administrative(path: &str) -> bool {
     TYPES.contains(&first)
 }
 
-
-
-
 pub async fn doors(
     State(state): State<crate::app::AppState>,
     mut request: Request,
@@ -226,8 +182,6 @@ pub async fn doors(
         };
     };
     let Some(address) = address else {
-        
-        
         return refused(None);
     };
     if !state.administration.admits(address.ip()) {

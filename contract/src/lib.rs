@@ -366,12 +366,6 @@ pub async fn scoped_search(store: &dyn ResourceStore) {
         .is_empty());
 }
 
-
-
-
-
-
-
 pub async fn shared_ids(store: &dyn ResourceStore) {
     let shared = "shared-across-types";
     store.create(patient(shared, "Stone", true)).await.unwrap();
@@ -447,11 +441,6 @@ pub async fn shared_ids(store: &dyn ResourceStore) {
         .await
         .unwrap();
 }
-
-
-
-
-
 
 pub async fn erased_versions(store: &dyn ResourceStore) {
     let held = "erased";

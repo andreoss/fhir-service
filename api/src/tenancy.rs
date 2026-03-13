@@ -1,27 +1,3 @@
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 use axum::http::HeaderMap;
 use fhir_core::search::value::{Token, TokenSystem};
 use fhir_core::search::{Filter, Grant, Modifier, SearchValue};
@@ -29,12 +5,9 @@ use fhir_core::security::Access;
 use fhir_core::Error;
 use serde_json::Value;
 
-
 pub const HEADER: &str = "x-tenant";
 
-
 pub const REVEAL: &str = "x-tenant-label";
-
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Tenancy {
@@ -43,20 +16,16 @@ pub struct Tenancy {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Labelling {
-    
     system: String,
-    
+
     claim: String,
 }
 
 impl Tenancy {
-    
     pub fn off() -> Tenancy {
         Tenancy::default()
     }
 
-    
-    
     pub fn by_label(system: &str, claim: &str) -> Result<Tenancy, Error> {
         if system.trim().is_empty() {
             return Err(Error::Config(
@@ -88,9 +57,6 @@ impl Tenancy {
         self.labelling.as_ref().map(|held| held.claim.as_str())
     }
 
-    
-    
-    
     pub fn of(&self, access: &Access, headers: &HeaderMap) -> Result<Option<String>, Error> {
         let Some(labelling) = &self.labelling else {
             return Ok(None);
@@ -115,9 +81,6 @@ impl Tenancy {
         }
     }
 
-    
-    
-    
     pub fn narrowing(&self, tenant: &str) -> Option<Filter> {
         let system = self.system()?;
         let held = fhir_core::search::registry::lookup(None, "_security")?;
@@ -134,8 +97,6 @@ impl Tenancy {
         })
     }
 
-    
-    
     pub fn confining(
         &self,
         grant: Option<Grant>,
@@ -153,9 +114,6 @@ impl Tenancy {
         Ok(Some(grant))
     }
 
-    
-    
-    
     pub fn labelled(&self, body: &mut Value, tenant: &str) {
         let Some(system) = self.system() else {
             return;
@@ -183,10 +141,6 @@ impl Tenancy {
         meta.insert("security".to_owned(), Value::Array(security));
     }
 
-    
-    
-    
-    
     pub fn unlabelled(&self, body: &mut Value, headers: &HeaderMap) {
         let Some(system) = self.system() else {
             return;
@@ -197,7 +151,6 @@ impl Tenancy {
         strip(body, system);
     }
 
-    
     pub fn refuses(&self, what: &str) -> Result<(), Error> {
         match self.is_on() {
             false => Ok(()),
@@ -217,8 +170,6 @@ fn asked_to_see(headers: &HeaderMap) -> bool {
         .map(str::trim)
         .is_some_and(|held| held.eq_ignore_ascii_case("show"))
 }
-
-
 
 fn strip(body: &mut Value, system: &str) {
     match body {
@@ -258,10 +209,6 @@ fn claimed(access: &Access, claim: &str) -> Option<String> {
         .map(|held| held.trim().to_owned())
         .filter(|held| !held.is_empty())
 }
-
-
-
-
 
 pub async fn unlabelling(
     axum::extract::State(state): axum::extract::State<crate::app::AppState>,

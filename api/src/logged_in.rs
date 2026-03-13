@@ -1,33 +1,10 @@
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 use fhir_core::security::scope::DataAction;
 use fhir_core::security::Access;
 use fhir_core::{ResourceEnvelope, ResourceKey};
 
-
 const SCOPE: &str = "fhirUser";
 
-
 const CLAIM: &str = "fhirUser";
-
 
 pub fn reading_itself(access: &Access, action: DataAction, envelope: &ResourceEnvelope) -> bool {
     if action != DataAction::Read || !access.secured {
@@ -42,9 +19,6 @@ pub fn reading_itself(access: &Access, action: DataAction, envelope: &ResourceEn
     names(named, &ResourceKey::of(envelope))
 }
 
-
-
-
 fn granted(access: &Access) -> bool {
     access
         .claims
@@ -52,9 +26,6 @@ fn granted(access: &Access) -> bool {
         .map(|held| held.split_whitespace().any(|scope| scope == SCOPE))
         .unwrap_or(false)
 }
-
-
-
 
 fn names(claim: &str, key: &ResourceKey) -> bool {
     let trimmed = claim.trim().trim_end_matches('/');

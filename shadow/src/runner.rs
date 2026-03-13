@@ -3,38 +3,29 @@ use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::time::Duration;
 
-
 pub trait Side {
-    
     fn label(&self) -> &str;
 
-    
     fn base(&self) -> &str {
         ""
     }
 
-    
     fn send(&self, case: &Case) -> Result<Answer, String>;
 }
 
-
 pub struct SideRun {
-    
     pub label: String,
-    
+
     pub base: String,
-    
+
     pub answers: Vec<Result<Answer, String>>,
 }
 
-
 pub struct Run {
-    
     pub left: SideRun,
-    
+
     pub right: SideRun,
 }
-
 
 pub struct Targets {
     left: (String, u16),
@@ -42,7 +33,6 @@ pub struct Targets {
 }
 
 impl Targets {
-    
     pub fn of(left: (&str, u16), right: (&str, u16)) -> Result<Targets, String> {
         if left.0 == right.0 && left.1 == right.1 {
             return Err("both sides name one address, so neither is independent".to_owned());
@@ -53,17 +43,14 @@ impl Targets {
         })
     }
 
-    
     pub fn left(&self) -> (&str, u16) {
         (&self.left.0, self.left.1)
     }
 
-    
     pub fn right(&self) -> (&str, u16) {
         (&self.right.0, self.right.1)
     }
 }
-
 
 pub fn address(text: &str) -> Option<(String, u16, String)> {
     let (authority, prefix) = match text.find('/') {
@@ -77,7 +64,6 @@ pub fn address(text: &str) -> Option<(String, u16, String)> {
     Some((host.to_owned(), port.parse().ok()?, prefix))
 }
 
-
 pub struct HttpSide {
     label: String,
     host: String,
@@ -88,7 +74,6 @@ pub struct HttpSide {
 }
 
 impl HttpSide {
-    
     pub fn of(label: &str, host: &str, port: u16) -> HttpSide {
         HttpSide {
             label: label.to_owned(),
@@ -100,19 +85,16 @@ impl HttpSide {
         }
     }
 
-    
     pub fn under(mut self, prefix: &str) -> HttpSide {
         self.prefix = prefix.trim_end_matches('/').to_owned();
         self
     }
 
-    
     pub fn carrying(mut self, name: &str, value: &str) -> HttpSide {
         self.headers.push((name.to_owned(), value.to_owned()));
         self
     }
 
-    
     pub fn waiting(mut self, patience: Duration) -> HttpSide {
         self.patience = patience;
         self
@@ -215,7 +197,6 @@ fn resolve(text: &str, plan: &Plan, answers: &[Result<Answer, String>]) -> Strin
     out
 }
 
-
 pub fn drive(plan: &Plan, side: &dyn Side) -> SideRun {
     let mut answers: Vec<Result<Answer, String>> = Vec::with_capacity(plan.cases().len());
     for case in plan.cases() {
@@ -234,7 +215,6 @@ pub fn drive(plan: &Plan, side: &dyn Side) -> SideRun {
         answers,
     }
 }
-
 
 pub fn shadow(plan: &Plan, left: &dyn Side, right: &dyn Side) -> Result<Run, String> {
     if left.label() == right.label() {

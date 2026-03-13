@@ -2,14 +2,6 @@ use crate::{ResourceId, ResourceType};
 use std::fmt;
 use std::str::FromStr;
 
-
-
-
-
-
-
-
-
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ResourceKey {
     resource_type: ResourceType,
@@ -29,12 +21,10 @@ impl ResourceKey {
         &self.id
     }
 
-    
     pub fn of(envelope: &crate::ResourceEnvelope) -> ResourceKey {
         ResourceKey::new(envelope.resource_type(), envelope.id().clone())
     }
 
-    
     pub fn reference(&self) -> String {
         format!("{}/{}", self.resource_type.as_str(), self.id.as_str())
     }
@@ -49,7 +39,6 @@ impl fmt::Display for ResourceKey {
 impl FromStr for ResourceKey {
     type Err = crate::Error;
 
-    
     fn from_str(text: &str) -> Result<ResourceKey, crate::Error> {
         let (kind, id) = text.split_once('/').ok_or_else(|| {
             crate::Error::InvalidResourceId(format!("{text:?} names no type and id"))

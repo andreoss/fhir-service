@@ -1,22 +1,7 @@
-
-
-
-
-
-
-
-
-
-
-
-
-
 use axum::http::{HeaderName, HeaderValue, Request};
 use axum::middleware::Next;
 use axum::response::Response;
 use fhir_core::Error;
-
-
 
 const HELD: &[(&str, &str, &str)] = &[
     ("content-type-options", "x-content-type-options", "nosniff"),
@@ -34,9 +19,6 @@ const HELD: &[(&str, &str, &str)] = &[
     ),
 ];
 
-
-
-
 const HSTS: &str = "hsts";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,9 +33,6 @@ impl Default for SecurityHeaders {
 }
 
 impl SecurityHeaders {
-    
-    
-    
     pub fn parse(raw: &str) -> Result<SecurityHeaders, Error> {
         let mut chosen: Vec<(&str, Option<String>)> = HELD
             .iter()
@@ -112,7 +91,6 @@ impl SecurityHeaders {
         Ok(SecurityHeaders { held: built })
     }
 
-    
     pub fn none() -> SecurityHeaders {
         SecurityHeaders { held: Vec::new() }
     }
@@ -125,9 +103,6 @@ impl SecurityHeaders {
         self.held.iter().map(|(name, _, _)| name.as_str()).collect()
     }
 }
-
-
-
 
 fn secured<B>(request: &Request<B>) -> bool {
     if request.uri().scheme_str() == Some("https") {
@@ -161,8 +136,7 @@ pub async fn written(
         if *only_over_tls && !over_tls {
             continue;
         }
-        
-        
+
         if !headers.contains_key(name) {
             headers.insert(name, value.clone());
         }

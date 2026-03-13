@@ -113,7 +113,6 @@ impl OperationOutcome {
         }
     }
 
-    
     pub fn information(diagnostics: impl Into<String>) -> OperationOutcome {
         OperationOutcome {
             id: None,

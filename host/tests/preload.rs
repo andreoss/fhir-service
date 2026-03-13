@@ -1,5 +1,3 @@
-
-
 use fhir_adapter_memory::MemoryStore;
 use fhir_core::{FhirInstant, FhirVersion, ResourceKey};
 use fhir_host::preload;
@@ -12,9 +10,6 @@ fn store() -> Arc<dyn ResourceStore> {
         FhirInstant::parse("2026-09-06T04:00:00.000Z").unwrap()
     })))
 }
-
-
-
 
 struct Scratch(std::path::PathBuf);
 

@@ -43,7 +43,6 @@ async fn ask(app: &Service, uri: &str) -> Reply {
     }
 }
 
-
 fn slow(app: &Service) -> tokio::task::JoinHandle<()> {
     let router = app.router();
     tokio::spawn(async move {
@@ -79,7 +78,7 @@ async fn nothing_configured_refuses_nothing() {
 #[tokio::test]
 async fn a_request_past_the_bound_is_refused_with_a_wait() {
     let app = service(Throttle::of(1).unwrap());
-    
+
     let first = slow(&app);
     let mut refused = None;
     for _ in 0..200 {

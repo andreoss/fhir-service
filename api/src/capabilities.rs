@@ -1,24 +1,16 @@
 use fhir_core::Error;
 
-
 pub const MOST_CONDITIONAL_DELETE: usize = 10_000;
-
-
-
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ConditionalDelete {
-    
-    
     #[default]
     Single,
-    
-    
+
     Multiple(usize),
 }
 
 impl ConditionalDelete {
-    
     pub fn parse(raw: &str) -> Result<ConditionalDelete, Error> {
         let held = raw.trim();
         if held.eq_ignore_ascii_case("single") {
@@ -48,7 +40,6 @@ impl ConditionalDelete {
         Ok(ConditionalDelete::Multiple(most))
     }
 
-    
     pub fn as_str(&self) -> &'static str {
         match self {
             ConditionalDelete::Single => "single",
@@ -64,16 +55,12 @@ impl ConditionalDelete {
     }
 }
 
-
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Capabilities {
     pub conditional_delete: ConditionalDelete,
-    
-    
-    
+
     pub create_on_update: bool,
-    
+
     pub include_depth: usize,
 }
 

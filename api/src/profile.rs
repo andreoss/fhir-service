@@ -9,12 +9,7 @@ use std::sync::Arc;
 
 const STRUCTURE_DEFINITION: &str = "StructureDefinition";
 
-
-
 type Code = (Option<String>, String);
-
-
-
 
 pub async fn resolve(store: &Arc<dyn ResourceStore>, url: &str) -> Result<Option<Profile>, Error> {
     let Ok(resource_type) = STRUCTURE_DEFINITION.parse::<ResourceType>() else {
@@ -38,13 +33,6 @@ pub async fn resolve(store: &Arc<dyn ResourceStore>, url: &str) -> Result<Option
         .map_err(|error| Error::InvalidJson(error.to_string()))?;
     Profile::parse(&body).map(Some)
 }
-
-
-
-
-
-
-
 
 pub fn defines_a_type(definition: &Value) -> Option<String> {
     let object = definition.as_object()?;
@@ -71,8 +59,6 @@ pub fn defines_a_type(definition: &Value) -> Option<String> {
     }
 }
 
-
-
 pub async fn register_types(store: &Arc<dyn ResourceStore>) -> Result<Vec<String>, Error> {
     let Ok(resource_type) = STRUCTURE_DEFINITION.parse::<ResourceType>() else {
         return Ok(Vec::new());
@@ -95,14 +81,6 @@ pub async fn register_types(store: &Arc<dyn ResourceStore>) -> Result<Vec<String
     Ok(held)
 }
 
-
-
-
-
-
-
-
-
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AllowedProfiles {
     held: Vec<String>,
@@ -121,7 +99,6 @@ impl AllowedProfiles {
         &self.held
     }
 
-    
     pub fn accepts(&self, body: &Value) -> bool {
         if self.held.is_empty() {
             return true;
@@ -139,9 +116,6 @@ impl AllowedProfiles {
             .unwrap_or(false)
     }
 }
-
-
-
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct OnWrite {
@@ -175,10 +149,6 @@ impl OnWrite {
         self.create || self.update
     }
 }
-
-
-
-
 
 pub async fn judged_for_write(
     store: &Arc<dyn ResourceStore>,
@@ -218,9 +188,6 @@ pub async fn judged_for_write(
         false => Err(Error::NoMatch(refused.join("; "))),
     }
 }
-
-
-
 
 #[derive(Debug, Default)]
 pub struct HeldCodes {

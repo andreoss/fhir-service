@@ -1,49 +1,21 @@
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 use serde_json::Value;
-
-
-
 
 const REFERENCE: &str = "reference";
 
-
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct References {
-    
     also: Vec<String>,
-    
+
     relative: bool,
-    
+
     absolute: bool,
 }
 
 impl References {
-    
-    
     pub fn as_written() -> References {
         References::default()
     }
 
-    
-    
-    
-    
     pub fn normalised<I, S>(also: I) -> References
     where
         I: IntoIterator<Item = S>,
@@ -60,8 +32,6 @@ impl References {
         }
     }
 
-    
-    
     pub fn relative_both_ways<I, S>(also: I) -> References
     where
         I: IntoIterator<Item = S>,
@@ -85,7 +55,6 @@ impl References {
         element == REFERENCE || self.also.iter().any(|held| held == element)
     }
 
-    
     pub fn stored(&self, body: &mut Value, base: &str) {
         if !self.relative {
             return;
@@ -93,7 +62,6 @@ impl References {
         self.walk(body, &|held| shortened(held, base));
     }
 
-    
     pub fn answered(&self, body: &mut Value, base: &str) {
         if !self.absolute {
             return;
@@ -126,9 +94,6 @@ impl References {
     }
 }
 
-
-
-
 fn shortened(held: &str, base: &str) -> Option<String> {
     let rest = held.strip_prefix(base.trim_end_matches('/'))?;
     let rest = rest.strip_prefix('/')?;
@@ -138,19 +103,12 @@ fn shortened(held: &str, base: &str) -> Option<String> {
     }
 }
 
-
-
-
 fn lengthened(held: &str, base: &str) -> Option<String> {
     if held.is_empty() || held.starts_with('#') || held.contains("://") || held.contains(':') {
         return None;
     }
     Some(format!("{}/{held}", base.trim_end_matches('/')))
 }
-
-
-
-
 
 pub async fn lengthening(
     axum::extract::State(state): axum::extract::State<crate::app::AppState>,

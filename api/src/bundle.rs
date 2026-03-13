@@ -38,8 +38,7 @@ pub async fn process(
     let value: Value =
         serde_json::from_slice(&body).map_err(|error| Error::InvalidJson(error.to_string()))?;
     let incoming = Incoming::parse(&value)?;
-    
-    
+
     state.limits.admits_entries(incoming.entries.len())?;
     let grant = granted(&headers)?;
     let access = Arc::new(crate::access::access_of(&state, &headers).await?);
@@ -84,8 +83,7 @@ fn written_references(taken: &[Value]) -> Vec<String> {
 enum Kind {
     Transaction,
     Batch,
-    
-    
+
     Document,
 }
 
@@ -523,9 +521,7 @@ fn built(outer: &HeaderMap, entry: &Entry, places: &Places) -> Result<Request<Bo
     if let Some(credential) = outer.get(header::AUTHORIZATION) {
         builder = builder.header(header::AUTHORIZATION, credential.clone());
     }
-    
-    
-    
+
     for name in [crate::tenancy::HEADER, crate::tenancy::REVEAL] {
         if let Some(value) = outer.get(name) {
             builder = builder.header(name, value.clone());

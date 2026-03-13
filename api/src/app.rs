@@ -44,7 +44,7 @@ pub struct AppState {
     pub roles: Arc<crate::roles::Roles>,
     pub throttle: crate::throttle::Throttle,
     pub capabilities: crate::capabilities::Capabilities,
-    
+
     pub purge_keeps: Arc<Vec<String>>,
     pub busy: crate::readiness::Busy,
     pub artifacts: Arc<crate::binary::Artifacts>,
@@ -53,13 +53,12 @@ pub struct AppState {
     pub tenancy: crate::tenancy::Tenancy,
     pub policies: crate::policy::Policies,
     pub security_headers: crate::headers::SecurityHeaders,
-    
-    
+
     pub alarm: Option<Arc<dyn fhir_telemetry::Alarm>>,
     pub traces: Option<Arc<dyn fhir_telemetry::Traces>>,
     pub reset: crate::reset::Resettable,
     pub unchanged: crate::unchanged::Unchanged,
-    
+
     pub default_format: crate::representation::MediaType,
     pub paging: crate::paging::Paging,
     pub limits: crate::limits::Limits,
@@ -213,8 +212,6 @@ impl Service {
         }
     }
 
-    
-    
     pub fn keeping_on_purge(self, kept: Vec<String>) -> Service {
         Service {
             state: AppState {
@@ -233,8 +230,6 @@ impl Service {
         }
     }
 
-    
-    
     pub fn paging(self, paging: crate::paging::Paging) -> Service {
         Service {
             state: AppState {
@@ -244,7 +239,6 @@ impl Service {
         }
     }
 
-    
     pub fn serving(self, restricted: crate::restricted::Restricted) -> Service {
         Service {
             state: AppState {
@@ -254,8 +248,6 @@ impl Service {
         }
     }
 
-    
-    
     pub fn normalising(self, references: crate::references::References) -> Service {
         Service {
             state: AppState {
@@ -265,8 +257,6 @@ impl Service {
         }
     }
 
-    
-    
     pub fn behind_proxy(self, forwarding: crate::address::Forwarding) -> Service {
         Service {
             state: AppState {
@@ -276,7 +266,6 @@ impl Service {
         }
     }
 
-    
     pub fn bounded_by(self, limits: crate::limits::Limits) -> Service {
         Service {
             state: AppState {
@@ -286,7 +275,6 @@ impl Service {
         }
     }
 
-    
     pub fn answering(self, default_format: crate::representation::MediaType) -> Service {
         Service {
             state: AppState {
@@ -296,7 +284,6 @@ impl Service {
         }
     }
 
-    
     pub fn skipping_unchanged(self, unchanged: crate::unchanged::Unchanged) -> Service {
         Service {
             state: AppState {
@@ -306,8 +293,6 @@ impl Service {
         }
     }
 
-    
-    
     pub fn resettable(self, reset: crate::reset::Resettable) -> Service {
         Service {
             state: AppState {
@@ -317,7 +302,6 @@ impl Service {
         }
     }
 
-    
     pub fn with_security_headers(
         self,
         security_headers: crate::headers::SecurityHeaders,
@@ -330,8 +314,6 @@ impl Service {
         }
     }
 
-    
-    
     pub fn with_policies(self, policies: crate::policy::Policies) -> Service {
         Service {
             state: AppState {
@@ -341,7 +323,6 @@ impl Service {
         }
     }
 
-    
     pub fn with_tenancy(self, tenancy: crate::tenancy::Tenancy) -> Service {
         Service {
             state: AppState {
@@ -351,8 +332,6 @@ impl Service {
         }
     }
 
-    
-    
     pub fn with_administration(
         self,
         administration: crate::administration::Administration,
@@ -374,7 +353,6 @@ impl Service {
         }
     }
 
-    
     pub fn busy(&self) -> crate::readiness::Busy {
         self.state.busy.clone()
     }
@@ -455,21 +433,14 @@ impl Service {
         Arc::clone(&self.state.telemetry)
     }
 
-    
-    
-    
     pub fn alarming(self, alarm: Arc<dyn fhir_telemetry::Alarm>) -> Service {
         self.measuring(Some(alarm), None)
     }
 
-    
     pub fn tracing(self, traces: Arc<dyn fhir_telemetry::Traces>) -> Service {
         self.measuring(None, Some(traces))
     }
 
-    
-    
-    
     fn measuring(
         self,
         alarm: Option<Arc<dyn fhir_telemetry::Alarm>>,
@@ -555,8 +526,7 @@ impl Service {
         dependencies: Vec<Dependency>,
     ) -> Result<Service, Error> {
         let service = Service::new(store, version, dependencies);
-        
-        
+
         crate::profile::register_types(&service.state.store).await?;
         service.refresh().await?;
         Ok(service)
@@ -582,9 +552,6 @@ impl Service {
     pub fn router(&self) -> Router<()> {
         let held = layered(routes().with_state(self.state.clone()), &self.state);
         match self.state.administration.is_on() {
-            
-            
-            
             true => {
                 Router::new()
                     .fallback_service(held)
@@ -1015,8 +982,6 @@ pub struct Bound {
 }
 
 impl Bound {
-    
-    
     pub async fn holding(addr: SocketAddr, router: Router<()>) -> Result<Bound, Error> {
         let listener = TcpListener::bind(addr)
             .await
@@ -1036,8 +1001,6 @@ impl Bound {
             .map_err(|error| Error::Internal(format!("server error: {error}")))
     }
 
-    
-    
     fn connected(
         router: Router<()>,
     ) -> axum::extract::connect_info::IntoMakeServiceWithConnectInfo<Router<()>, SocketAddr> {

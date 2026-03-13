@@ -215,11 +215,6 @@ create index if not exists parameter_index_cover on parameter_index (url)
     include (backfilled, indexed, value_count, overflow, failures);
 ";
 
-
-
-
-
-
 const TYPED_KEYS: &str = "
 drop index if exists resource_version_key;
 drop index if exists resource_current_key;
@@ -228,8 +223,6 @@ create unique index if not exists resource_typed_version_key
 create unique index if not exists resource_typed_current_key
     on resource (resource_type, resource_id) where is_current;
 ";
-
-
 
 const TYPED_TUNING: &str = "
 create index if not exists resource_typed_lookup

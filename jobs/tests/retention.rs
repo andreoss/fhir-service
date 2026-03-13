@@ -71,8 +71,6 @@ async fn a_sweep_waits_for_its_own_period() {
 
 #[tokio::test]
 async fn the_window_removes_what_sat_past_it_and_leaves_the_rest() {
-    
-    
     let written = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let stamps = ["2020-01-01T00:00:00.000Z", "2026-09-01T00:00:00.000Z"];
     let counted = Arc::clone(&written);

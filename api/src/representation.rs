@@ -77,10 +77,6 @@ impl Asked {
         Asked::read_defaulting(request, MediaType::DEFAULT)
     }
 
-    
-    
-    
-    
     pub fn read_defaulting(request: &Request, fallback: MediaType) -> Result<Asked, Error> {
         let query = request.uri().query();
         let pretty = match param(query, "_pretty").as_deref() {
@@ -149,9 +145,6 @@ fn accepted(headers: &HeaderMap) -> Result<Option<MediaType>, Error> {
 }
 
 pub async fn negotiated(State(state): State<AppState>, request: Request, next: Next) -> Response {
-    
-    
-    
     if crate::binary::is_artifact(request.uri().path(), request.headers()) {
         return next.run(request).await;
     }
@@ -161,10 +154,7 @@ pub async fn negotiated(State(state): State<AppState>, request: Request, next: N
         }
         Ok(asked) => asked,
     };
-    
-    
-    
-    
+
     let media = Some(asked.media);
     match translated(&state, request).await {
         Err(error) => {

@@ -1,18 +1,3 @@
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::Response;
@@ -23,11 +8,7 @@ use serde_json::Value;
 use crate::app::AppState;
 use crate::handlers::AppError;
 
-
-
 pub const USERS: &[&str] = &["Practitioner", "Patient", "RelatedPerson", "Person"];
-
-
 
 const KIND: &str = "resourceType";
 
@@ -36,8 +17,6 @@ pub async fn lookup(
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Result<Response, AppError> {
-    
-    
     let access = crate::handlers::allowed(&state, &headers, DataAction::Read, None, None).await?;
     let asked: Value = match body.is_empty() {
         true => Value::Null,
@@ -68,8 +47,7 @@ pub async fn lookup(
             &mut request.query,
             crate::handlers::confining(&state, &access, &headers, DataAction::Read)?,
         )?;
-        
-        
+
         request.query.count = 2;
         let page = state.store.search(&request.query).await?;
         found.extend(page.entries);
@@ -89,7 +67,6 @@ pub async fn lookup(
     }
 }
 
-
 fn types_of(state: &AppState, wanted: Option<&str>) -> Result<Vec<ResourceType>, Error> {
     let held: Vec<ResourceType> = match wanted {
         Some(name) => vec![crate::handlers::served_here(state, name)?],
@@ -107,9 +84,6 @@ fn types_of(state: &AppState, wanted: Option<&str>) -> Result<Vec<ResourceType>,
     }
     Ok(held)
 }
-
-
-
 
 fn query_of(asked: &Value) -> String {
     let mut held = Vec::new();

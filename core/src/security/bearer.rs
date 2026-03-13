@@ -126,18 +126,13 @@ pub struct Claims {
     pub client: Option<String>,
     pub audience: Vec<String>,
     pub scopes: Vec<String>,
-    
-    
-    
+
     pub roles: Vec<String>,
     pub patient: Option<String>,
     pub expires_at: Option<i64>,
     pub not_before: Option<i64>,
     pub issued_at: Option<i64>,
-    
-    
-    
-    
+
     pub carried: std::collections::BTreeMap<String, String>,
 }
 
@@ -150,8 +145,6 @@ pub fn decode(text: &str) -> Result<Vec<u8>, Error> {
 pub fn encode(bytes: &[u8]) -> String {
     URL_SAFE_NO_PAD.encode(bytes)
 }
-
-
 
 fn scalars(payload: &Value) -> std::collections::BTreeMap<String, String> {
     let Some(held) = payload.as_object() else {
@@ -166,9 +159,6 @@ fn scalars(payload: &Value) -> std::collections::BTreeMap<String, String> {
         })
         .collect()
 }
-
-
-
 
 fn roles(payload: &Value) -> Vec<String> {
     let mut held = text_or_texts(payload.get("roles"));

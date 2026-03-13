@@ -16,13 +16,8 @@ pub enum Criterion {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Chain {
-    
-    
     pub name: String,
-    
-    
-    
-    
+
     pub link: String,
     pub target: Target,
     pub types: Vec<ResourceType>,

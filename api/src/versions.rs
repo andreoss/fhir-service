@@ -1,17 +1,3 @@
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 use axum::body::Body;
 use axum::http::{header, HeaderMap, Request, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
@@ -22,8 +8,6 @@ use std::sync::Arc;
 use tower::ServiceExt;
 
 use crate::app::Service;
-
-
 
 pub struct Endpoints {
     default: FhirVersion,
@@ -71,8 +55,6 @@ impl Endpoints {
         self.held.iter().map(|(version, _)| *version).collect()
     }
 
-    
-    
     pub fn router(self) -> Router {
         let default = self.default;
         let held = Arc::clone(&self.held);
@@ -101,8 +83,6 @@ impl Endpoints {
             })
     }
 }
-
-
 
 fn reported(default: FhirVersion, served: &[FhirVersion]) -> Response {
     let mut parameters: Vec<serde_json::Value> = served
@@ -163,8 +143,6 @@ fn refused(wanted: FhirVersion, held: &[(FhirVersion, Router)]) -> Response {
     (StatusCode::NOT_FOUND, outcome.to_fhir_json()).into_response()
 }
 
-
-
 fn named_in_path(path: &str) -> Option<(FhirVersion, String)> {
     let rest = path.strip_prefix('/')?;
     let (head, tail) = match rest.split_once('/') {
@@ -176,7 +154,6 @@ fn named_in_path(path: &str) -> Option<(FhirVersion, String)> {
         .find(|held| held.as_str().eq_ignore_ascii_case(head))?;
     Some((version, tail))
 }
-
 
 fn named_in_headers(headers: &HeaderMap) -> Option<FhirVersion> {
     for name in [header::ACCEPT, header::CONTENT_TYPE] {
@@ -198,8 +175,6 @@ fn named_in_headers(headers: &HeaderMap) -> Option<FhirVersion> {
     }
     None
 }
-
-
 
 fn read_release(held: &str) -> Option<FhirVersion> {
     match held {

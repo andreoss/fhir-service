@@ -1,20 +1,5 @@
-
-
-
-
-
-
-
-
-
-
-
-
-
 use fhir_core::{Error, ResourceType};
 use std::collections::BTreeSet;
-
-
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Restricted {
@@ -27,9 +12,6 @@ impl Restricted {
         Restricted::default()
     }
 
-    
-    
-    
     pub fn parse<I, S, J, T>(types: I, parameters: J) -> Result<Restricted, Error>
     where
         I: IntoIterator<Item = S>,
@@ -58,18 +40,10 @@ impl Restricted {
         !self.types.is_empty() || !self.parameters.is_empty()
     }
 
-    
-    
     pub fn serves(&self, resource_type: ResourceType) -> bool {
-        
-        
         self.types.is_empty() || self.types.contains(&resource_type) || resource_type.is_custom()
     }
 
-    
-    
-    
-    
     pub fn answers(&self, name: &str) -> bool {
         self.parameters.is_empty() || name.starts_with('_') || self.parameters.contains(name)
     }
@@ -82,9 +56,6 @@ impl Restricted {
         self.parameters.iter().map(String::as_str).collect()
     }
 
-    
-    
-    
     pub fn refuse(&self, resource_type: ResourceType) -> Error {
         Error::InvalidResourceType(format!(
             "{resource_type} is not among the types this instance serves"

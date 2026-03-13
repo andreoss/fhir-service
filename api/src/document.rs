@@ -1,12 +1,3 @@
-
-
-
-
-
-
-
-
-
 use axum::http::header::HeaderMap;
 use axum::response::Response;
 use base64::engine::general_purpose::STANDARD;
@@ -24,21 +15,13 @@ const BINARY: &str = "Binary";
 
 const DOCUMENT_REFERENCE: &str = "DocumentReference";
 
-
-
-
 const ID_LENGTH: usize = 64;
-
-
-
 
 pub fn identified(identifier: &str) -> String {
     let digest = Sha512::digest(identifier.as_bytes());
     let held: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
     held.chars().take(ID_LENGTH).collect()
 }
-
-
 
 fn narrative(bundle: &Value) -> String {
     bundle
@@ -115,8 +98,6 @@ pub async fn received(
     let stored = written(state, reference_type, reference_id, &reference).await?;
     Ok(crate::handlers::rendered(stored.raw().to_vec()))
 }
-
-
 
 async fn written(
     state: &AppState,

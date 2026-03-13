@@ -168,8 +168,6 @@ impl DocumentStore {
             .partial_filter_expression(doc! {"is_current": true})
             .build();
         let models = vec![
-            
-            
             IndexModel::builder()
                 .keys(doc! {"resource_type": 1, "resource_id": 1, "version_number": 1})
                 .options(unique.clone())
@@ -591,8 +589,6 @@ impl DocumentStore {
         Ok((found, total))
     }
 }
-
-
 
 fn named(key: &ResourceKey, mut held: Document) -> Document {
     held.insert("resource_type", key.resource_type().as_str());

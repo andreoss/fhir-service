@@ -1,14 +1,3 @@
-
-
-
-
-
-
-
-
-
-
-
 use fhir_core::Error;
 use fhir_telemetry::Alarm;
 use std::io::{Read, Write};
@@ -16,8 +5,6 @@ use std::net::TcpStream;
 use std::time::Duration;
 
 const PATIENCE: Duration = Duration::from_secs(5);
-
-
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Called {

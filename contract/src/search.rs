@@ -677,9 +677,6 @@ pub async fn targeted_index(store: &dyn fhir_store::ResourceStore) {
     );
 }
 
-
-
-
 pub async fn exempted(store: &dyn fhir_store::ResourceStore) {
     let dated = |id: &str, effective: &str| {
         envelope(
@@ -720,11 +717,6 @@ pub async fn exempted(store: &dyn fhir_store::ResourceStore) {
         "the exempt type is carried and the judged one is still narrowed"
     );
 }
-
-
-
-
-
 
 pub async fn converted_quantities(store: &dyn fhir_store::ResourceStore) {
     let weighed = |id: &str, value: f64, code: &str| {
@@ -784,12 +776,6 @@ pub async fn converted_quantities(store: &dyn fhir_store::ResourceStore) {
         .unwrap());
     assert_eq!(held.len(), 2, "a comparator holds across the conversion");
 }
-
-
-
-
-
-
 
 pub async fn narrowed_everywhere(store: &dyn fhir_store::ResourceStore) {
     let observed = |id: &str, tenant: &str| {

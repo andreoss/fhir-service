@@ -1,12 +1,3 @@
-
-
-
-
-
-
-
-
-
 use crate::outcome::{IssueCode, IssueSeverity};
 use crate::validate::Issue;
 use crate::Error;
@@ -14,10 +5,8 @@ use serde_json::{Map, Value};
 
 const CHOICE: &str = "[x]";
 
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct Constraint {
-    
     pub steps: Vec<String>,
     pub slice: Option<String>,
     pub min: Option<u64>,
@@ -59,9 +48,6 @@ pub struct Profile {
     constraints: Vec<Constraint>,
 }
 
-
-
-
 pub trait CodeSource {
     fn codes(&self, value_set: &str) -> Option<Vec<(Option<String>, String)>>;
 }
@@ -79,10 +65,6 @@ impl Profile {
         &self.constraints
     }
 
-    
-    
-    
-    
     pub fn parse(definition: &Value) -> Result<Profile, Error> {
         let object = definition
             .as_object()
@@ -127,8 +109,6 @@ impl Profile {
         })
     }
 
-    
-    
     pub fn judge(&self, body: &Value, codes: &dyn CodeSource) -> Vec<Issue> {
         let mut issues = Vec::new();
         let sliced = self.slices();
@@ -150,7 +130,6 @@ impl Profile {
         issues
     }
 
-    
     fn slices(&self) -> Vec<(Vec<String>, Vec<Discriminator>)> {
         self.constraints
             .iter()
@@ -216,9 +195,6 @@ impl Profile {
         }
     }
 
-    
-    
-    
     fn in_slice(
         &self,
         constraint: &Constraint,
@@ -241,8 +217,6 @@ impl Profile {
         })
     }
 
-    
-    
     fn slice_value(&self, constraint: &Constraint, path: &str) -> Option<Value> {
         let mut wanted: Vec<String> = constraint.steps.clone();
         if path != "$this" {
@@ -447,8 +421,6 @@ fn codings(value: &Value) -> Vec<(Option<String>, String)> {
         .unwrap_or_default()
 }
 
-
-
 fn matches(pattern: &Value, value: &Value) -> bool {
     match (pattern, value) {
         (Value::Object(wanted), Value::Object(held)) => wanted
@@ -467,8 +439,6 @@ fn numbered(expression: &str, index: usize, total: usize) -> String {
         false => expression.to_owned(),
     }
 }
-
-
 
 fn gathered(base_type: &str, body: &Value, steps: &[String]) -> Vec<(String, Vec<Value>)> {
     let (parents, last) = match steps.split_last() {
@@ -496,8 +466,6 @@ fn expanded(expression: String, value: &Value, steps: &[String]) -> Vec<(String,
     }
     held
 }
-
-
 
 fn named(value: &Value, step: &str) -> Vec<Value> {
     let Some(object) = value.as_object() else {

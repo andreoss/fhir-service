@@ -27,22 +27,11 @@ pub fn resource_types() -> &'static [String] {
     union()
 }
 
-
-
-
-
-
-
-
-
 fn registered() -> &'static std::sync::RwLock<std::collections::BTreeSet<&'static str>> {
     static HELD: OnceLock<std::sync::RwLock<std::collections::BTreeSet<&'static str>>> =
         OnceLock::new();
     HELD.get_or_init(|| std::sync::RwLock::new(std::collections::BTreeSet::new()))
 }
-
-
-
 
 pub fn register(name: &str) -> Result<ResourceType, Error> {
     let held = name.trim();
@@ -64,8 +53,6 @@ pub fn register(name: &str) -> Result<ResourceType, Error> {
     names.insert(found);
     Ok(ResourceType(found))
 }
-
-
 
 pub fn is_registered(name: &str) -> bool {
     registered()
@@ -108,10 +95,6 @@ impl ResourceType {
         Model::of(version).has_resource(self.0) || is_registered(self.0)
     }
 
-    
-    
-    
-    
     pub fn is_custom(&self) -> bool {
         is_registered(self.0)
     }

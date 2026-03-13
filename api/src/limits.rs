@@ -1,15 +1,4 @@
-
-
-
-
-
-
-
-
-
-
 use fhir_core::Error;
-
 
 pub fn size(raw: &str) -> Result<usize, Error> {
     let held = raw.trim();
@@ -36,8 +25,6 @@ pub fn size(raw: &str) -> Result<usize, Error> {
         .checked_mul(scale)
         .ok_or_else(|| Error::Config(format!("{raw:?} is larger than this machine can address")))
 }
-
-
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Limits {
@@ -67,7 +54,6 @@ impl Limits {
         self.entries
     }
 
-    
     pub fn admits_body(&self, held: usize) -> Result<(), Error> {
         match self.body {
             Some(bound) if held > bound => Err(Error::TooLarge(format!(
@@ -77,7 +63,6 @@ impl Limits {
         }
     }
 
-    
     pub fn admits_entries(&self, held: usize) -> Result<(), Error> {
         match self.entries {
             Some(bound) if held > bound => Err(Error::Unprocessable(format!(
@@ -88,9 +73,6 @@ impl Limits {
     }
 }
 
-
-
-
 pub async fn bounded(
     axum::extract::State(state): axum::extract::State<crate::app::AppState>,
     request: axum::extract::Request,
@@ -99,9 +81,7 @@ pub async fn bounded(
     let Some(bound) = state.limits.body() else {
         return next.run(request).await;
     };
-    
-    
-    
+
     let declared = request
         .headers()
         .get(axum::http::header::CONTENT_LENGTH)
@@ -112,9 +92,7 @@ pub async fn bounded(
             return crate::handlers::AppError::from(error).into_response_now();
         }
     }
-    
-    
-    
+
     let (parts, body) = request.into_parts();
     let held = match axum::body::to_bytes(body, bound.saturating_add(1)).await {
         Err(_) => return refused(bound, None),

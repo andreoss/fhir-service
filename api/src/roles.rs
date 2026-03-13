@@ -4,8 +4,6 @@ use fhir_core::{Error, FhirVersion, ResourceType};
 
 const ANY: &str = "*";
 
-
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Role {
     pub name: String,
@@ -26,8 +24,6 @@ impl Role {
     }
 }
 
-
-
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Roles {
     named: Vec<Role>,
@@ -35,11 +31,6 @@ pub struct Roles {
 }
 
 impl Roles {
-    
-    
-    
-    
-    
     pub fn parse(raw: &str, version: FhirVersion) -> Result<Roles, Error> {
         let mut held = Roles::default();
         for part in raw
@@ -73,9 +64,6 @@ impl Roles {
         self.named.is_empty() && self.fallback.is_none()
     }
 
-    
-    
-    
     pub fn permits(
         &self,
         access: &Access,
@@ -101,9 +89,6 @@ impl Roles {
             .any(|role| role.permits(action, resource_type))
     }
 
-    
-    
-    
     pub fn require(
         &self,
         access: &Access,

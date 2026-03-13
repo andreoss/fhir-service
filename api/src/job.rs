@@ -195,9 +195,7 @@ async fn submit(state: &AppState, kind: JobKind, headers: &HeaderMap, body: &[u8
     if let Err(error) = wide_enough(state, &access, headers, action_of(kind)) {
         return AppError::from(error).into_response_now();
     }
-    
-    
-    
+
     if let Err(error) = state.tenancy.refuses("an asynchronous job") {
         return AppError::from(error).into_response_now();
     }

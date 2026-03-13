@@ -42,9 +42,6 @@ const HANDLING: &str = "handling";
 const STRICT: &str = "strict";
 const LENIENT: &str = "lenient";
 
-
-
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Handling {
     Strict,

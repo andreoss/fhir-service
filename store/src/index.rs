@@ -198,10 +198,7 @@ fn quantities_of(element: &Value, out: &mut Vec<Measured>) {
             if let Some(nested) = map.get("value") {
                 numbers_of(nested, &mut values);
             }
-            
-            
-            
-            
+
             out.extend(values.into_iter().map(|value| {
                 match fhir_core::ucum::canonical(value, system.as_deref(), code.as_deref()) {
                     Some((held, base)) => (

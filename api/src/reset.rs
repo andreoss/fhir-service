@@ -1,14 +1,3 @@
-
-
-
-
-
-
-
-
-
-
-
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::Response;
@@ -19,16 +8,12 @@ use serde_json::Value;
 use crate::app::AppState;
 use crate::handlers::AppError;
 
-
-
-
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Resettable {
     named: Option<String>,
 }
 
 impl Resettable {
-    
     pub fn never() -> Resettable {
         Resettable::default()
     }
@@ -55,7 +40,6 @@ impl Resettable {
         self.named.as_deref()
     }
 
-    
     fn confirmed_by(&self, given: Option<&str>) -> bool {
         match (&self.named, given) {
             (Some(held), Some(given)) => held == given.trim(),
@@ -63,8 +47,6 @@ impl Resettable {
         }
     }
 }
-
-
 
 pub async fn reset(
     State(state): State<AppState>,
@@ -79,8 +61,7 @@ pub async fn reset(
         )
         .into());
     }
-    
-    
+
     crate::handlers::allowed(&state, &headers, DataAction::Write, None, None).await?;
     if crate::handlers::confining(
         &state,

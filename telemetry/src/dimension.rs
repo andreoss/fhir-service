@@ -75,9 +75,7 @@ pub enum Outcome {
     Success,
     ClientFault,
     ServerFault,
-    
-    
-    
+
     Throttled,
 }
 

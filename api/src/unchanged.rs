@@ -1,36 +1,9 @@
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 use fhir_core::Error;
 use serde_json::Value;
 
-
 const OWNED: &[&str] = &["versionId", "lastUpdated", "source"];
 
-
-
 const OPTIONAL: &[&str] = &["tag", "security", "profile"];
-
-
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Unchanged {
@@ -39,15 +12,10 @@ pub struct Unchanged {
 }
 
 impl Unchanged {
-    
-    
     pub fn silent() -> Unchanged {
         Unchanged::default()
     }
 
-    
-    
-    
     pub fn parse(raw: &str) -> Result<Unchanged, Error> {
         let mut ignored = Vec::new();
         for name in raw
@@ -74,14 +42,10 @@ impl Unchanged {
         &self.ignored
     }
 
-    
     pub fn holds(&self, offered: &Value, stored: &Value) -> bool {
         self.on && self.stripped(offered) == self.stripped(stored)
     }
 
-    
-    
-    
     fn stripped(&self, body: &Value) -> Value {
         let mut held = body.clone();
         let Some(object) = held.as_object_mut() else {
@@ -103,9 +67,6 @@ impl Unchanged {
         held
     }
 }
-
-
-
 
 pub fn outcome() -> fhir_core::OperationOutcome {
     fhir_core::OperationOutcome::information(

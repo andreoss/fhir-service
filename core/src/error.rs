@@ -22,12 +22,11 @@ pub enum Error {
     Internal(String),
     Deleted,
     MethodNotAllowed,
-    
-    
+
     NotServed(String),
-    
+
     TooLarge(String),
-    
+
     Unprocessable(String),
     MultipleMatches,
     InvalidPatch(String),

@@ -1,24 +1,7 @@
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 use fhir_core::{terminology, Catalogue, Error, FhirVersion, Model};
 use serde_json::{json, Map, Value};
 
 const MIX: u64 = 0x9e37_79b9_7f4a_7c15;
-
 
 pub const UNVERIFIED_SYSTEMS: [&str; 3] = [LOINC, SNOMED, UCUM];
 
@@ -36,8 +19,6 @@ fn mixed(seed: u64, position: u64) -> u64 {
     value = value.wrapping_mul(0x94d0_49bb_1331_11eb);
     value ^ (value >> 31)
 }
-
-
 
 #[derive(Clone, Copy)]
 pub struct Draw {
@@ -84,9 +65,6 @@ impl Draw {
     }
 }
 
-
-
-
 fn put(
     model: &Model,
     node: &str,
@@ -101,10 +79,6 @@ fn put(
     true
 }
 
-
-
-
-
 fn put_any<'a>(
     model: &Model,
     node: &str,
@@ -117,11 +91,6 @@ fn put_any<'a>(
         .find(|candidate| put(model, node, into, candidate, value.clone()))
         .copied()
 }
-
-
-
-
-
 
 pub fn coded(
     model: &Model,
@@ -180,9 +149,6 @@ const CITY: [&str; 6] = [
     "Elmsworth",
     "Fairhollow",
 ];
-
-
-
 
 const OBSERVED: [(&str, &str, &str, &str, u64, u64); 5] = [
     ("29463-7", "Body weight", "kg", "kg", 45, 120),
@@ -395,10 +361,6 @@ pub fn procedure(model: &Model, id: &str, subject: &str, seed: u64, draw: &Draw)
     Value::Object(body)
 }
 
-
-
-
-
 pub fn defines(version: FhirVersion, system: &str, code: &str) -> bool {
     let Some(body) = Catalogue::of(version).system(system, None) else {
         return false;
@@ -407,11 +369,6 @@ pub fn defines(version: FhirVersion, system: &str, code: &str) -> bool {
         .iter()
         .any(|held| held.code == code)
 }
-
-
-
-
-
 
 fn shaped(
     model: &Model,
@@ -440,16 +397,12 @@ const ACT_CODE: &str = "http://terminology.hl7.org/CodeSystem/v3-ActCode";
 const CONDITION_CLINICAL: &str = "http://terminology.hl7.org/CodeSystem/condition-clinical";
 const DOC_TYPE: &str = "http://loinc.org";
 
-
 const CLASSES: [(&str, &str); 4] = [
     ("AMB", "ambulatory"),
     ("IMP", "inpatient encounter"),
     ("EMER", "emergency"),
     ("HH", "home health"),
 ];
-
-
-
 
 const CONDITIONS: [(&str, &str, u64); 6] = [
     ("38341003", "Hypertension", 12),
@@ -696,7 +649,6 @@ pub fn document(model: &Model, id: &str, subject: &str, seed: u64, draw: &Draw) 
     Value::Object(body)
 }
 
-
 pub fn subject(version: FhirVersion, seed: u64, position: u64) -> Vec<Value> {
     let model = Model::of(version);
     let draw = Draw::new(seed, position);
@@ -762,8 +714,6 @@ pub fn subject(version: FhirVersion, seed: u64, position: u64) -> Vec<Value> {
     held
 }
 
-
-
 pub fn population(version: FhirVersion, count: usize, seed: u64) -> Result<String, Error> {
     let mut supply = String::new();
     for position in 0..count as u64 {
@@ -775,15 +725,12 @@ pub fn population(version: FhirVersion, count: usize, seed: u64) -> Result<Strin
     Ok(supply)
 }
 
-
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct Change {
     pub body: Value,
     pub deleted: bool,
     pub moment: String,
 }
-
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Record {
@@ -793,7 +740,6 @@ pub struct Record {
 }
 
 impl Record {
-    
     pub fn current(&self) -> Option<&Value> {
         match self.changes.last() {
             Some(change) if !change.deleted => Some(&change.body),
@@ -805,9 +751,6 @@ impl Record {
         self.changes.last().is_some_and(|change| change.deleted)
     }
 }
-
-
-
 
 fn stamped(draw: &Draw, salt: u64, step: usize) -> String {
     let year = 2019 + step as u64;
@@ -830,8 +773,6 @@ fn with_stamp(body: &Value, moment: &str) -> Value {
     next
 }
 
-
-
 fn reads(body: &Value, named: &str) -> Option<String> {
     let held = body.get(named)?;
     held.as_str()
@@ -839,10 +780,6 @@ fn reads(body: &Value, named: &str) -> Option<String> {
         .or_else(|| held["coding"][0]["code"].as_str().map(str::to_owned))
         .or_else(|| held["code"].as_str().map(str::to_owned))
 }
-
-
-
-
 
 fn amend(model: &Model, body: &Value, draw: &Draw, step: usize, prior: &[Value]) -> Value {
     let mut next = body.clone();
@@ -918,10 +855,6 @@ fn amend(model: &Model, body: &Value, draw: &Draw, step: usize, prior: &[Value])
     next
 }
 
-
-
-
-
 fn movement(draw: &Draw, ordinal: u64) -> (usize, bool) {
     let roll = draw.value(800 + ordinal) % 10;
     let versions = match roll {
@@ -932,7 +865,6 @@ fn movement(draw: &Draw, ordinal: u64) -> (usize, bool) {
     let deleted = draw.value(900 + ordinal).is_multiple_of(10);
     (versions, deleted)
 }
-
 
 pub fn history(version: FhirVersion, seed: u64, position: u64) -> Vec<Record> {
     let model = Model::of(version);
@@ -1056,10 +988,6 @@ mod tests {
         }
     }
 
-    
-    
-    
-    
     #[test]
     fn no_release_silently_loses_what_a_record_is_for() {
         for version in FhirVersion::ALL {
@@ -1097,9 +1025,6 @@ mod tests {
         }
     }
 
-    
-    
-    
     #[test]
     fn every_emitted_body_passes_validate_on_every_release() {
         use fhir_core::validate::{validate, Mode, Request};
@@ -1131,9 +1056,6 @@ mod tests {
         }
     }
 
-    
-    
-    
     #[test]
     fn every_required_element_the_release_declares_is_present() {
         for version in FhirVersion::ALL {
@@ -1161,9 +1083,6 @@ mod tests {
         }
     }
 
-    
-    
-    
     #[test]
     fn the_cohort_spreads_rather_than_repeating_one_patient() {
         let mut years = std::collections::BTreeSet::new();
@@ -1197,7 +1116,6 @@ mod tests {
         );
     }
 
-    
     #[test]
     fn no_reference_points_outside_the_run_that_made_it() {
         for version in FhirVersion::ALL {
@@ -1227,9 +1145,6 @@ mod tests {
         }
     }
 
-    
-    
-    
     #[test]
     fn each_record_lands_in_the_patient_compartment_it_was_built_for() {
         use fhir_core::search::compartment::{contains, Compartment};
@@ -1258,9 +1173,6 @@ mod tests {
         }
     }
 
-    
-    
-    
     #[test]
     fn a_code_is_checked_against_the_catalogue_wherever_it_is_carried() {
         for version in FhirVersion::ALL {
@@ -1281,8 +1193,6 @@ mod tests {
         }
     }
 
-    
-    
     #[test]
     fn conditions_both_resolve_and_persist() {
         let mut resolved = 0usize;
@@ -1304,7 +1214,6 @@ mod tests {
         );
     }
 
-    
     #[test]
     fn encounters_spread_over_years() {
         let mut years = std::collections::BTreeSet::new();
@@ -1320,9 +1229,6 @@ mod tests {
         assert!(years.len() >= 5, "encounters bunch into {years:?}");
     }
 
-    
-    
-    
     fn resolvable(resource_type: fhir_core::ResourceType) -> bool {
         use fhir_core::search::{compartment::definition, lookup};
         definition("Patient")
@@ -1335,20 +1241,6 @@ mod tests {
             })
     }
 
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
     #[test]
     fn the_types_whose_membership_cannot_be_decided_are_named_not_hidden() {
         use fhir_core::ResourceType;
@@ -1370,8 +1262,6 @@ mod tests {
         );
     }
 
-    
-    
     #[test]
     fn every_version_of_every_record_still_satisfies_its_release() {
         for version in FhirVersion::ALL {
@@ -1391,9 +1281,6 @@ mod tests {
         }
     }
 
-    
-    
-    
     #[test]
     fn a_records_versions_are_stamped_in_the_order_they_happened() {
         for version in FhirVersion::ALL {
@@ -1421,8 +1308,6 @@ mod tests {
         }
     }
 
-    
-    
     #[test]
     fn the_population_holds_records_written_once_amended_and_deleted() {
         let mut once = 0usize;
@@ -1448,7 +1333,6 @@ mod tests {
         );
     }
 
-    
     #[test]
     fn an_amendment_changes_something_a_reader_would_see() {
         for version in FhirVersion::ALL {
@@ -1477,8 +1361,6 @@ mod tests {
         }
     }
 
-    
-    
     #[test]
     fn the_compartment_root_is_never_deleted() {
         for version in FhirVersion::ALL {
@@ -1500,9 +1382,6 @@ mod tests {
         assert!(left.iter().all(|record| !record.changes.is_empty()));
     }
 
-    
-    
-    
     #[test]
     fn no_record_returns_to_a_state_it_already_held() {
         for version in FhirVersion::ALL {

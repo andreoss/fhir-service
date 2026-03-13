@@ -1,12 +1,3 @@
-
-
-
-
-
-
-
-
-
 use crate::http;
 use crate::upload;
 use fhir_core::validate::{validate, Mode, Request};
@@ -18,12 +9,7 @@ use std::time::Duration;
 
 const NDJSON_SUFFIX: &str = ".ndjson";
 
-
-
-
 const LOG: &str = "log.ndjson";
-
-
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Published {
@@ -46,7 +32,6 @@ impl Published {
             .collect()
     }
 
-    
     pub fn ndjson(&self) -> String {
         let mut held = String::new();
         for rows in self.rows.values() {
@@ -58,9 +43,6 @@ impl Published {
         held
     }
 
-    
-    
-    
     pub fn chunks(&self, bytes: usize) -> Vec<String> {
         let mut held = Vec::new();
         let mut current = String::new();
@@ -79,9 +61,6 @@ impl Published {
         held
     }
 }
-
-
-
 
 pub fn read(directory: &Path, version: FhirVersion) -> Result<Published, Error> {
     let listed = std::fs::read_dir(directory)
@@ -120,16 +99,12 @@ pub fn read(directory: &Path, version: FhirVersion) -> Result<Published, Error> 
     Ok(held)
 }
 
-
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Refused {
     pub resource_type: ResourceType,
     pub id: String,
     pub issue: String,
 }
-
-
 
 pub fn judged(held: &Published, version: FhirVersion) -> Result<Vec<Refused>, Error> {
     let mut refused = Vec::new();
@@ -174,7 +149,6 @@ pub fn judged(held: &Published, version: FhirVersion) -> Result<Vec<Refused>, Er
     Ok(refused)
 }
 
-
 pub fn held(
     address: &str,
     host: &str,
@@ -200,11 +174,7 @@ pub fn held(
     Ok(counts)
 }
 
-
-
 pub const CHUNK_BYTES: usize = 512 * 1024;
-
-
 
 pub fn load(
     address: &str,
@@ -223,17 +193,7 @@ pub fn load(
     Ok(total)
 }
 
-
-
-
 const PER_BUNDLE: usize = 250;
-
-
-
-
-
-
-
 
 pub fn load_through_bundles(
     address: &str,
@@ -278,8 +238,6 @@ pub fn load_through_bundles(
     Ok(total)
 }
 
-
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Figure {
     pub resource_type: ResourceType,
@@ -306,8 +264,6 @@ pub fn figures(
         })
         .collect()
 }
-
-
 
 pub fn beyond(published: &[ResourceType], generated: &[ResourceType]) -> Vec<ResourceType> {
     published

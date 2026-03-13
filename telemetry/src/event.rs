@@ -126,27 +126,9 @@ mod tests {
     }
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 pub trait Traces: Send + Sync {
     fn span(&self, event: &Event);
 }
-
 
 #[derive(Debug, Default, Clone)]
 pub struct Traced(Arc<Mutex<Vec<Event>>>);
@@ -176,8 +158,6 @@ impl Traces for Traced {
 pub trait Alarm: Send + Sync {
     fn raise(&self, line: &str) -> Result<(), String>;
 }
-
-
 
 #[derive(Debug, Default, Clone)]
 pub struct Recorded(Arc<Mutex<Vec<String>>>);

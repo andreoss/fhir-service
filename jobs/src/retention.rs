@@ -1,11 +1,3 @@
-
-
-
-
-
-
-
-
 use fhir_core::{Error, FhirVersion, ResourceType};
 use fhir_store::{system_ticker, JobId, JobKind, JobRequest, JobStore, Ticker};
 use serde_json::{json, Value};
@@ -14,13 +6,11 @@ use std::sync::Arc;
 
 const MILLIS_PER_DAY: i64 = 24 * 60 * 60 * 1_000;
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Removal {
-    
     #[default]
     Soft,
-    
+
     Purge,
 }
 
@@ -32,8 +22,6 @@ impl Removal {
         }
     }
 }
-
-
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Rule {
@@ -47,8 +35,6 @@ pub struct Retention {
     rules: Vec<Rule>,
     every: i64,
 }
-
-
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Swept {
@@ -64,10 +50,6 @@ impl Swept {
 impl Retention {
     pub const DEFAULT_EVERY: i64 = 4 * 60 * 60 * 1_000;
 
-    
-    
-    
-    
     pub fn parse(raw: &str, version: FhirVersion) -> Result<Retention, Error> {
         let mut held = Retention {
             rules: Vec::new(),
@@ -144,8 +126,6 @@ impl Retention {
         self.every
     }
 
-    
-    
     pub fn payload(&self, rule: &Rule, cutoff: &str) -> Value {
         json!({
             "_type": [rule.resource_type.as_str()],
@@ -157,9 +137,6 @@ impl Retention {
         })
     }
 }
-
-
-
 
 pub struct RetentionWorker {
     jobs: Arc<dyn JobStore>,

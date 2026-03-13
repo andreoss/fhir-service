@@ -86,9 +86,6 @@ impl Report {
     }
 }
 
-
-
-
 pub struct Resolved<'a> {
     pub profile: &'a crate::profile::Profile,
     pub codes: &'a dyn crate::profile::CodeSource,
@@ -99,8 +96,7 @@ pub struct Request<'a> {
     pub resource_type: Option<ResourceType>,
     pub id: Option<ResourceId>,
     pub profile: Option<&'a str>,
-    
-    
+
     pub resolved: Option<Resolved<'a>>,
     pub mode: Mode,
     pub body: &'a Value,
@@ -257,8 +253,7 @@ fn profile(object: &Map<String, Value>, request: &Request, issues: &mut Vec<Issu
             ),
             Some("meta.profile"),
         )),
-        
-        
+
         (Some(named), Some(held)) if base_profile(wanted, named) && named == held => {}
         (_, _) => issues.push(error(
             &format!(
@@ -270,8 +265,6 @@ fn profile(object: &Map<String, Value>, request: &Request, issues: &mut Vec<Issu
         )),
     }
 }
-
-
 
 fn base_profile(url: &str, named: &str) -> bool {
     url.split('|')

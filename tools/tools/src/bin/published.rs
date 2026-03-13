@@ -1,8 +1,3 @@
-
-
-
-
-
 use fhir_core::FhirVersion;
 use fhir_tools::{http, published};
 use std::path::{Path, PathBuf};
@@ -62,9 +57,7 @@ fn run(address: &str, directory: &Path, version: FhirVersion) -> Result<(), fhir
     }
 
     let started = Instant::now();
-    
-    
-    
+
     let through_bundles = std::env::var("FHIR_TOOL_BUNDLES").is_ok();
     let loaded = match through_bundles {
         true => published::load_through_bundles(address, "localhost", &held)?,

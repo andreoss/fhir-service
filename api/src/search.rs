@@ -84,16 +84,11 @@ pub struct SearchRequest {
     pub query: SearchQuery,
     pub summary: Summary,
     pub elements: Vec<String>,
-    
-    
-    
+
     pub dropped: Vec<String>,
-    
-    
-    
+
     pub named: Named,
 }
-
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Named {
@@ -127,10 +122,6 @@ impl SearchRequest {
         })
     }
 
-    
-    
-    
-    
     pub fn parse_leniently(
         registry: &Registry,
         base_type: Option<ResourceType>,
@@ -142,11 +133,6 @@ impl SearchRequest {
         Ok((request, kept))
     }
 }
-
-
-
-
-
 
 pub fn understood(
     registry: &Registry,
@@ -263,9 +249,6 @@ fn sort_of(
     sort_keys(registry, base_type, &text)
 }
 
-
-
-
 pub(crate) fn sort_keys(
     registry: &Registry,
     base_type: Option<ResourceType>,
@@ -313,9 +296,6 @@ pub fn includes_bundle(
     bundle_of(base, self_url, page, summary, elements, "include", dropped)
 }
 
-
-
-
 fn ignored_entry(dropped: &[String]) -> Value {
     let listed = dropped.join(", ");
     let outcome = fhir_core::OperationOutcome {
@@ -332,8 +312,6 @@ fn ignored_entry(dropped: &[String]) -> Value {
         "resource": resource,
     })
 }
-
-
 
 fn bounded_entry() -> Value {
     let outcome = fhir_core::OperationOutcome {
@@ -366,15 +344,12 @@ fn bundle_of(
     let consumed = page.offset + page.entries.len();
     let scope = scope_of(self_url);
     let at = |offset: usize| with_token(self_url, &encode(offset, &scope));
-    
-    
+
     let step = page.entries.len();
     if page.total.is_some_and(|total| consumed < total) && !page.entries.is_empty() {
         links.push(serde_json::json!({ "relation": "next", "url": at(consumed) }));
     }
-    
-    
-    
+
     if page.offset > 0 {
         links.push(serde_json::json!({ "relation": "first", "url": at(0) }));
         links.push(serde_json::json!({
@@ -990,13 +965,6 @@ mod tests {
         );
     }
 
-    
-    
-    
-    
-    
-    
-    
     #[test]
     fn a_chain_keeps_the_link_apart_from_the_whole_spelling() {
         use fhir_core::search::{Chain, ChainDirection, Criterion};

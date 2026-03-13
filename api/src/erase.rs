@@ -1,12 +1,3 @@
-
-
-
-
-
-
-
-
-
 use axum::extract::{Path, State};
 use axum::http::header::HeaderMap;
 use axum::response::Response;
@@ -18,11 +9,7 @@ use serde_json::json;
 use crate::app::AppState;
 use crate::handlers::{allowed_doing, AppError};
 
-
-
-
 pub const KEPT_ON_PURGE: [&str; 2] = ["AuditEvent", "Provenance"];
-
 
 const NEVER_ERASED: &str = "AuditEvent";
 
@@ -86,7 +73,6 @@ pub async fn erase_version(
         &[format!("{key}/_history/{version_text} and older")],
     ))
 }
-
 
 pub async fn purge(
     State(state): State<AppState>,

@@ -1,23 +1,7 @@
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 use fhir_core::{Error, FhirVersion};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
-
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Parameter {
@@ -27,7 +11,6 @@ pub struct Parameter {
     pub paths: Vec<String>,
     pub targets: Vec<String>,
 }
-
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Tally {
@@ -51,8 +34,6 @@ fn value_type(named: &str) -> Option<&'static str> {
     }
 }
 
-
-
 fn plain(segment: &str) -> bool {
     let mut parts = segment.split('.');
     let Some(head) = parts.next() else {
@@ -71,8 +52,6 @@ fn plain(segment: &str) -> bool {
     any && head.chars().all(|c| c.is_ascii_alphanumeric())
 }
 
-
-
 fn paths_by_type(expression: &str) -> BTreeMap<String, Vec<String>> {
     let mut held: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for segment in expression.split('|').map(str::trim) {
@@ -88,7 +67,6 @@ fn paths_by_type(expression: &str) -> BTreeMap<String, Vec<String>> {
     }
     held
 }
-
 
 pub fn read(directory: &Path, version: FhirVersion) -> Result<(Vec<Parameter>, Tally), Error> {
     let path = directory.join(format!("{}-search-parameters.json", version.as_str()));
@@ -166,8 +144,6 @@ pub fn read(directory: &Path, version: FhirVersion) -> Result<(Vec<Parameter>, T
     }
     Ok((held.into_values().collect(), tally))
 }
-
-
 
 pub fn document(version: FhirVersion, held: &[Parameter], tally: &Tally) -> Value {
     json!({

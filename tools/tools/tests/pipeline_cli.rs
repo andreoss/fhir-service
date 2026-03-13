@@ -28,13 +28,9 @@ fn the_pipeline_runs_build_tests_analysis_coverage_and_publish() {
             "analysis",
             "format",
             "dependencies",
-            
-            
             "hardening",
             "bill of materials",
             "coverage",
-            
-            
             "conformance",
             "publish"
         ]
@@ -67,8 +63,6 @@ fn the_pipeline_judges_what_it_builds_from_and_what_it_publishes() {
     );
     assert!(running("format").contains("--check"));
 }
-
-
 
 #[test]
 fn every_allowed_advisory_carries_a_reason() {

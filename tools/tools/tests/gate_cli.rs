@@ -82,8 +82,6 @@ fn the_gate_the_pipeline_carries_is_the_one_the_project_holds() {
 
 #[test]
 fn a_comment_in_the_definition_is_not_a_field() {
-    
-    
     let held = fhir_tools::pipeline::Pipeline::parse(
         "stages:\n  # why this stage is here\n  - name: build\n    run: cargo build\n",
     )

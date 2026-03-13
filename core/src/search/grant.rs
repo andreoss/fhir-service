@@ -8,10 +8,7 @@ pub struct Grant {
     pub types: Vec<ResourceType>,
     pub compartments: Vec<Compartment>,
     pub filters: Vec<GrantFilter>,
-    
-    
-    
-    
+
     pub every: Vec<Filter>,
 }
 

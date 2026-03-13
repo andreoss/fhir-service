@@ -1246,11 +1246,7 @@ impl ResourceStore for RelationalStore {
     async fn empty(&self) -> Result<usize, Error> {
         let _place = self.admit().await?;
         let mut work = self.work().await?;
-        
-        
-        
-        
-        
+
         let statement = format!("delete from {}", self.table("resource"));
         let removed = sqlx::query(&statement)
             .execute(work.conn()?)

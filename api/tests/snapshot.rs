@@ -130,8 +130,7 @@ async fn a_profile_of_a_profile_is_refused() {
 #[tokio::test]
 async fn a_snapshotted_profile_is_applied_whole() {
     let app = service();
-    
-    
+
     let (_, snapped) = ask(
         &app,
         "POST",

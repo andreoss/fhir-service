@@ -51,11 +51,7 @@ pub struct Filter {
     pub modifier: Modifier,
     pub values: Vec<SearchValue>,
     pub index: Option<String>,
-    
-    
-    
-    
-    
+
     pub exempt: Vec<ResourceType>,
 }
 

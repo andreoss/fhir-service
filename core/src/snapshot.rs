@@ -1,23 +1,8 @@
-
-
-
-
-
-
-
-
 use crate::model::Model;
 use crate::{Error, FhirVersion};
 use serde_json::{json, Map, Value};
 
-
-
-
-
 pub const DEPTH: usize = 4;
-
-
-
 
 pub fn generate(version: FhirVersion, definition: &Value) -> Result<Value, Error> {
     let object = definition
@@ -62,8 +47,6 @@ pub fn generate(version: FhirVersion, definition: &Value) -> Result<Value, Error
     Ok(Value::Object(held))
 }
 
-
-
 fn from_model(model: &Model, node: &str) -> Vec<Value> {
     let mut held = vec![json!({"path": node, "min": 0, "max": "*"})];
     walk(model, node, node, 1, &mut held);
@@ -102,8 +85,6 @@ fn definition_of(path: &str, field: &crate::model::Field) -> Value {
     Value::Object(held)
 }
 
-
-
 fn fold(elements: &mut Vec<Value>, stated: &Value) {
     let Some(path) = stated.get("path").and_then(Value::as_str) else {
         return;
@@ -125,8 +106,6 @@ fn fold(elements: &mut Vec<Value>, stated: &Value) {
             }
         }
         None => {
-            
-            
             let after = elements
                 .iter()
                 .rposition(|held| held.get("path").and_then(Value::as_str) == Some(path));

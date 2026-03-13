@@ -34,12 +34,9 @@ pub struct SearchQuery {
     pub offset: usize,
     pub count: usize,
     pub total: TotalMode,
-    
-    
-    
+
     pub include_depth: usize,
 }
-
 
 pub const DEFAULT_INCLUDE_DEPTH: usize = 5;
 
@@ -103,9 +100,6 @@ pub struct SearchPage {
     pub included: Vec<ResourceEnvelope>,
     pub total: Option<usize>,
     pub offset: usize,
-    
-    
-    
-    
+
     pub bounded: bool,
 }

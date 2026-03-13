@@ -336,10 +336,7 @@ fn quantity_matches(
             let Some(held) = map.get("value") else {
                 return false;
             };
-            
-            
-            
-            
+
             let named_ucum = match system {
                 TokenSystem::Exact(held) => held == crate::ucum::UCUM,
                 TokenSystem::Any | TokenSystem::Absent => true,

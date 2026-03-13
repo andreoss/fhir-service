@@ -16,10 +16,6 @@ pub type SearchParams = Vec<SearchParam>;
 pub trait ResourceStore: Send + Sync {
     async fn create(&self, envelope: ResourceEnvelope) -> Result<ResourceEnvelope, Error>;
 
-    
-    
-    
-    
     async fn read(&self, key: &ResourceKey) -> Result<ResourceEnvelope, Error>;
 
     async fn vread(
@@ -42,12 +38,6 @@ pub trait ResourceStore: Send + Sync {
 
     async fn purge_history(&self, key: &ResourceKey) -> Result<usize, Error>;
 
-    
-    
-    
-    
-    
-    
     async fn erase_versions(&self, key: &ResourceKey, through: &VersionId) -> Result<usize, Error> {
         let _ = (key, through);
         Err(Error::UnsupportedParameter(
@@ -55,13 +45,6 @@ pub trait ResourceStore: Send + Sync {
         ))
     }
 
-    
-    
-    
-    
-    
-    
-    
     async fn empty(&self) -> Result<usize, Error> {
         Err(Error::UnsupportedParameter(
             "this store cannot be emptied".to_owned(),

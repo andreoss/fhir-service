@@ -4,53 +4,47 @@ use crate::runner::Run;
 use serde_json::{Map, Value};
 use std::fmt::Write as _;
 
-
 #[derive(Clone, Debug)]
 pub struct RequestFacts {
-    
     pub method: String,
-    
+
     pub path: String,
-    
+
     pub headers: Vec<(String, String)>,
-    
+
     pub body: String,
 }
 
-
 #[derive(Clone, Debug)]
 pub struct Difference {
-    
     pub case: String,
-    
+
     pub shape: String,
-    
+
     pub class: Class,
-    
+
     pub severity: Severity,
-    
+
     pub detail: String,
-    
+
     pub request: RequestFacts,
-    
+
     pub excused: Option<String>,
 }
 
-
 pub struct Report {
-    
     pub gate_fingerprint: String,
-    
+
     pub gate_terms: String,
-    
+
     pub left: String,
-    
+
     pub right: String,
-    
+
     pub facts: RunFacts,
-    
+
     pub differences: Vec<Difference>,
-    
+
     pub verdict: Verdict,
 }
 
@@ -472,7 +466,6 @@ fn facts_of(case: &Case) -> RequestFacts {
     }
 }
 
-
 pub fn compare(plan: &Plan, run: &Run, gate: &Gate) -> Report {
     let mut differences = Vec::new();
     let mut compared = 0usize;
@@ -558,7 +551,6 @@ pub fn compare(plan: &Plan, run: &Run, gate: &Gate) -> Report {
 }
 
 impl Report {
-    
     pub fn render(&self) -> String {
         let mut text = String::new();
         let _ = writeln!(text, "= Difference report");

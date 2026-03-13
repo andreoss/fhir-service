@@ -1,8 +1,3 @@
-
-
-
-
-
 use fhir_tools::compartments;
 use std::path::Path;
 

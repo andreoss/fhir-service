@@ -1,23 +1,6 @@
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 use crate::app::{Route, Verb};
 use fhir_core::FhirVersion;
 use serde_json::{json, Map, Value};
-
-
-
 
 const DESCRIBED: &[(&str, &str)] = &[
     ("/", "Search across every type, or process a bundle"),
@@ -229,7 +212,6 @@ const DESCRIBED: &[(&str, &str)] = &[
 
 pub const FHIR_JSON: &str = "application/fhir+json";
 
-
 pub fn description_of(path: &str) -> Option<&'static str> {
     DESCRIBED
         .iter()
@@ -237,12 +219,9 @@ pub fn description_of(path: &str) -> Option<&'static str> {
         .map(|(_, description)| *description)
 }
 
-
-
 pub fn described() -> Vec<&'static str> {
     DESCRIBED.iter().map(|(path, _)| *path).collect()
 }
-
 
 pub fn document(version: FhirVersion, routes: &[Route]) -> Value {
     let mut paths = Map::new();
@@ -335,8 +314,6 @@ fn responses(verb: Verb) -> Value {
     Value::Object(held)
 }
 
-
-
 fn named(path: &str) -> Vec<Value> {
     path.split('/')
         .filter_map(|part| {
@@ -372,8 +349,6 @@ fn operation_id(path: &str, verb: Verb) -> String {
         held.trim_end_matches('_')
     )
 }
-
-
 
 fn tag_of(path: &str) -> &str {
     path.split('/')
