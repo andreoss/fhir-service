@@ -1,7 +1,6 @@
 /target
 /scratch
-/doc/review/*.log
-/doc/Confidential.adoc
+/doc
 /bill-of-materials.json
 **/bill-of-materials.json
 /fhir-server
