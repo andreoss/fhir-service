@@ -37,10 +37,12 @@ STU3, R4, R4B and R5 are served from one source: structure definitions and
 the terminology catalogue are produced from the published artifacts by the
 `models` tool and are never hand-edited.
 
-Bearer tokens are verified against the keys their issuer publishes. Resource,
-compartment and parameter scopes decide what a request may reach, and a job
-answers only the caller that submitted it. Every read and every write leaves
-a chained, verifiable audit record.
+Bearer tokens are verified against the keys their issuer publishes; where an
+issuer mints opaque tokens instead, the token is posted to its introspection
+endpoint and the reply decides. Resource, compartment and parameter scopes
+decide what a request may reach, and a job answers only the caller that
+submitted it. Every read and every write leaves a chained, verifiable audit
+record.
 
 == Configuration
 
@@ -55,6 +57,8 @@ Every setting comes from the environment. The principal ones:
 | `FHIR_VERSION` | `STU3`, `R4`, `R4B` or `R5`, default `R4`.
 | `FHIR_DATABASE_URL`, `FHIR_DOCUMENT_URL` | Where the durable engines live.
 | `FHIR_AUTH_ISSUER`, `FHIR_AUTH_KEYS` | The issuer to trust and its key set.
+| `FHIR_AUTH_CLIENT_ID`, `FHIR_AUTH_CLIENT_SECRET` | Who this service is when it asks the issuer about an opaque token.
+| `FHIR_INDEXES` | A file of extra indexes, applied after the migration.
 | `FHIR_METRICS_CREDENTIAL` | Opens the scrape endpoint; closed without it.
 |===
 
