@@ -4,27 +4,22 @@ use fhir_adapter_document::{DocumentStore, DEFAULT_URL, ENV_URL};
 use fhir_store::Namespace;
 use mongodb::Client;
 
-pub const SKIPPED: &str = "skipped: the document engine is not available";
+const ENGINE: &str = "document";
 
 pub fn url() -> String {
     std::env::var(ENV_URL).unwrap_or_else(|_| DEFAULT_URL.to_owned())
 }
 
 pub async fn engine() -> Option<Client> {
-    let mut options = match mongodb::options::ClientOptions::parse(url()).await {
+    let url = url();
+    let mut options = match mongodb::options::ClientOptions::parse(&url).await {
         Ok(options) => options,
-        Err(_) => {
-            eprintln!("{SKIPPED}");
-            return None;
-        }
+        Err(error) => return fhir_store_contract::engine::absent(ENGINE, &url, &error.to_string()),
     };
     options.server_selection_timeout = Some(std::time::Duration::from_secs(3));
     let client = match Client::with_options(options) {
         Ok(client) => client,
-        Err(_) => {
-            eprintln!("{SKIPPED}");
-            return None;
-        }
+        Err(error) => return fhir_store_contract::engine::absent(ENGINE, &url, &error.to_string()),
     };
     let answered = client
         .database("admin")
@@ -32,10 +27,7 @@ pub async fn engine() -> Option<Client> {
         .await;
     match answered {
         Ok(_) => Some(client),
-        Err(_) => {
-            eprintln!("{SKIPPED}");
-            None
-        }
+        Err(error) => fhir_store_contract::engine::absent(ENGINE, &url, &error.to_string()),
     }
 }
 

@@ -4,24 +4,22 @@ use fhir_adapter_relational::{Namespace, DEFAULT_URL, ENV_URL};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
 
-pub const SKIPPED: &str = "skipped: the relational engine is not available";
+const ENGINE: &str = "relational";
 
 pub fn url() -> String {
     std::env::var(ENV_URL).unwrap_or_else(|_| DEFAULT_URL.to_owned())
 }
 
 pub async fn engine() -> Option<PgPool> {
+    let url = url();
     let pool = PgPoolOptions::new()
         .max_connections(4)
         .acquire_timeout(std::time::Duration::from_secs(3))
-        .connect(&url())
+        .connect(&url)
         .await;
     match pool {
         Ok(pool) => Some(pool),
-        Err(_) => {
-            eprintln!("{SKIPPED}");
-            None
-        }
+        Err(error) => fhir_store_contract::engine::absent(ENGINE, &url, &error.to_string()),
     }
 }
 
