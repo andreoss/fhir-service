@@ -4,7 +4,18 @@ ARG RUNTIME=12-slim
 FROM docker.io/library/rust:${TOOLCHAIN}-bookworm AS build
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
-COPY crates ./crates
+COPY core ./core
+COPY store ./store
+COPY contract ./contract
+COPY adapter-memory ./adapter-memory
+COPY adapter-document ./adapter-document
+COPY adapter-relational ./adapter-relational
+COPY jobs ./jobs
+COPY telemetry ./telemetry
+COPY api ./api
+COPY host ./host
+COPY shadow ./shadow
+COPY tools ./tools
 RUN cargo build --workspace --release --locked
 
 FROM docker.io/library/debian:${RUNTIME} AS service

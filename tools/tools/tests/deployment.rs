@@ -159,3 +159,31 @@ fn the_probe_answers_for_a_running_instance() {
     assert_eq!(code, 0, "{text}");
     assert!(text.contains("\"status\":200"), "{text}");
 }
+
+#[test]
+fn the_image_copies_only_what_the_workspace_holds() {
+    let text = artefact("Containerfile");
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..");
+    let mut copied = 0;
+    for line in text.lines() {
+        let Some(rest) = line.trim().strip_prefix("COPY ") else {
+            continue;
+        };
+        if rest.starts_with("--from") {
+            continue;
+        }
+        let mut sources: Vec<&str> = rest.split_whitespace().collect();
+        sources.pop();
+        for source in sources {
+            assert!(
+                root.join(source).exists(),
+                "the workspace holds no {source}"
+            );
+            copied += 1;
+        }
+    }
+    assert!(copied > 0, "{text}");
+}
+
