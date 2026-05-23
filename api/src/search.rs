@@ -11,6 +11,8 @@ use crate::history::Summary;
 pub(crate) use crate::query::{pairs, param};
 use crate::token::{decode, encode, scope, scope_of, with_token};
 
+pub(crate) const OFFSETS: [&str; 2] = ["_offset", "_getpagesoffset"];
+
 pub(crate) const CONTROL: [&str; 9] = [
     "_hardDelete",
     "_format",
@@ -44,6 +46,12 @@ pub fn parse_query(
         }
         if fhir_core::search::unsupported(registry.fhir_version()).contains(&base_of(&name)) {
             return Err(Error::UnsupportedParameter(format!("{name:?}")));
+        }
+        if OFFSETS.contains(&base_of(&name)) {
+            return Err(Error::UnsupportedParameter(format!(
+                "{name:?}; a page is asked for by following the next link of the bundle, \
+                 which carries the continuation token as ct"
+            )));
         }
         if CONTROL.contains(&name.as_str()) {
             continue;
@@ -814,6 +822,18 @@ mod tests {
                 matches!(error, Error::UnsupportedParameter(_)),
                 "{raw} gave {error:?}"
             );
+        }
+    }
+
+    #[test]
+    fn a_page_asked_for_by_offset_is_pointed_at_the_continuation_token() {
+        for raw in ["_offset=20", "_getpagesoffset=20"] {
+            let error = parse_query(&Registry::new(), patient(), Some(raw)).unwrap_err();
+            let Error::UnsupportedParameter(told) = &error else {
+                panic!("{raw} gave {error:?}");
+            };
+            assert!(told.contains("next link"), "{told}");
+            assert!(told.contains("ct"), "{told}");
         }
     }
 

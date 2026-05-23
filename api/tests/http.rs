@@ -3319,3 +3319,18 @@ async fn a_refusal_names_the_published_code_for_what_went_wrong() {
         "MSG_PARAM_UNKNOWN"
     );
 }
+
+#[tokio::test]
+async fn a_page_asked_for_by_offset_is_told_where_the_next_page_comes_from() {
+    let app = service();
+    let reply = request(&app, "GET", "/Patient?_offset=20", &[], &[]).await;
+    assert_eq!(reply.status, StatusCode::BAD_REQUEST);
+    let value: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
+    assert_eq!(
+        value["issue"][0]["details"]["coding"][0]["code"],
+        "MSG_PARAM_UNKNOWN"
+    );
+    let told = value["issue"][0]["diagnostics"].as_str().unwrap();
+    assert!(told.contains("next link"), "{told}");
+    assert!(told.contains("ct"), "{told}");
+}
