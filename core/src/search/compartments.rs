@@ -1,8 +1,3 @@
-
-
-
-
-
 const PATIENT: &[Membership] = &[
     itself("Patient", &["link"]),
     gathers("Account", &["subject"]),
