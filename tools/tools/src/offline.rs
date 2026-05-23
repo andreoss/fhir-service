@@ -16,7 +16,7 @@ pub struct Session {
 impl Session {
     pub async fn open(config: &Config) -> Result<Session, Error> {
         Ok(Session {
-            store: fhir_host::stores::resources(config).await?,
+            store: fhir_host::stores::resources(config).await?.0,
             version: config.version,
         })
     }

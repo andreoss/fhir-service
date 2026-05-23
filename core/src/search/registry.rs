@@ -711,6 +711,12 @@ pub fn lookup_in(
         .map(|held| Arc::clone(&held.def))
 }
 
+pub fn published_in(version: FhirVersion, name: &str) -> bool {
+    definitions()
+        .iter()
+        .any(|held| held.def.name == name && held.spans(version))
+}
+
 pub fn lookup(resource_type: Option<ResourceType>, name: &str) -> Option<Arc<ParamDef>> {
     definitions()
         .iter()
@@ -849,6 +855,11 @@ impl Registry {
     pub fn lookup(&self, resource_type: Option<ResourceType>, name: &str) -> Option<Arc<ParamDef>> {
         lookup_in(self.fhir_version, resource_type, name)
             .or_else(|| self.custom(resource_type, name).map(|found| found.def))
+    }
+
+    pub fn knows(&self, name: &str) -> bool {
+        published_in(self.fhir_version, name)
+            || self.entries().iter().any(|entry| entry.def.name == name)
     }
 
     pub fn searchable(

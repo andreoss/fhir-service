@@ -312,3 +312,39 @@ async fn every_written_resource_lands_in_the_range_that_holds_it() {
     assert_eq!(seen, 6);
     support::drop_namespace(&client, &namespace).await;
 }
+
+#[tokio::test]
+async fn an_index_an_operator_named_is_added_after_the_namespace_and_only_once() {
+    let Some((store, client, namespace)) = support::fresh("tuned").await else {
+        return;
+    };
+    let extras = vec![
+        fhir_store::tuning::Extra {
+            backend: "document".to_owned(),
+            kind: "token".to_owned(),
+            param: "code".to_owned(),
+        },
+        fhir_store::tuning::Extra {
+            backend: "document".to_owned(),
+            kind: "reference".to_owned(),
+            param: "subject".to_owned(),
+        },
+    ];
+    let applied = store.tune(&extras).await.expect("the indexes are added");
+    assert_eq!(applied, vec!["tune_token_code", "tune_reference_subject"]);
+
+    let found = client
+        .database(namespace.as_str())
+        .collection::<mongodb::bson::Document>("resource")
+        .list_index_names()
+        .await
+        .expect("the indexes are listed");
+    let tuned: Vec<&String> = found
+        .iter()
+        .filter(|name| name.starts_with("tune_"))
+        .collect();
+    assert_eq!(tuned.len(), 2, "{found:?}");
+
+    store.tune(&extras).await.expect("asking twice is allowed");
+    support::drop_namespace(&client, &namespace).await;
+}

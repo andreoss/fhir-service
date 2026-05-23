@@ -7,6 +7,7 @@ use crate::throttle::{Admission, Throttle};
 use async_trait::async_trait;
 use fhir_core::search::{for_type, ParamDef, ParameterSpec};
 use fhir_core::{Error, ResourceEnvelope, ResourceKey, VersionId};
+use fhir_store::tuning::Extra;
 use fhir_store::Namespace;
 use fhir_store::{
     system_clock, Clock, HistoryOrder, HistoryPage, HistoryQuery, HistoryScope, IndexReport,
@@ -222,6 +223,31 @@ impl RelationalStore {
 
     pub async fn migrate(&self) -> Result<usize, Error> {
         self.migrator().latest().await
+    }
+
+    pub async fn tune(&self, extras: &[Extra]) -> Result<Vec<String>, Error> {
+        let mut applied = Vec::new();
+        for extra in extras {
+            let column = match extra.kind.as_str() {
+                "token" => "code",
+                "text" => "folded",
+                "reference" => "ref_full",
+                "date" => "low_secs",
+                _ => "value",
+            };
+            let name = extra.name();
+            let statement = format!(
+                "create index if not exists {name} on {} (slot, {column}) where param = '{}'",
+                self.table(&format!("index_{}", extra.kind)),
+                extra.param.replace('\'', "''")
+            );
+            sqlx::raw_sql(&statement)
+                .execute(&self.pool)
+                .await
+                .map_err(|error| fault::classified("adding an index an operator named", error))?;
+            applied.push(name);
+        }
+        Ok(applied)
     }
 
     pub fn plans(&self) -> Vec<PlanStat> {

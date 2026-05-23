@@ -19,13 +19,14 @@ pub type Stores = (
     Arc<dyn ResourceStore>,
     Option<Arc<dyn JobStore>>,
     Option<Arc<dyn BulkStore>>,
+    Vec<String>,
 );
 
 pub async fn open(config: &Config) -> Result<Stores, Error> {
-    let store = resources(config).await?;
+    let (store, tuned) = resources(config).await?;
     let jobs = queue(config).await?;
     let outputs = outputs(config).await?;
-    Ok((store, jobs, outputs))
+    Ok((store, jobs, outputs, tuned))
 }
 
 pub async fn resources_for(
@@ -73,10 +74,10 @@ pub async fn resources_for(
     }
 }
 
-pub async fn resources(config: &Config) -> Result<Arc<dyn ResourceStore>, Error> {
+pub async fn resources(config: &Config) -> Result<(Arc<dyn ResourceStore>, Vec<String>), Error> {
     match config.backend {
         #[cfg(feature = "backend-memory")]
-        Backend::Memory => Ok(Arc::new(MemoryStore::default())),
+        Backend::Memory => Ok((Arc::new(MemoryStore::default()), Vec::new())),
         #[cfg(not(feature = "backend-memory"))]
         Backend::Memory => Err(Error::Config(
             "memory backend is not enabled in this build; rebuild with --features backend-memory".to_owned(),
@@ -85,7 +86,8 @@ pub async fn resources(config: &Config) -> Result<Arc<dyn ResourceStore>, Error>
         Backend::Relational => {
             let store = RelationalStore::connect_waiting(&config.database_url, relational_namespace()?, config.connections, config.wait).await?;
             store.migrate().await?;
-            Ok(Arc::new(store))
+            let tuned = store.tune(&config.tuning.behind("relational")).await?;
+            Ok((Arc::new(store), tuned))
         }
         #[cfg(not(feature = "backend-relational"))]
         Backend::Relational => Err(Error::Config(
@@ -95,7 +97,8 @@ pub async fn resources(config: &Config) -> Result<Arc<dyn ResourceStore>, Error>
         Backend::Document => {
             let store = DocumentStore::connect(&config.document_url, document_namespace()?).await?;
             store.initialise().await?;
-            Ok(Arc::new(store))
+            let tuned = store.tune(&config.tuning.behind("document")).await?;
+            Ok((Arc::new(store), tuned))
         }
         #[cfg(not(feature = "backend-document"))]
         Backend::Document => Err(Error::Config(

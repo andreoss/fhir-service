@@ -16,6 +16,7 @@ pub mod scope;
 pub mod search;
 pub mod terminology;
 pub mod trail;
+pub mod tuning;
 
 pub use audit::{Audit, AuditEvent, Interaction, Unrecorded};
 pub use bulk::{output_format, BulkStore, Output, NDJSON};

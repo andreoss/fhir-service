@@ -91,6 +91,8 @@ pub const ENV_UNCHANGED: &str = "FHIR_UNCHANGED";
 
 pub const ENV_DEFAULT_FORMAT: &str = "FHIR_DEFAULT_FORMAT";
 
+pub const ENV_INDEXES: &str = "FHIR_INDEXES";
+
 pub const ENV_PRELOAD: &str = "FHIR_PRELOAD";
 
 pub const ENV_RESET: &str = "FHIR_RESET";
@@ -180,6 +182,7 @@ pub struct Config {
     pub alert: Option<crate::alarm::Called>,
     pub collector: Option<crate::otlp::Collector>,
     pub preload: Option<std::path::PathBuf>,
+    pub tuning: fhir_store::tuning::Tuning,
     pub reset: fhir_api::Resettable,
     pub unchanged: fhir_api::Unchanged,
     pub default_format: fhir_api::MediaType,
@@ -473,6 +476,18 @@ impl Config {
             })?,
         };
 
+        let tuning = match get(env, ENV_INDEXES) {
+            None => fhir_store::tuning::Tuning::default(),
+            Some(raw) => {
+                let path = std::path::PathBuf::from(raw.trim());
+                let text = std::fs::read_to_string(&path).map_err(|error| {
+                    Error::Config(format!("{ENV_INDEXES} {raw:?} cannot be read: {error}"))
+                })?;
+                let registry = fhir_core::search::Registry::for_version(version);
+                fhir_store::tuning::Tuning::parse(&text, |param| registry.knows(param))?
+            }
+        };
+
         let preload = match get(env, ENV_PRELOAD) {
             None => None,
             Some(raw) => {
@@ -631,6 +646,7 @@ impl Config {
             alert,
             collector,
             preload,
+            tuning,
             reset,
             unchanged,
             default_format,
@@ -1096,6 +1112,34 @@ mod tests {
         env.insert(ENV_PRELOAD.to_owned(), "/nowhere/at/all".to_owned());
         let error = Config::parse(&env).expect_err("a missing directory must fail");
         assert!(error.to_string().contains(ENV_PRELOAD), "{error}");
+    }
+    #[test]
+    fn the_indexes_an_operator_names_are_read_at_startup() {
+        let config = Config::parse(&env_empty()).expect("an empty environment must parse");
+        assert!(config.tuning.is_empty(), "nothing is added by default");
+
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("scratch");
+        std::fs::create_dir_all(&root).expect("the scratch directory is writable");
+        let path = root.join(format!("indexes-{}.conf", std::process::id()));
+        std::fs::write(&path, "# asked for here\nrelational token code\n")
+            .expect("the file is written");
+        let mut env = env_empty();
+        env.insert(ENV_INDEXES.to_owned(), path.display().to_string());
+        let config = Config::parse(&env).expect("a readable file must parse");
+        assert_eq!(config.tuning.len(), 1);
+        assert_eq!(config.tuning.behind("relational").len(), 1);
+
+        std::fs::write(&path, "relational token nonesuch\n").expect("the file is written");
+        let error = Config::parse(&env).expect_err("an unknown parameter must fail");
+        assert!(error.to_string().contains("index line 1"), "{error}");
+
+        let mut missing = env_empty();
+        missing.insert(ENV_INDEXES.to_owned(), "/nowhere/at/all".to_owned());
+        let error = Config::parse(&missing).expect_err("a missing file must fail");
+        assert!(error.to_string().contains(ENV_INDEXES), "{error}");
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

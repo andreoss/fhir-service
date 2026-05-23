@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use fhir_core::search::{for_type, ParamDef, ParameterSpec};
 use fhir_core::{Error, ResourceEnvelope, ResourceKey, VersionId};
 use fhir_store::index::{rows_of, Rows};
+use fhir_store::tuning::Extra;
 use fhir_store::{
     system_clock, Clock, HistoryOrder, HistoryPage, HistoryQuery, HistoryScope, IndexReport,
     Namespace, PlanCache, PlanStat, ResourceStore, SearchPage, SearchQuery, StoreScope,
@@ -218,6 +219,40 @@ impl DocumentStore {
             .await
             .map_err(|error| faulted("preparing an index", error))?;
         Ok(made + kept)
+    }
+
+    pub async fn tune(&self, extras: &[Extra]) -> Result<Vec<String>, Error> {
+        let mut applied = Vec::new();
+        for extra in extras {
+            let field = match extra.kind.as_str() {
+                "token" => "code",
+                "text" => "folded",
+                "reference" => "pointer",
+                "date" => "low",
+                _ => "value",
+            };
+            let name = extra.name();
+            let model = IndexModel::builder()
+                .keys(doc! {
+                    format!("{}.param", extra.kind): 1,
+                    format!("{}.{field}", extra.kind): 1,
+                })
+                .options(
+                    IndexOptions::builder()
+                        .name(name.clone())
+                        .partial_filter_expression(
+                            doc! { format!("{}.param", extra.kind): &extra.param },
+                        )
+                        .build(),
+                )
+                .build();
+            self.resources()
+                .create_index(model)
+                .await
+                .map_err(|error| faulted("adding an index an operator named", error))?;
+            applied.push(name);
+        }
+        Ok(applied)
     }
 
     pub fn plans(&self) -> Vec<PlanStat> {

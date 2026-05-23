@@ -2,6 +2,7 @@ mod support;
 
 use fhir_adapter_relational::migration::{Migrator, State};
 use fhir_adapter_relational::MIGRATIONS;
+use sqlx::Row;
 
 #[tokio::test]
 async fn latest_applies_every_migration_once() {
@@ -102,5 +103,51 @@ async fn a_schema_newer_than_the_instance_is_reported_ahead() {
     let ahead = migrator.compatibility().await.unwrap();
     assert_eq!(ahead.state, State::Ahead);
     assert!(!ahead.is_compatible());
+    support::drop_namespace(&pool, &namespace).await;
+}
+
+#[tokio::test]
+async fn an_index_an_operator_named_is_added_after_the_migration_and_only_once() {
+    let Some((store, pool, namespace)) = support::fresh("tuned").await else {
+        return;
+    };
+    let extras = vec![
+        fhir_store::tuning::Extra {
+            backend: "relational".to_owned(),
+            kind: "token".to_owned(),
+            param: "code".to_owned(),
+        },
+        fhir_store::tuning::Extra {
+            backend: "relational".to_owned(),
+            kind: "reference".to_owned(),
+            param: "subject".to_owned(),
+        },
+    ];
+    let applied = store.tune(&extras).await.expect("the indexes are added");
+    assert_eq!(applied, vec!["tune_token_code", "tune_reference_subject"]);
+
+    let statement = format!(
+        "select indexname from pg_indexes where schemaname = '{}' and indexname like 'tune_%'",
+        namespace.as_str()
+    );
+    let found: Vec<String> = sqlx::query(&statement)
+        .fetch_all(&pool)
+        .await
+        .expect("the indexes are listed")
+        .into_iter()
+        .map(|row| row.get::<String, _>("indexname"))
+        .collect();
+    assert_eq!(found.len(), 2, "{found:?}");
+
+    store.tune(&extras).await.expect("asking twice is allowed");
+    let again: Vec<String> = sqlx::query(&statement)
+        .fetch_all(&pool)
+        .await
+        .expect("the indexes are listed")
+        .into_iter()
+        .map(|row| row.get::<String, _>("indexname"))
+        .collect();
+    assert_eq!(again.len(), 2, "{again:?}");
+
     support::drop_namespace(&pool, &namespace).await;
 }

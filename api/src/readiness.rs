@@ -52,10 +52,20 @@ pub async fn liveness() -> Response {
 
 pub async fn readiness(State(state): State<crate::app::AppState>) -> Response {
     match state.busy.holding() {
-        None => answered(StatusCode::OK, "this instance is ready"),
+        None => answered(StatusCode::OK, &ready(&state.tuning)),
         Some(what) => answered(
             StatusCode::from_u16(LOCKED).unwrap_or(StatusCode::SERVICE_UNAVAILABLE),
             &format!("this instance is up but busy with {what}; it is not to be restarted"),
+        ),
+    }
+}
+
+fn ready(tuning: &[String]) -> String {
+    match tuning.is_empty() {
+        true => "this instance is ready".to_owned(),
+        false => format!(
+            "this instance is ready; the indexes an operator named are in place: {}",
+            tuning.join(", ")
         ),
     }
 }

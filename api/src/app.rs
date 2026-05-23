@@ -47,6 +47,7 @@ pub struct AppState {
 
     pub purge_keeps: Arc<Vec<String>>,
     pub busy: crate::readiness::Busy,
+    pub tuning: Arc<Vec<String>>,
     pub artifacts: Arc<crate::binary::Artifacts>,
     pub allowed_profiles: Arc<crate::profile::AllowedProfiles>,
     pub administration: crate::administration::Administration,
@@ -156,6 +157,7 @@ impl Service {
                         .collect(),
                 ),
                 busy: crate::readiness::Busy::new(),
+                tuning: Arc::new(Vec::new()),
                 artifacts: Arc::new(crate::binary::Artifacts::default()),
                 allowed_profiles: Arc::new(crate::profile::AllowedProfiles::default()),
                 administration: crate::administration::Administration::off(),
@@ -172,6 +174,15 @@ impl Service {
                 forwarding: crate::address::Forwarding::untrusted(),
                 references: crate::references::References::as_written(),
                 restricted: crate::restricted::Restricted::everything(),
+            },
+        }
+    }
+
+    pub fn with_tuning(self, tuning: Vec<String>) -> Service {
+        Service {
+            state: AppState {
+                tuning: Arc::new(tuning),
+                ..self.state
             },
         }
     }

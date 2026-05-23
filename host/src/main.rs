@@ -21,7 +21,7 @@ async fn main() {
 
 async fn run() -> Result<(), Error> {
     let config = fhir_host::Config::from_env()?;
-    let (store, jobs, outputs) = fhir_host::stores::open(&config).await?;
+    let (store, jobs, outputs, tuned) = fhir_host::stores::open(&config).await?;
     let mut dependencies = vec![Dependency::of_store("store", Arc::clone(&store))];
     if let Some(jobs) = &jobs {
         dependencies.push(Dependency::of_queue("queue", Arc::clone(jobs)));
@@ -36,7 +36,11 @@ async fn run() -> Result<(), Error> {
         outputs.clone(),
         dependencies,
     )
-    .await?;
+    .await?
+    .with_tuning(tuned.clone());
+    if !tuned.is_empty() {
+        eprintln!("indexes an operator named, in place: {}", tuned.join(", "));
+    }
     let mut worker = None;
     if let Some(jobs) = &jobs {
         service = service.with_jobs(Arc::clone(jobs));

@@ -70,3 +70,21 @@ async fn health_still_reports_the_dependency() {
         "health answers about the engine, not about being busy: {body}"
     );
 }
+
+#[tokio::test]
+async fn a_ready_instance_names_the_indexes_an_operator_asked_for() {
+    let (app, _) = service();
+    let (status, body) = ask(&app, "/$readiness").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(!body.contains("operator"), "{body}");
+
+    let (app, _) = service();
+    let app = app.with_tuning(vec![
+        "tune_token_code".to_owned(),
+        "tune_reference_subject".to_owned(),
+    ]);
+    let (status, body) = ask(&app, "/$readiness").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.contains("tune_token_code"), "{body}");
+    assert!(body.contains("tune_reference_subject"), "{body}");
+}
