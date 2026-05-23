@@ -35,7 +35,7 @@ pub use etag::WeakEtag;
 pub use fhir_version::FhirVersion;
 pub use instant::{FhirInstant, InstantKey, InstantPeriod};
 pub use model::{Finding, Model, Rule};
-pub use outcome::{IssueCode, IssueSeverity, OperationOutcome};
+pub use outcome::{IssueCode, IssueMessage, IssueSeverity, OperationOutcome, OUTCOME_SYSTEM};
 pub use patch::{JsonOperation, Patch, PathOperation};
 pub use resource_id::ResourceId;
 pub use resource_key::ResourceKey;

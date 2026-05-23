@@ -95,12 +95,67 @@ impl fmt::Display for IssueCode {
     }
 }
 
+pub const OUTCOME_SYSTEM: &str = "http://terminology.hl7.org/CodeSystem/operation-outcome";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IssueMessage {
+    AuthRequired,
+    BadFormat,
+    CantParseContent,
+    DateFormat,
+    Deleted,
+    DuplicateId,
+    IdInvalid,
+    JsonObject,
+    NoExist,
+    NoMatch,
+    OpNotAllowed,
+    ParamInvalid,
+    ParamUnknown,
+    SearchMultiple,
+    UnknownType,
+    VersionAware,
+    VersionAwareConflict,
+}
+
+impl IssueMessage {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            IssueMessage::AuthRequired => "MSG_AUTH_REQUIRED",
+            IssueMessage::BadFormat => "MSG_BAD_FORMAT",
+            IssueMessage::CantParseContent => "MSG_CANT_PARSE_CONTENT",
+            IssueMessage::DateFormat => "MSG_DATE_FORMAT",
+            IssueMessage::Deleted => "MSG_DELETED",
+            IssueMessage::DuplicateId => "MSG_DUPLICATE_ID",
+            IssueMessage::IdInvalid => "MSG_ID_INVALID",
+            IssueMessage::JsonObject => "MSG_JSON_OBJECT",
+            IssueMessage::NoExist => "MSG_NO_EXIST",
+            IssueMessage::NoMatch => "MSG_NO_MATCH",
+            IssueMessage::OpNotAllowed => "MSG_OP_NOT_ALLOWED",
+            IssueMessage::ParamInvalid => "MSG_PARAM_INVALID",
+            IssueMessage::ParamUnknown => "MSG_PARAM_UNKNOWN",
+            IssueMessage::SearchMultiple => "SEARCH_MULTIPLE",
+            IssueMessage::UnknownType => "MSG_UNKNOWN_TYPE",
+            IssueMessage::VersionAware => "MSG_VERSION_AWARE",
+            IssueMessage::VersionAwareConflict => "MSG_VERSION_AWARE_CONFLICT",
+        }
+    }
+}
+
+impl fmt::Display for IssueMessage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OperationOutcome {
     pub id: Option<ResourceId>,
     pub severity: IssueSeverity,
     pub code: IssueCode,
     pub diagnostics: Option<String>,
+    pub message: Option<IssueMessage>,
+    pub expression: Option<String>,
 }
 
 impl OperationOutcome {
@@ -110,6 +165,22 @@ impl OperationOutcome {
             severity: IssueSeverity::Error,
             code,
             diagnostics: Some(diagnostics.into()),
+            message: None,
+            expression: None,
+        }
+    }
+
+    pub fn saying(self, message: IssueMessage) -> OperationOutcome {
+        OperationOutcome {
+            message: Some(message),
+            ..self
+        }
+    }
+
+    pub fn at(self, expression: impl Into<String>) -> OperationOutcome {
+        OperationOutcome {
+            expression: Some(expression.into()),
+            ..self
         }
     }
 
@@ -119,6 +190,8 @@ impl OperationOutcome {
             severity: IssueSeverity::Information,
             code: IssueCode::Informational,
             diagnostics: Some(diagnostics.into()),
+            message: None,
+            expression: None,
         }
     }
 
@@ -140,6 +213,20 @@ impl OperationOutcome {
             issue.insert(
                 "diagnostics".to_owned(),
                 serde_json::Value::String(diagnostics.clone()),
+            );
+        }
+        if let Some(message) = &self.message {
+            issue.insert(
+                "details".to_owned(),
+                serde_json::json!({
+                    "coding": [{"system": OUTCOME_SYSTEM, "code": message.as_str()}]
+                }),
+            );
+        }
+        if let Some(expression) = &self.expression {
+            issue.insert(
+                "expression".to_owned(),
+                serde_json::Value::Array(vec![serde_json::Value::String(expression.clone())]),
             );
         }
         let mut body = serde_json::Map::new();
@@ -297,11 +384,69 @@ mod tests {
             severity: IssueSeverity::Warning,
             code: IssueCode::Conflict,
             diagnostics: None,
+            message: None,
+            expression: None,
         };
         let text = String::from_utf8(outcome.to_fhir_json()).unwrap();
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(value["issue"][0]["severity"], "warning");
         assert_eq!(value["issue"][0]["code"], "conflict");
         assert!(value["issue"][0].get("diagnostics").is_none());
+        assert!(value["issue"][0].get("details").is_none());
+        assert!(value["issue"][0].get("expression").is_none());
+    }
+
+    const EVERY_MESSAGE: [IssueMessage; 17] = [
+        IssueMessage::AuthRequired,
+        IssueMessage::BadFormat,
+        IssueMessage::CantParseContent,
+        IssueMessage::DateFormat,
+        IssueMessage::Deleted,
+        IssueMessage::DuplicateId,
+        IssueMessage::IdInvalid,
+        IssueMessage::JsonObject,
+        IssueMessage::NoExist,
+        IssueMessage::NoMatch,
+        IssueMessage::OpNotAllowed,
+        IssueMessage::ParamInvalid,
+        IssueMessage::ParamUnknown,
+        IssueMessage::SearchMultiple,
+        IssueMessage::UnknownType,
+        IssueMessage::VersionAware,
+        IssueMessage::VersionAwareConflict,
+    ];
+
+    #[test]
+    fn a_refusal_carries_the_code_a_client_can_switch_on() {
+        let outcome = OperationOutcome::error(IssueCode::NotSupported, "_nonesuch not understood")
+            .saying(IssueMessage::ParamUnknown)
+            .at("Patient.name");
+        let value: serde_json::Value =
+            serde_json::from_slice(&outcome.to_fhir_json()).expect("the outcome renders");
+        let issue = &value["issue"][0];
+        assert_eq!(issue["details"]["coding"][0]["system"], OUTCOME_SYSTEM);
+        assert_eq!(issue["details"]["coding"][0]["code"], "MSG_PARAM_UNKNOWN");
+        assert_eq!(issue["expression"][0], "Patient.name");
+    }
+
+    #[test]
+    fn every_message_is_one_the_published_system_carries() {
+        for version in crate::FhirVersion::ALL {
+            let catalogue = crate::catalogue::Catalogue::of(version);
+            let system = catalogue
+                .system(OUTCOME_SYSTEM, None)
+                .unwrap_or_else(|| panic!("{version:?} publishes the outcome code system"));
+            let published: Vec<String> = crate::terminology::concepts(system)
+                .into_iter()
+                .map(|coding| coding.code)
+                .collect();
+            for message in EVERY_MESSAGE {
+                assert!(
+                    published.contains(&message.as_str().to_owned()),
+                    "{version:?} does not carry {}",
+                    message.as_str()
+                );
+            }
+        }
     }
 }

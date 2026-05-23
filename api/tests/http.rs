@@ -3295,3 +3295,27 @@ async fn a_store_that_cannot_answer_is_a_503_with_a_retry_hint() {
     let detail = value["issue"][0]["diagnostics"].as_str().unwrap();
     assert!(detail.contains("may be repeated"), "{detail}");
 }
+
+#[tokio::test]
+async fn a_refusal_names_the_published_code_for_what_went_wrong() {
+    let app = service();
+    let missing = request(&app, "GET", "/Patient/nobody", &[], &[]).await;
+    assert_eq!(missing.status, StatusCode::NOT_FOUND);
+    let value: serde_json::Value = serde_json::from_str(&missing.body).unwrap();
+    assert_eq!(
+        value["issue"][0]["details"]["coding"][0]["system"],
+        fhir_core::OUTCOME_SYSTEM
+    );
+    assert_eq!(
+        value["issue"][0]["details"]["coding"][0]["code"],
+        "MSG_NO_EXIST"
+    );
+
+    let unknown = request(&app, "GET", "/Patient?_nonesuch=1", &[], &[]).await;
+    assert_eq!(unknown.status, StatusCode::BAD_REQUEST);
+    let value: serde_json::Value = serde_json::from_str(&unknown.body).unwrap();
+    assert_eq!(
+        value["issue"][0]["details"]["coding"][0]["code"],
+        "MSG_PARAM_UNKNOWN"
+    );
+}

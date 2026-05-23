@@ -670,6 +670,8 @@ fn answered(response: Response, envelope: &ResourceEnvelope, asked: Option<Retur
                     envelope.id(),
                     envelope.version_id()
                 )),
+                message: None,
+                expression: None,
             };
             parts
                 .headers

@@ -1,4 +1,4 @@
-use crate::outcome::{IssueCode, OperationOutcome};
+use crate::outcome::{IssueCode, IssueMessage, OperationOutcome};
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,11 +61,11 @@ impl Error {
             Error::InvalidResourceType(value) => OperationOutcome::error(
                 IssueCode::Invalid,
                 format!("invalid resource type: {value:?}"),
-            ),
+            ).saying(IssueMessage::UnknownType),
             Error::InvalidResourceId(value) => OperationOutcome::error(
                 IssueCode::Invalid,
                 format!("invalid resource id: {value:?}"),
-            ),
+            ).saying(IssueMessage::IdInvalid),
             Error::InvalidVersion(value) => {
                 OperationOutcome::error(IssueCode::Invalid, format!("invalid version: {value:?}"))
             }
@@ -77,69 +77,69 @@ impl Error {
                 format!("invalid fhir version: {value:?}"),
             ),
             Error::InvalidInstant(value) => {
-                OperationOutcome::error(IssueCode::Invalid, format!("invalid instant: {value:?}"))
+                OperationOutcome::error(IssueCode::Invalid, format!("invalid instant: {value:?}")).saying(IssueMessage::DateFormat)
             }
             Error::InvalidJson(message) => {
-                OperationOutcome::error(IssueCode::Invalid, format!("malformed json: {message}"))
+                OperationOutcome::error(IssueCode::Invalid, format!("malformed json: {message}")).saying(IssueMessage::JsonObject)
             }
             Error::InvalidXml(message) => {
-                OperationOutcome::error(IssueCode::Invalid, format!("malformed xml: {message}"))
+                OperationOutcome::error(IssueCode::Invalid, format!("malformed xml: {message}")).saying(IssueMessage::CantParseContent)
             }
             Error::InvalidEnvelope(message) => {
                 OperationOutcome::error(IssueCode::Invalid, format!("invalid envelope: {message}"))
             }
             Error::Config(_) => OperationOutcome::error(IssueCode::Processing, CONTAINED),
-            Error::NotFound => OperationOutcome::error(IssueCode::NotFound, "resource not found"),
+            Error::NotFound => OperationOutcome::error(IssueCode::NotFound, "resource not found").saying(IssueMessage::NoExist),
             Error::VersionConflict => {
-                OperationOutcome::error(IssueCode::Conflict, "version conflict")
+                OperationOutcome::error(IssueCode::Conflict, "version conflict").saying(IssueMessage::VersionAwareConflict)
             }
             Error::StaleVersion => OperationOutcome::error(
                 IssueCode::StaleVersion,
                 "the version named by if-match is not the current version",
-            ),
+            ).saying(IssueMessage::VersionAwareConflict),
             Error::VersionRequired(message) => {
-                OperationOutcome::error(IssueCode::StaleVersion, message.clone())
+                OperationOutcome::error(IssueCode::StaleVersion, message.clone()).saying(IssueMessage::VersionAware)
             }
             Error::UnsupportedFormat(value) => OperationOutcome::error(
                 IssueCode::NotAcceptable,
                 format!("unsupported format: {value:?}"),
-            ),
+            ).saying(IssueMessage::BadFormat),
             Error::Duplicate(value) => OperationOutcome::error(
                 IssueCode::Duplicate,
                 format!("duplicate resource: {value:?}"),
-            ),
+            ).saying(IssueMessage::DuplicateId),
             Error::Internal(_) => OperationOutcome::error(IssueCode::Processing, CONTAINED),
-            Error::Deleted => OperationOutcome::error(IssueCode::Deleted, "resource deleted"),
-            Error::NotServed(message) => OperationOutcome::error(IssueCode::NotAllowed, message),
+            Error::Deleted => OperationOutcome::error(IssueCode::Deleted, "resource deleted").saying(IssueMessage::Deleted),
+            Error::NotServed(message) => OperationOutcome::error(IssueCode::NotAllowed, message).saying(IssueMessage::OpNotAllowed),
             Error::TooLarge(message) => OperationOutcome::error(IssueCode::TooLarge, message),
             Error::Unprocessable(message) => {
                 OperationOutcome::error(IssueCode::BusinessRule, message)
             }
             Error::MethodNotAllowed => {
-                OperationOutcome::error(IssueCode::NotAllowed, "method not allowed")
+                OperationOutcome::error(IssueCode::NotAllowed, "method not allowed").saying(IssueMessage::OpNotAllowed)
             }
             Error::MultipleMatches => OperationOutcome::error(
                 IssueCode::MultipleMatches,
                 "the conditional request matched more than one resource",
-            ),
+            ).saying(IssueMessage::SearchMultiple),
             Error::InvalidPatch(message) => {
-                OperationOutcome::error(IssueCode::Invalid, format!("invalid patch: {message}"))
+                OperationOutcome::error(IssueCode::Invalid, format!("invalid patch: {message}")).saying(IssueMessage::CantParseContent)
             }
             Error::InvalidParameter(message) => {
-                OperationOutcome::error(IssueCode::Invalid, format!("invalid parameter: {message}"))
+                OperationOutcome::error(IssueCode::Invalid, format!("invalid parameter: {message}")).saying(IssueMessage::ParamInvalid)
             }
             Error::UnsupportedParameter(message) => OperationOutcome::error(
                 IssueCode::NotSupported,
                 format!("unsupported parameter: {message}"),
-            ),
+            ).saying(IssueMessage::ParamUnknown),
             Error::Forbidden(message) => {
                 OperationOutcome::error(IssueCode::Forbidden, format!("out of scope: {message}"))
             }
             Error::Unauthenticated(message) => {
-                OperationOutcome::error(IssueCode::Login, format!("not authenticated: {message}"))
+                OperationOutcome::error(IssueCode::Login, format!("not authenticated: {message}")).saying(IssueMessage::AuthRequired)
             }
             Error::NoMatch(message) => {
-                OperationOutcome::error(IssueCode::BusinessRule, message.clone())
+                OperationOutcome::error(IssueCode::BusinessRule, message.clone()).saying(IssueMessage::NoMatch)
             }
             Error::Unavailable(message) => OperationOutcome::error(
                 IssueCode::Transient,
@@ -496,5 +496,103 @@ mod budget {
             .diagnostics
             .expect("a refusal says something");
         assert!(diagnostics.contains('1'), "{diagnostics}");
+    }
+}
+
+#[cfg(test)]
+mod messages {
+    use super::*;
+    use crate::outcome::IssueMessage;
+
+    #[test]
+    fn a_refusal_a_client_can_switch_on_carries_a_published_code() {
+        let expected = [
+            (
+                Error::InvalidResourceType("Nope".to_owned()),
+                IssueMessage::UnknownType,
+            ),
+            (
+                Error::InvalidResourceId("!".to_owned()),
+                IssueMessage::IdInvalid,
+            ),
+            (
+                Error::InvalidInstant("soon".to_owned()),
+                IssueMessage::DateFormat,
+            ),
+            (
+                Error::InvalidJson("expected object".to_owned()),
+                IssueMessage::JsonObject,
+            ),
+            (
+                Error::InvalidXml("no root".to_owned()),
+                IssueMessage::CantParseContent,
+            ),
+            (Error::NotFound, IssueMessage::NoExist),
+            (Error::Deleted, IssueMessage::Deleted),
+            (Error::VersionConflict, IssueMessage::VersionAwareConflict),
+            (Error::StaleVersion, IssueMessage::VersionAwareConflict),
+            (
+                Error::VersionRequired("if-match is required".to_owned()),
+                IssueMessage::VersionAware,
+            ),
+            (
+                Error::UnsupportedFormat("text/csv".to_owned()),
+                IssueMessage::BadFormat,
+            ),
+            (
+                Error::Duplicate("Patient/1".to_owned()),
+                IssueMessage::DuplicateId,
+            ),
+            (
+                Error::NotServed("Binary is not served here".to_owned()),
+                IssueMessage::OpNotAllowed,
+            ),
+            (Error::MethodNotAllowed, IssueMessage::OpNotAllowed),
+            (Error::MultipleMatches, IssueMessage::SearchMultiple),
+            (
+                Error::InvalidPatch("no op".to_owned()),
+                IssueMessage::CantParseContent,
+            ),
+            (
+                Error::InvalidParameter("_count".to_owned()),
+                IssueMessage::ParamInvalid,
+            ),
+            (
+                Error::UnsupportedParameter("_nonesuch".to_owned()),
+                IssueMessage::ParamUnknown,
+            ),
+            (
+                Error::Unauthenticated("no token".to_owned()),
+                IssueMessage::AuthRequired,
+            ),
+            (
+                Error::NoMatch("nothing matched".to_owned()),
+                IssueMessage::NoMatch,
+            ),
+        ];
+        for (error, message) in expected {
+            let outcome = error.to_operation_outcome();
+            assert_eq!(outcome.message, Some(message), "{error}");
+            let rendered: serde_json::Value =
+                serde_json::from_slice(&outcome.to_fhir_json()).expect("the outcome renders");
+            assert_eq!(
+                rendered["issue"][0]["details"]["coding"][0]["code"],
+                message.as_str(),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_refusal_that_hides_its_cause_carries_no_code() {
+        for error in [
+            Error::Internal("a bug".to_owned()),
+            Error::Config("bad setting".to_owned()),
+            Error::Forbidden("out of scope".to_owned()),
+            Error::Unavailable("the store is busy".to_owned()),
+            Error::TooManyRequests(1),
+        ] {
+            assert_eq!(error.to_operation_outcome().message, None, "{error}");
+        }
     }
 }

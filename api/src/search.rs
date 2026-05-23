@@ -305,6 +305,8 @@ fn ignored_entry(dropped: &[String]) -> Value {
         diagnostics: Some(format!(
             "this search ignored parameters it cannot answer, as Prefer: handling=lenient asks: {listed}"
         )),
+        message: Some(fhir_core::IssueMessage::ParamUnknown),
+        expression: None,
     };
     let resource: Value = serde_json::from_slice(&outcome.to_fhir_json()).unwrap_or(Value::Null);
     serde_json::json!({
@@ -322,6 +324,8 @@ fn bounded_entry() -> Value {
             "an iterating include stopped at the depth this instance allows; there may be more"
                 .to_owned(),
         ),
+        message: None,
+        expression: None,
     };
     let resource: Value = serde_json::from_slice(&outcome.to_fhir_json()).unwrap_or(Value::Null);
     serde_json::json!({
