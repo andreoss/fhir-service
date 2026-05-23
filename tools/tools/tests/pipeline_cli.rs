@@ -185,3 +185,67 @@ fn the_engines_are_up_before_anything_is_judged() {
         .expect("a test stage");
     assert!(test > 0);
 }
+
+const CARGO_ITSELF: [&str; 6] = ["build", "test", "clippy", "fmt", "run", "update"];
+
+fn root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+}
+
+fn tools_named(run: &str) -> Vec<String> {
+    let words: Vec<&str> = run.split_whitespace().collect();
+    let mut named = Vec::new();
+    for (at, word) in words.iter().enumerate() {
+        match *word {
+            "cargo" => {
+                if let Some(next) = words.get(at + 1) {
+                    if !CARGO_ITSELF.contains(next) && !next.starts_with('-') {
+                        named.push(format!("cargo-{next}"));
+                    }
+                }
+            }
+            "sh" => {
+                let Some(script) = words.get(at + 1) else {
+                    continue;
+                };
+                let Ok(text) = std::fs::read_to_string(root().join(script)) else {
+                    continue;
+                };
+                for line in text.lines() {
+                    if let Some(rest) = line.trim().strip_prefix("command -v ") {
+                        if let Some(name) = rest.split_whitespace().next() {
+                            named.push(name.to_owned());
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    named
+}
+
+#[test]
+fn the_hosted_run_carries_every_tool_the_definition_names() {
+    let held = Pipeline::parse(&definition()).expect("the definition parses");
+    let hosted = workflow();
+    let named: Vec<String> = held
+        .stages
+        .iter()
+        .flat_map(|stage| tools_named(&stage.run))
+        .collect();
+    for expected in ["trivy", "cargo-deny", "cargo-cyclonedx", "cargo-llvm-cov"] {
+        assert!(
+            named.iter().any(|tool| tool == expected),
+            "the definition names {expected}: {named:?}"
+        );
+    }
+    for tool in &named {
+        assert!(
+            hosted.contains(tool.as_str()),
+            "the hosted run installs nothing named {tool}: {hosted}"
+        );
+    }
+}
