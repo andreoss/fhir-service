@@ -4,4 +4,8 @@ set -eu
 here="$(dirname "$0")"
 cd "$here/.."
 mkdir -p scratch
-exec cargo run --quiet --bin pipeline -- "${1:-run}" ci/pipeline.yaml
+action="${1:-run}"
+if [ "$action" = run ]; then
+    trap 'docker compose down -v >/dev/null 2>&1 || true' EXIT INT TERM
+fi
+cargo run --quiet --bin pipeline -- "$action" ci/pipeline.yaml

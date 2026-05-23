@@ -1,4 +1,6 @@
 stages:
+  - name: engines
+    run: docker compose up -d --wait
   - name: build
     run: cargo build --workspace --locked
   - name: test
@@ -28,3 +30,5 @@ stages:
     run: sh ci/conformance.sh
   - name: publish
     run: sh ci/publish.sh
+  - name: image record
+    run: printf 'image %s\n' "$(sh ci/digest.sh)" >> scratch/bill-of-materials.txt

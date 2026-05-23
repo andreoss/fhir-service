@@ -11,37 +11,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: engines
-        run: docker compose up -d --wait
-      - name: build
-        run: cargo build --workspace
-      - name: test
-        run: cargo test --workspace
-      - name: analysis
-        run: cargo clippy --workspace --all-targets -- -D warnings
-      - name: format
-        run: cargo fmt --all --check
       - uses: taiki-e/install-action@cargo-deny
-      - name: dependencies
-        run: cargo deny --all-features check advisories licenses bans sources
       - uses: taiki-e/install-action@cargo-cyclonedx
-      - name: bill of materials
-        run: |
-          cargo cyclonedx --format json --all-features -p fhir-host
-          mkdir -p scratch
-          mv host/bill-of-materials.json scratch/bill-of-materials.json
       - uses: taiki-e/install-action@cargo-llvm-cov
-      - name: coverage
-        run: |
-          mkdir -p scratch
-          cargo llvm-cov --workspace --summary-only --json --output-path scratch/coverage.json
-          cargo run --quiet --bin gate -- scratch/coverage.json 85
-      - name: image
-        run: sh ci/publish.sh
-      - name: record the image the bill of materials describes
-        run: |
-          printf 'image %s\n' "$(sh ci/digest.sh)" >> scratch/bill-of-materials.txt
-          cat scratch/bill-of-materials.txt
+      - name: pipeline
+        run: sh ci/run.sh
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -49,6 +23,3 @@ jobs:
           path: |
             scratch/bill-of-materials.json
             scratch/bill-of-materials.txt
-      - name: engines down
-        if: always()
-        run: docker compose down -v

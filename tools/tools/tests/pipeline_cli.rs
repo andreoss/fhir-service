@@ -13,7 +13,7 @@ fn definition() -> String {
 }
 
 #[test]
-fn the_pipeline_runs_build_tests_analysis_coverage_and_publish() {
+fn the_pipeline_starts_the_engines_then_builds_tests_judges_and_publishes() {
     let held = Pipeline::parse(&definition()).expect("the definition parses");
     let names: Vec<&str> = held
         .stages
@@ -23,6 +23,7 @@ fn the_pipeline_runs_build_tests_analysis_coverage_and_publish() {
     assert_eq!(
         names,
         vec![
+            "engines",
             "build",
             "test",
             "analysis",
@@ -32,7 +33,8 @@ fn the_pipeline_runs_build_tests_analysis_coverage_and_publish() {
             "bill of materials",
             "coverage",
             "conformance",
-            "publish"
+            "publish",
+            "image record"
         ]
     );
     for stage in &held.stages {
@@ -139,4 +141,47 @@ fn a_failing_stage_stops_the_run() {
     assert!(text.contains("third"), "{text}");
 
     std::fs::remove_dir_all(&root).expect("the scratch directory is removed");
+}
+
+fn workflow() -> String {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join(".github")
+        .join("workflows")
+        .join("ci.yaml");
+    std::fs::read_to_string(&path).expect("the hosted workflow is present")
+}
+
+#[test]
+fn the_hosted_run_is_the_run_the_definition_describes() {
+    let held = workflow();
+    assert!(
+        held.contains("ci/run.sh"),
+        "the hosted workflow drives the definition: {held}"
+    );
+    for line in held.lines() {
+        let Some(command) = line.trim().strip_prefix("run:") else {
+            continue;
+        };
+        let command = command.trim();
+        assert!(
+            !command.starts_with("cargo") && !command.starts_with("docker"),
+            "a stage the definition does not carry: {command}"
+        );
+    }
+}
+
+#[test]
+fn the_engines_are_up_before_anything_is_judged() {
+    let held = Pipeline::parse(&definition()).expect("the definition parses");
+    let first = held.stages.first().expect("a first stage");
+    assert_eq!(first.name, "engines");
+    assert!(first.run.contains("compose"), "{}", first.run);
+    let test = held
+        .stages
+        .iter()
+        .position(|stage| stage.name == "test")
+        .expect("a test stage");
+    assert!(test > 0);
 }
