@@ -1,0 +1,12 @@
+[req]
+distinguished_name = names
+prompt = no
+
+[names]
+CN = issuer
+
+[issuer]
+basicConstraints = critical,CA:FALSE
+keyUsage = critical,digitalSignature,keyEncipherment
+extendedKeyUsage = serverAuth
+subjectAltName = DNS:issuer,DNS:localhost,IP:127.0.0.1

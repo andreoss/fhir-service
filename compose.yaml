@@ -46,7 +46,7 @@ services:
     build:
       context: .
       dockerfile: Containerfile
-    profiles: ["service"]
+    profiles: ["service", "conformance"]
     environment:
       FHIR_BIND: 0.0.0.0:8080
       FHIR_BACKEND: ${FHIR_BACKEND:-relational}
@@ -55,6 +55,14 @@ services:
       FHIR_DOCUMENT_URL: ${FHIR_DOCUMENT_URL:-mongodb://document:27017/?directConnection=true}
       FHIR_CONTINUATION_KEY: ${FHIR_CONTINUATION_KEY:-}
       FHIR_STORE_CONNECTIONS: ${FHIR_STORE_CONNECTIONS:-8}
+      FHIR_AUTH_ISSUER: ${FHIR_AUTH_ISSUER:-}
+      FHIR_AUTH_AUTHORIZE: ${FHIR_AUTH_AUTHORIZE:-}
+      FHIR_AUTH_TOKEN: ${FHIR_AUTH_TOKEN:-}
+      FHIR_AUTH_INTROSPECT: ${FHIR_AUTH_INTROSPECT:-}
+      FHIR_AUTH_JWKS: ${FHIR_AUTH_JWKS:-}
+      FHIR_AUTH_AUDIENCE: ${FHIR_AUTH_AUDIENCE:-}
+      FHIR_AUTH_SCOPES: ${FHIR_AUTH_SCOPES:-}
+      FHIR_AUTH_CAPABILITIES: ${FHIR_AUTH_CAPABILITIES:-}
     ports:
       - "${FHIR_PORT:-8080}:8080"
     depends_on:
@@ -68,3 +76,27 @@ services:
       timeout: 5s
       retries: 30
       start_period: 5s
+
+  issuer:
+    image: quay.io/keycloak/keycloak:26.0.8
+    profiles: ["conformance"]
+    command:
+      - start-dev
+      - --import-realm
+      - --https-certificate-file=/tls/issuer.pem
+      - --https-certificate-key-file=/tls/issuer-key.pem
+      - --https-port=8443
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${FHIR_ISSUER_USER:-admin}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${FHIR_ISSUER_PASSWORD:-admin}
+    volumes:
+      - ./ci/conformance/realm.json:/opt/keycloak/data/import/realm.json:ro
+      - ./scratch/conformance/tls:/tls:ro
+    ports:
+      - "${FHIR_ISSUER_PORT:-8443}:8443"
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/8443"]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+      start_period: 15s

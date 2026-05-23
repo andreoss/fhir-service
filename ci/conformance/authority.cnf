@@ -1,0 +1,12 @@
+[req]
+distinguished_name = names
+prompt = no
+x509_extensions = authority
+
+[names]
+CN = conformance authority
+
+[authority]
+basicConstraints = critical,CA:TRUE
+keyUsage = critical,keyCertSign,cRLSign
+subjectKeyIdentifier = hash

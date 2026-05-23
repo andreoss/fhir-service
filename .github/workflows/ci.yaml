@@ -15,6 +15,8 @@ jobs:
       - uses: taiki-e/install-action@cargo-cyclonedx
       - uses: taiki-e/install-action@cargo-llvm-cov
       - uses: aquasecurity/setup-trivy@v0.3.1
+      - name: tools the definition names
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends git openssl && docker --version
       - name: pipeline
         run: sh ci/run.sh
       - uses: actions/upload-artifact@v4

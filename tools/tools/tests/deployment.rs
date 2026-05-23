@@ -187,3 +187,92 @@ fn the_image_copies_only_what_the_workspace_holds() {
     assert!(copied > 0, "{text}");
 }
 
+#[test]
+fn the_conformance_stage_stands_up_what_it_judges() {
+    let script = artefact("ci/conformance.sh");
+    for named in [
+        "smart-app-launch-test-kit",
+        "FHIR_CONFORMANCE_REVISION:-v",
+        "--profile conformance",
+        "--build",
+        "inferno migrate",
+        "inferno execute",
+    ] {
+        assert!(script.contains(named), "the stage does not carry {named}");
+    }
+    let compose = artefact("compose.yaml");
+    for named in [
+        "issuer:",
+        "realm.json",
+        "\"conformance\"",
+        "https-certificate-file",
+    ] {
+        assert!(
+            compose.contains(named),
+            "the compose file does not carry {named}"
+        );
+    }
+}
+
+#[test]
+fn the_realm_carries_what_the_preset_asks_of_it() {
+    let realm: serde_json::Value =
+        serde_json::from_str(&artefact("ci/conformance/realm.json")).expect("the realm is json");
+    let preset: serde_json::Value =
+        serde_json::from_str(&artefact("ci/conformance/preset.json")).expect("the preset is json");
+    let clients: Vec<&str> = realm["clients"]
+        .as_array()
+        .expect("the realm holds clients")
+        .iter()
+        .filter_map(|client| client["clientId"].as_str())
+        .collect();
+    let scopes: Vec<&str> = realm["clientScopes"]
+        .as_array()
+        .expect("the realm holds scopes")
+        .iter()
+        .filter_map(|scope| scope["name"].as_str())
+        .collect();
+    let inputs = preset["inputs"]
+        .as_array()
+        .expect("the preset holds inputs");
+    let mut named = 0;
+    for input in inputs {
+        let Some(client) = input["value"]["client_id"].as_str() else {
+            continue;
+        };
+        assert!(clients.contains(&client), "the realm holds no {client}");
+        named += 1;
+        let requested = input["value"]["requested_scopes"]
+            .as_str()
+            .unwrap_or_default();
+        for scope in requested.split_whitespace() {
+            if scope == "openid" {
+                continue;
+            }
+            assert!(scopes.contains(&scope), "the realm publishes no {scope}");
+        }
+    }
+    assert!(named > 0, "the preset names no client");
+}
+
+#[test]
+fn the_realm_holds_only_the_keys_the_kit_signs_with_publicly() {
+    let realm: serde_json::Value =
+        serde_json::from_str(&artefact("ci/conformance/realm.json")).expect("the realm is json");
+    let backend = realm["clients"]
+        .as_array()
+        .expect("the realm holds clients")
+        .iter()
+        .find(|client| client["attributes"]["use.jwks.string"] == "true")
+        .expect("a client the kit authenticates as");
+    let held = backend["attributes"]["jwks.string"]
+        .as_str()
+        .expect("the client holds a key set");
+    let keys: serde_json::Value = serde_json::from_str(held).expect("the key set is json");
+    let keys = keys["keys"].as_array().expect("the key set holds keys");
+    assert!(!keys.is_empty());
+    for key in keys {
+        assert!(key.get("d").is_none(), "a private key is committed: {key}");
+        assert_eq!(key["key_ops"][0], "verify", "{key}");
+    }
+}
