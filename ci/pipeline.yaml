@@ -17,7 +17,7 @@ stages:
   - name: hardening
     run: sh ci/hardening.sh
   - name: bill of materials
-    run: cargo cyclonedx --format json --all-features -p fhir-host && mkdir -p scratch && mv host/bill-of-materials.json scratch/bill-of-materials.json
+    run: cargo cyclonedx --format json --all-features --manifest-path host/Cargo.toml --override-filename bill-of-materials && mkdir -p scratch && mv host/bill-of-materials.json scratch/bill-of-materials.json
   - name: coverage
     run: cargo llvm-cov --workspace --locked --summary-only --json --output-path scratch/coverage.json && cargo run --quiet --bin gate -- scratch/coverage.json 85
     gate: 85
