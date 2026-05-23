@@ -6,6 +6,7 @@ use std::sync::OnceLock;
 pub enum Encoding {
     Plain,
     Packed,
+    Sealed,
 }
 
 impl Encoding {
@@ -13,6 +14,7 @@ impl Encoding {
         match self {
             Encoding::Plain => "plain",
             Encoding::Packed => "packed",
+            Encoding::Sealed => "sealed",
         }
     }
 
@@ -20,32 +22,53 @@ impl Encoding {
         match raw {
             "plain" => Ok(Encoding::Plain),
             "packed" => Ok(Encoding::Packed),
+            "sealed" => Ok(Encoding::Sealed),
             other => Err(Error::Internal(format!("unknown body encoding {other:?}"))),
         }
     }
 }
 
 pub fn encoded(raw: &[u8]) -> (Vec<u8>, Encoding) {
-    let mut packer = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
-    let packed = packer
+    let mut packer = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    let sealed = packer
         .write_all(raw)
         .and_then(|()| packer.finish())
         .ok()
-        .filter(|packed| packed.len() < raw.len());
-    match packed {
-        Some(packed) => (packed, Encoding::Packed),
+        .filter(|sealed| sealed.len() < raw.len());
+    match sealed {
+        Some(sealed) => (sealed, Encoding::Sealed),
         None => (raw.to_vec(), Encoding::Plain),
     }
 }
 
+fn unread(stored: &[u8], read: u64, unpacked: &[u8]) -> Result<(), Error> {
+    let whole = read as usize == stored.len();
+    let carried = !unpacked.is_empty() || stored.is_empty();
+    match whole && carried {
+        true => Ok(()),
+        false => Err(Error::Internal(
+            "stored body is unreadable: it ends before the body it holds does".to_owned(),
+        )),
+    }
+}
+
 pub fn decoded(stored: &[u8], encoding: Encoding) -> Result<Vec<u8>, Error> {
+    let damaged =
+        |error: std::io::Error| Error::Internal(format!("stored body is unreadable: {error}"));
     match encoding {
         Encoding::Plain => Ok(stored.to_vec()),
         Encoding::Packed => {
             let mut unpacked = Vec::new();
-            flate2::read::DeflateDecoder::new(stored)
+            let mut reader = flate2::read::DeflateDecoder::new(stored);
+            reader.read_to_end(&mut unpacked).map_err(damaged)?;
+            unread(stored, reader.total_in(), &unpacked)?;
+            Ok(unpacked)
+        }
+        Encoding::Sealed => {
+            let mut unpacked = Vec::new();
+            flate2::read::GzDecoder::new(stored)
                 .read_to_end(&mut unpacked)
-                .map_err(|error| Error::Internal(format!("stored body is unreadable: {error}")))?;
+                .map_err(damaged)?;
             Ok(unpacked)
         }
     }
@@ -107,7 +130,7 @@ mod tests {
     fn a_repetitive_body_is_held_smaller_than_it_was_written() {
         let raw = format!(r#"{{"note":"{}"}}"#, "repeat ".repeat(200)).into_bytes();
         let (stored, encoding) = encoded(&raw);
-        assert_eq!(encoding, Encoding::Packed);
+        assert_eq!(encoding, Encoding::Sealed);
         assert!(
             stored.len() < raw.len() / 4,
             "{} vs {}",
@@ -128,8 +151,10 @@ mod tests {
     fn an_unknown_encoding_is_refused() {
         assert_eq!(Encoding::parse("plain").unwrap(), Encoding::Plain);
         assert_eq!(Encoding::parse("packed").unwrap(), Encoding::Packed);
+        assert_eq!(Encoding::parse("sealed").unwrap(), Encoding::Sealed);
         assert!(Encoding::parse("sideways").is_err());
         assert_eq!(Encoding::Packed.as_str(), "packed");
+        assert_eq!(Encoding::Sealed.as_str(), "sealed");
     }
 
     #[test]
@@ -148,5 +173,38 @@ mod tests {
     fn a_damaged_packed_body_is_reported_rather_than_returned() {
         let body = LazyBody::new(vec![9, 9, 9, 9], Encoding::Packed);
         assert!(body.bytes().is_err());
+    }
+
+    fn deflated(raw: &[u8]) -> Vec<u8> {
+        let mut packer =
+            flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
+        packer.write_all(raw).expect("the body packs");
+        packer.finish().expect("the body packs")
+    }
+
+    #[test]
+    fn a_body_an_earlier_release_packed_still_reads() {
+        let raw = format!(r#"{{"note":"{}"}}"#, "repeat ".repeat(200)).into_bytes();
+        let stored = deflated(&raw);
+        assert_eq!(decoded(&stored, Encoding::Packed).unwrap(), raw);
+    }
+
+    #[test]
+    fn a_sealed_body_that_was_altered_is_reported_rather_than_returned() {
+        let raw = format!(r#"{{"note":"{}"}}"#, "repeat ".repeat(200)).into_bytes();
+        let (mut stored, encoding) = encoded(&raw);
+        assert_eq!(encoding, Encoding::Sealed);
+        let last = stored.len() - 1;
+        stored[last] ^= 0xff;
+        assert!(decoded(&stored, Encoding::Sealed).is_err());
+    }
+
+    #[test]
+    fn a_sealed_body_cut_short_is_reported_rather_than_returned() {
+        let raw = format!(r#"{{"note":"{}"}}"#, "repeat ".repeat(200)).into_bytes();
+        let (stored, _) = encoded(&raw);
+        let cut = stored[..stored.len() - 3].to_vec();
+        assert!(decoded(&cut, Encoding::Sealed).is_err());
+        assert!(LazyBody::new(cut, Encoding::Sealed).bytes().is_err());
     }
 }

@@ -36,7 +36,7 @@ async fn a_wordy_body_is_held_smaller_than_it_was_written() {
     };
     let written = store.create(wordy("w1")).await.unwrap();
     let (size, encoding) = stored(&pool, namespace.as_str(), "w1").await;
-    assert_eq!(encoding, "packed");
+    assert_eq!(encoding, "sealed");
     assert!(size < written.raw().len() as i64 / 4, "{size}");
     support::drop_namespace(&pool, &namespace).await;
 }
@@ -101,7 +101,7 @@ async fn a_body_is_never_held_larger_than_it_was_written() {
         .unwrap();
     let (size, encoding) = stored(&pool, namespace.as_str(), "s1").await;
     assert!(
-        ["plain", "packed"].contains(&encoding.as_str()),
+        ["plain", "sealed"].contains(&encoding.as_str()),
         "{encoding}"
     );
     assert!(size <= written.raw().len() as i64, "{size}");
