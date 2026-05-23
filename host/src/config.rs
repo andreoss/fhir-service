@@ -29,6 +29,10 @@ pub const ENV_AUTH_AUDIENCE: &str = "FHIR_AUTH_AUDIENCE";
 pub const ENV_AUTH_AUTHORIZE: &str = "FHIR_AUTH_AUTHORIZE";
 pub const ENV_AUTH_TOKEN: &str = "FHIR_AUTH_TOKEN";
 pub const ENV_AUTH_INTROSPECT: &str = "FHIR_AUTH_INTROSPECT";
+
+pub const ENV_AUTH_CLIENT_ID: &str = "FHIR_AUTH_CLIENT_ID";
+
+pub const ENV_AUTH_CLIENT_SECRET: &str = "FHIR_AUTH_CLIENT_SECRET";
 pub const ENV_AUTH_SCOPES: &str = "FHIR_AUTH_SCOPES";
 pub const ENV_AUTH_CAPABILITIES: &str = "FHIR_AUTH_CAPABILITIES";
 pub const ENV_AUTH_JWKS: &str = "FHIR_AUTH_JWKS";
@@ -183,6 +187,7 @@ pub struct Config {
     pub collector: Option<crate::otlp::Collector>,
     pub preload: Option<std::path::PathBuf>,
     pub tuning: fhir_store::tuning::Tuning,
+    pub introspection: Option<(String, String)>,
     pub reset: fhir_api::Resettable,
     pub unchanged: fhir_api::Unchanged,
     pub default_format: fhir_api::MediaType,
@@ -206,6 +211,26 @@ fn listed(env: &BTreeMap<String, String>, key: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+fn introspection(env: &BTreeMap<String, String>) -> Result<Option<(String, String)>, Error> {
+    let held = (
+        get(env, ENV_AUTH_CLIENT_ID),
+        get(env, ENV_AUTH_CLIENT_SECRET),
+    );
+    match held {
+        (None, None) => Ok(None),
+        (Some(_), None) | (None, Some(_)) => Err(Error::Config(format!(
+            "{ENV_AUTH_CLIENT_ID} and {ENV_AUTH_CLIENT_SECRET} are set together: \
+             an issuer asked about a token asks who is asking"
+        ))),
+        (Some(client), Some(secret)) => match get(env, ENV_AUTH_INTROSPECT) {
+            None => Err(Error::Config(format!(
+                "{ENV_AUTH_INTROSPECT} is required once {ENV_AUTH_CLIENT_ID} is set: \
+                 there is nowhere to ask about a token"
+            ))),
+            Some(_) => Ok(Some((client.to_owned(), secret.to_owned()))),
+        },
+    }
+}
 fn authorization(env: &BTreeMap<String, String>) -> Result<Option<Authorization>, Error> {
     let Some(issuer) = get(env, ENV_AUTH_ISSUER) else {
         return Ok(None);
@@ -647,6 +672,7 @@ impl Config {
             collector,
             preload,
             tuning,
+            introspection: introspection(env)?,
             reset,
             unchanged,
             default_format,
@@ -1113,6 +1139,38 @@ mod tests {
         let error = Config::parse(&env).expect_err("a missing directory must fail");
         assert!(error.to_string().contains(ENV_PRELOAD), "{error}");
     }
+
+    #[test]
+    fn asking_the_issuer_about_a_token_needs_somewhere_to_ask_and_someone_to_ask_as() {
+        let config = Config::parse(&env_empty()).expect("an empty environment must parse");
+        assert!(
+            config.introspection.is_none(),
+            "nothing is asked by default"
+        );
+
+        let mut env = env_empty();
+        env.insert(ENV_AUTH_CLIENT_ID.to_owned(), "an-app".to_owned());
+        let error = Config::parse(&env).expect_err("a client without a secret must fail");
+        assert!(
+            error.to_string().contains(ENV_AUTH_CLIENT_SECRET),
+            "{error}"
+        );
+
+        env.insert(ENV_AUTH_CLIENT_SECRET.to_owned(), "a-secret".to_owned());
+        let error = Config::parse(&env).expect_err("a client with nowhere to ask must fail");
+        assert!(error.to_string().contains(ENV_AUTH_INTROSPECT), "{error}");
+
+        env.insert(
+            ENV_AUTH_INTROSPECT.to_owned(),
+            "https://issuer.example.org/introspect".to_owned(),
+        );
+        let config = Config::parse(&env).expect("a named endpoint and a client must parse");
+        assert_eq!(
+            config.introspection,
+            Some(("an-app".to_owned(), "a-secret".to_owned()))
+        );
+    }
+
     #[test]
     fn the_indexes_an_operator_names_are_read_at_startup() {
         let config = Config::parse(&env_empty()).expect("an empty environment must parse");

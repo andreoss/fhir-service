@@ -134,6 +134,8 @@ async fn assembled(
     }
     if let Some(authorization) = config.authorization.clone() {
         let issuer = authorization.issuer.clone();
+        let audience = authorization.audience.clone();
+        let introspect = authorization.introspect.clone();
         service = service.with_authorization(authorization);
         let keys: Arc<dyn Keys> = match config.keys.clone() {
             Some(set) => Arc::new(HeldKeys::new(set)),
@@ -143,7 +145,21 @@ async fn assembled(
         };
         let trail =
             StoredTrail::resumed(Arc::clone(&store), version, fhir_api::configured_seal()).await?;
-        service = service.enforcing(keys)?.recording(Arc::new(trail));
+        service = match (&config.introspection, &introspect) {
+            (Some((client, secret)), Some(endpoint)) => {
+                let asking = fhir_api::Introspection::new(
+                    endpoint,
+                    client,
+                    secret,
+                    &issuer,
+                    audience.as_deref(),
+                    DISCOVERY_TIMEOUT,
+                )?;
+                service.asking(keys, Arc::new(asking))?
+            }
+            _ => service.enforcing(keys)?,
+        };
+        service = service.recording(Arc::new(trail));
     }
     if config.terminology_dir.is_some() {
         let catalogue = Arc::new(fhir_host::terminology::loaded(config)?);

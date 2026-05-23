@@ -288,6 +288,38 @@ impl Claims {
         Ok(claims)
     }
 
+    pub fn introspected(
+        reply: &Value,
+        issuer: &str,
+        audience: Option<&str>,
+        now: i64,
+    ) -> Result<Claims, Error> {
+        let refused = |reason: &str| Error::Unauthenticated(reason.to_owned());
+        if reply.get("active").and_then(Value::as_bool) != Some(true) {
+            return Err(refused("the issuer says this token is not active"));
+        }
+        let mut claims = Claims::read(reply);
+        if claims.issuer.is_empty() {
+            claims.issuer = issuer.to_owned();
+        }
+        if claims.issuer != issuer {
+            return Err(refused("token was issued elsewhere"));
+        }
+        if let Some(expected) = audience {
+            if !claims.audience.is_empty() && !claims.audience.iter().any(|named| named == expected)
+            {
+                return Err(refused("token names another audience"));
+            }
+        }
+        if claims.expires_at.is_some_and(|at| now >= at) {
+            return Err(refused("token has expired"));
+        }
+        if claims.not_before.is_some_and(|at| now < at) {
+            return Err(refused("token is not yet valid"));
+        }
+        Ok(claims)
+    }
+
     fn checks(algorithm: Algorithm) -> Validation {
         let mut checks = Validation::new(algorithm.checked());
         checks.required_spec_claims.clear();
@@ -577,5 +609,68 @@ mod tests {
         assert!(KeySet::parse(&json!({"keys": []})).is_err());
         assert!(KeySet::parse(&json!({"keys": [{"kty": "OKP", "kid": "r"}]})).is_err());
         assert!(KeySet::parse(&json!({})).is_err());
+    }
+}
+
+#[cfg(test)]
+mod introspection {
+    use super::*;
+    use serde_json::json;
+
+    const ISSUER: &str = "https://issuer.example.org";
+
+    #[test]
+    fn a_reply_that_says_active_carries_what_the_token_was_given() {
+        let claims = Claims::introspected(
+            &json!({
+                "active": true,
+                "sub": "practitioner-1",
+                "client_id": "an-app",
+                "scope": "patient/*.read user/Observation.rs",
+                "exp": 200,
+                "aud": "https://fhir.example.org"
+            }),
+            ISSUER,
+            Some("https://fhir.example.org"),
+            100,
+        )
+        .expect("an active token is accepted");
+        assert_eq!(claims.issuer, ISSUER);
+        assert_eq!(claims.subject.as_deref(), Some("practitioner-1"));
+        assert_eq!(claims.client.as_deref(), Some("an-app"));
+        assert_eq!(claims.scopes.len(), 2);
+        assert_eq!(claims.expires_at, Some(200));
+    }
+
+    #[test]
+    fn a_reply_that_says_nothing_else_still_refuses_what_it_should() {
+        for (reply, says) in [
+            (json!({"active": false}), "not active"),
+            (json!({"scope": "user/*.read"}), "not active"),
+            (json!({"active": true, "exp": 50}), "expired"),
+            (json!({"active": true, "nbf": 500}), "not yet valid"),
+            (
+                json!({"active": true, "iss": "https://elsewhere.example.org"}),
+                "issued elsewhere",
+            ),
+            (
+                json!({"active": true, "aud": "https://other.example.org"}),
+                "another audience",
+            ),
+        ] {
+            let error = Claims::introspected(&reply, ISSUER, Some("https://fhir.example.org"), 100)
+                .expect_err(says);
+            let Error::Unauthenticated(told) = &error else {
+                panic!("{reply} gave {error:?}");
+            };
+            assert!(told.contains(says), "{told}");
+        }
+    }
+
+    #[test]
+    fn a_reply_that_names_no_issuer_is_the_issuer_that_was_asked() {
+        let claims = Claims::introspected(&json!({"active": true}), ISSUER, None, 100)
+            .expect("a reply without an issuer is the issuer asked");
+        assert_eq!(claims.issuer, ISSUER);
     }
 }

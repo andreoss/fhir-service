@@ -522,6 +522,26 @@ impl Service {
         })
     }
 
+    pub fn asking(
+        self,
+        keys: Arc<dyn crate::discovery::Keys>,
+        opaque: Arc<dyn crate::opaque::Opaque>,
+    ) -> Result<Service, Error> {
+        let authorization = self
+            .state
+            .authorization
+            .clone()
+            .ok_or_else(|| Error::Config("enforcement needs an authorization".to_owned()))?;
+        Ok(Service {
+            state: AppState {
+                guard: Some(Arc::new(
+                    crate::access::Guard::new(authorization, keys).asking(opaque),
+                )),
+                ..self.state
+            },
+        })
+    }
+
     pub fn with_templates(self, templates: Arc<dyn Templates>) -> Service {
         Service {
             state: AppState {

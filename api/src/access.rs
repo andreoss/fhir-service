@@ -16,6 +16,12 @@ const PATIENT_COMPARTMENT: &str = "Patient";
 pub struct Guard {
     authorization: Arc<Authorization>,
     keys: Arc<dyn Keys>,
+    opaque: Option<Arc<dyn crate::opaque::Opaque>>,
+}
+
+fn signed(token: &str) -> bool {
+    let parts: Vec<&str> = token.split('.').collect();
+    parts.len() == 3 && parts.iter().all(|part| !part.is_empty())
 }
 
 impl Guard {
@@ -23,6 +29,14 @@ impl Guard {
         Guard {
             authorization,
             keys,
+            opaque: None,
+        }
+    }
+
+    pub fn asking(self, opaque: Arc<dyn crate::opaque::Opaque>) -> Guard {
+        Guard {
+            opaque: Some(opaque),
+            ..self
         }
     }
 
@@ -31,6 +45,11 @@ impl Guard {
     }
 
     pub async fn claims(&self, token: &str) -> Result<Claims, Error> {
+        if let Some(opaque) = &self.opaque {
+            if !signed(token) {
+                return opaque.claims(token).await;
+            }
+        }
         let keys = self.keys.keys(&self.authorization.issuer).await?;
         Claims::verify_for(
             token,
@@ -61,7 +80,7 @@ fn bearer(carried: &str) -> Option<&str> {
     }
 }
 
-fn now() -> i64 {
+pub(crate) fn now() -> i64 {
     time::OffsetDateTime::now_utc().unix_timestamp()
 }
 

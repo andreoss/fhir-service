@@ -137,7 +137,7 @@ fn origin_of(url: &str) -> String {
     }
 }
 
-async fn plain(mut socket: TcpStream, request: &[u8]) -> Result<Vec<u8>, Error> {
+pub(crate) async fn plain(mut socket: TcpStream, request: &[u8]) -> Result<Vec<u8>, Error> {
     let failed = |reason: String| Error::Config(format!("issuer metadata: {reason}"));
     socket
         .write_all(request)
@@ -212,7 +212,11 @@ fn certificates_in(text: &str) -> Result<Vec<Vec<u8>>, Error> {
     Ok(held)
 }
 
-async fn authenticated(socket: TcpStream, host: &str, request: &[u8]) -> Result<Vec<u8>, Error> {
+pub(crate) async fn authenticated(
+    socket: TcpStream,
+    host: &str,
+    request: &[u8],
+) -> Result<Vec<u8>, Error> {
     let failed = |reason: String| Error::Config(format!("issuer metadata: {reason}"));
     let roots = roots()?;
     let settings = tokio_rustls::rustls::ClientConfig::builder()
