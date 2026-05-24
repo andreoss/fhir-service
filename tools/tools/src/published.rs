@@ -119,6 +119,7 @@ pub fn judged(held: &Published, version: FhirVersion) -> Result<Vec<Refused>, Er
                 profile: None,
                 resolved: None,
                 mode: Mode::Update,
+                unresolved: fhir_core::validate::Unresolved::Reported,
                 body: &body,
             });
             if !report.has_errors() {

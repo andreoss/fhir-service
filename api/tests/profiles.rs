@@ -133,15 +133,54 @@ async fn validate_passes_a_resource_the_profile_allows() {
     assert!(!told.contains("fixes"), "{told}");
 }
 
+fn unresolved_issue(reply: &Reply) -> Value {
+    let held: Value = serde_json::from_str(&reply.body).expect("a json body");
+    held["issue"]
+        .as_array()
+        .expect("issues")
+        .iter()
+        .find(|issue| {
+            issue["diagnostics"]
+                .as_str()
+                .is_some_and(|said| said.contains("could not be resolved"))
+        })
+        .expect("the claim is named")
+        .clone()
+}
+
 #[tokio::test]
-async fn validate_refuses_a_profile_no_definition_resolves() {
+async fn validate_reports_a_profile_no_definition_resolves_and_takes_the_write() {
     let app = service(OnWrite::default());
     let reply = ask(&app, "POST", "/Patient/$validate", &patient(true)).await;
     assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
-    let told = issues(&reply);
-    assert!(
-        told.contains("could not be resolved"),
-        "an unresolved profile is refused, not reported as checked: {told}"
+    let issue = unresolved_issue(&reply);
+    assert_eq!(issue["severity"], "warning", "{}", reply.body);
+    assert_eq!(issue["code"], "not-supported", "{}", reply.body);
+    let written = ask(&app, "PUT", "/Patient/pp-1", &patient(true)).await;
+    assert_eq!(
+        written.status,
+        StatusCode::CREATED,
+        "what validation reports, the write takes: {}",
+        written.body
+    );
+}
+
+#[tokio::test]
+async fn validate_refuses_a_profile_no_definition_resolves_where_writes_are_judged() {
+    let app = service(OnWrite {
+        create: true,
+        update: true,
+    });
+    let reply = ask(&app, "POST", "/Patient/$validate", &patient(true)).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    let issue = unresolved_issue(&reply);
+    assert_eq!(issue["severity"], "error", "{}", reply.body);
+    let refused = ask(&app, "PUT", "/Patient/pp-1", &patient(true)).await;
+    assert_eq!(
+        refused.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "what validation refuses, the write refuses: {}",
+        refused.body
     );
 }
 

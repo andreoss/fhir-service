@@ -1044,6 +1044,7 @@ mod tests {
                         profile: None,
                         resolved: None,
                         mode: Mode::Update,
+                        unresolved: Default::default(),
                         body: &body,
                     });
                     assert!(

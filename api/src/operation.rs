@@ -217,6 +217,10 @@ async fn validated(
         profile: claimed,
         resolved,
         mode,
+        unresolved: match state.profiles.asked() {
+            true => fhir_core::validate::Unresolved::Required,
+            false => fhir_core::validate::Unresolved::Reported,
+        },
         body: &body,
     });
     Ok(rendered(report.to_fhir_json()))

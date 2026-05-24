@@ -17,6 +17,7 @@ fn asked<'a>(body: &'a serde_json::Value) -> Request<'a> {
         profile: None,
         resolved: None,
         mode: Mode::Update,
+        unresolved: Default::default(),
         body,
     }
 }
@@ -242,26 +243,45 @@ fn a_profile_of_another_type_names_the_profile_rule() {
 }
 
 #[test]
-fn a_profile_that_cannot_be_resolved_is_refused_rather_than_reported_as_checked() {
+fn a_profile_that_cannot_be_resolved_is_reported_or_refused_as_the_instance_judges() {
     let body = json!({
         "resourceType": "Patient",
         "meta": {"profile": ["http://example.test/StructureDefinition/local"]}
     });
-    let mut request = asked(&body);
-    request.profile = Some("http://example.test/StructureDefinition/local");
-    let report = validate(&request);
-    let held = report
-        .issues()
-        .iter()
-        .find(|issue| issue.expression.as_deref() == Some("meta.profile"))
-        .expect("the profile is named");
-    assert_eq!(held.severity, fhir_core::IssueSeverity::Error);
-    assert!(
-        held.diagnostics.contains("could not be resolved"),
-        "{}",
-        held.diagnostics
-    );
-    assert!(report.has_errors(), "{}", report.to_fhir_json_text());
+    for (unresolved, severity, errors) in [
+        (
+            fhir_core::validate::Unresolved::Reported,
+            fhir_core::IssueSeverity::Warning,
+            false,
+        ),
+        (
+            fhir_core::validate::Unresolved::Required,
+            fhir_core::IssueSeverity::Error,
+            true,
+        ),
+    ] {
+        let mut request = asked(&body);
+        request.profile = Some("http://example.test/StructureDefinition/local");
+        request.unresolved = unresolved;
+        let report = validate(&request);
+        let held = report
+            .issues()
+            .iter()
+            .find(|issue| issue.expression.as_deref() == Some("meta.profile"))
+            .expect("the profile is named");
+        assert_eq!(held.severity, severity, "{:?}", unresolved);
+        assert!(
+            held.diagnostics.contains("could not be resolved"),
+            "{}",
+            held.diagnostics
+        );
+        assert_eq!(
+            report.has_errors(),
+            errors,
+            "{}",
+            report.to_fhir_json_text()
+        );
+    }
 }
 
 #[test]

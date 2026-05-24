@@ -6,6 +6,13 @@ use std::str::FromStr;
 
 const NARRATIVE_STATUS: [&str; 4] = ["generated", "extensions", "additional", "empty"];
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Unresolved {
+    #[default]
+    Reported,
+    Required,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     Create,
@@ -99,6 +106,7 @@ pub struct Request<'a> {
 
     pub resolved: Option<Resolved<'a>>,
     pub mode: Mode,
+    pub unresolved: Unresolved,
     pub body: &'a Value,
 }
 
@@ -255,13 +263,13 @@ fn profile(object: &Map<String, Value>, request: &Request, issues: &mut Vec<Issu
         )),
 
         (Some(named), Some(held)) if base_profile(wanted, named) && named == held => {}
-        (_, _) => issues.push(error(
+        (_, _) => issues.push(unjudged(
             &format!(
                 "{}: profile {wanted:?} could not be resolved, so its rules cannot be applied; \
                  supply its StructureDefinition or do not claim it",
                 Rule::Profile
             ),
-            Some("meta.profile"),
+            request.unresolved,
         )),
     }
 }
@@ -337,6 +345,19 @@ fn empty_elements(object: &Map<String, Value>, prefix: String, issues: &mut Vec<
     }
 }
 
+fn unjudged(diagnostics: &str, unresolved: Unresolved) -> Issue {
+    let severity = match unresolved {
+        Unresolved::Required => IssueSeverity::Error,
+        Unresolved::Reported => IssueSeverity::Warning,
+    };
+    Issue {
+        severity,
+        code: IssueCode::NotSupported,
+        diagnostics: diagnostics.to_owned(),
+        expression: Some("meta.profile".to_owned()),
+    }
+}
+
 fn error(diagnostics: &str, expression: Option<&str>) -> Issue {
     Issue {
         severity: IssueSeverity::Error,
@@ -360,6 +381,7 @@ mod tests {
             profile: None,
             resolved: None,
             mode: Mode::Update,
+            unresolved: Default::default(),
             body: &body,
         });
         assert!(report.has_errors());
@@ -375,6 +397,7 @@ mod tests {
             profile: None,
             resolved: None,
             mode: Mode::Create,
+            unresolved: Default::default(),
             body: &body,
         });
         assert!(report.has_errors());
@@ -391,6 +414,7 @@ mod tests {
             profile: None,
             resolved: None,
             mode: Mode::Update,
+            unresolved: Default::default(),
             body: &body,
         });
         assert!(report.has_errors());
@@ -409,6 +433,7 @@ mod tests {
             profile: None,
             resolved: None,
             mode: Mode::Update,
+            unresolved: Default::default(),
             body: &body,
         });
         assert!(report.to_fhir_json_text().contains("name.given"));

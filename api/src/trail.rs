@@ -670,6 +670,7 @@ mod tests {
                     profile: None,
                     resolved: None,
                     mode: fhir_core::validate::Mode::Create,
+                    unresolved: Default::default(),
                     body: &body,
                 });
                 assert!(
@@ -706,6 +707,7 @@ mod tests {
                 profile: None,
                 resolved: None,
                 mode: fhir_core::validate::Mode::Create,
+                unresolved: Default::default(),
                 body: &body,
             });
             assert!(

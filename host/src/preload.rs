@@ -133,6 +133,7 @@ fn judge(resource: &Value, version: FhirVersion) -> Result<(), Error> {
         profile: None,
         resolved: None,
         mode: Mode::Update,
+        unresolved: fhir_core::validate::Unresolved::Reported,
         body: resource,
     });
     if !report.has_errors() {

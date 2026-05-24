@@ -637,14 +637,6 @@ const PER_TYPE: &[(&str, &[StaticDef])] = &[
     ("DiagnosticReport", DIAGNOSTIC_REPORT),
 ];
 
-fn per_type(resource_type: ResourceType) -> &'static [StaticDef] {
-    PER_TYPE
-        .iter()
-        .find(|(name, _)| *name == resource_type.as_str())
-        .map(|(_, defs)| *defs)
-        .unwrap_or(&[])
-}
-
 type Definitions = Vec<Held>;
 
 struct Held {
