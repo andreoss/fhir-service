@@ -23,6 +23,7 @@ pub struct Compiler<'a> {
     store: &'a RelationalStore,
     binds: Vec<Bind>,
     aliases: usize,
+    about: Vec<String>,
 }
 
 fn or_of(parts: Vec<String>) -> String {
@@ -59,7 +60,12 @@ impl<'a> Compiler<'a> {
             store,
             binds: Vec::new(),
             aliases: 0,
+            about: Vec::new(),
         }
+    }
+
+    pub fn about(&mut self, types: &[fhir_core::ResourceType]) {
+        self.about = types.iter().map(|kind| kind.as_str().to_owned()).collect();
     }
 
     pub fn binds(&self) -> &[Bind] {
@@ -770,30 +776,39 @@ impl<'a> Compiler<'a> {
         };
         let root = format!("{}/{}", compartment.kind.as_str(), compartment.id.as_str());
         let mut parts = Vec::new();
+        let mut pairs = Vec::new();
         for member in definition.members {
-            let kind = self.text(member.resource_type);
-            let owner = format!("{outer}.resource_type = {kind}");
-            let mut links = Vec::new();
-            if member.root {
-                let id = self.text(compartment.id.as_str());
-                links.push(format!("{outer}.resource_id = {id}"));
+            if !self.about.is_empty() && !self.about.iter().any(|kind| kind == member.resource_type)
+            {
+                continue;
             }
-            for name in member.params {
-                let full = root.clone();
-                let bare = compartment.id.as_str().to_owned();
-                links.push(self.exists(
-                    "index_reference",
-                    outer,
-                    name,
-                    MAIN,
-                    move |compiler, alias| {
-                        let full = compiler.text(&full);
-                        let bare = compiler.text(&bare);
-                        format!("{alias}.ref_full = {full} or {alias}.ref_id = {bare}")
-                    },
+            if member.root {
+                let kind = self.text(member.resource_type);
+                let id = self.text(compartment.id.as_str());
+                parts.push(format!(
+                    "({outer}.resource_type = {kind} and {outer}.resource_id = {id})"
                 ));
             }
-            parts.push(format!("({owner} and {})", or_of(links)));
+            for name in member.params {
+                pairs.push(format!("{}|{}", member.resource_type, name));
+            }
+        }
+        if !pairs.is_empty() {
+            let inner = self.alias();
+            let owner = self.alias();
+            let slot = self.text(MAIN);
+            let full = self.text(&root);
+            let bare = self.text(compartment.id.as_str());
+            let bound = self.texts(pairs);
+            parts.push(format!(
+                "{outer}.surrogate_id in (select {inner}.surrogate_id from {} {inner} \
+                 join {} {owner} on {owner}.surrogate_id = {inner}.surrogate_id \
+                 where {inner}.slot = {slot} and ({inner}.ref_full = {full} \
+                 or {inner}.ref_id = {bare}) \
+                 and {owner}.resource_type || '|' || {inner}.param = any({bound}))",
+                self.store.table("index_reference"),
+                self.store.table("resource"),
+            ));
         }
         or_of(parts)
     }
@@ -1101,6 +1116,61 @@ mod tests {
         };
         let text = compiler.grant(&grant, "r").expect("the grant compiles");
         assert!(!text.contains("index_reference"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn a_compartment_is_driven_from_the_index_not_asked_of_every_row() {
+        let store = store();
+        let mut compiler = Compiler::new(&store);
+        let compartment = Compartment {
+            kind: kind("Patient"),
+            id: fhir_core::ResourceId::parse("p1").unwrap(),
+        };
+        let text = compiler.compartment(&compartment, "r");
+        assert!(
+            text.contains("r.surrogate_id in (select"),
+            "the compartment is one set the index yields: {text}"
+        );
+        assert!(
+            !text.contains("exists (select"),
+            "nothing is asked once per row: {text}"
+        );
+        assert_eq!(
+            text.matches("select").count(),
+            1,
+            "one subquery, whatever the compartment holds: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_compartment_asks_only_about_the_types_the_search_is_about() {
+        let store = store();
+        let compartment = Compartment {
+            kind: kind("Patient"),
+            id: fhir_core::ResourceId::parse("p1").unwrap(),
+        };
+        let mut every = Compiler::new(&store);
+        every.compartment(&compartment, "r");
+        let mut narrowed = Compiler::new(&store);
+        narrowed.about(&[kind("Observation")]);
+        narrowed.compartment(&compartment, "r");
+        let pairs = |compiler: &Compiler| {
+            compiler
+                .binds()
+                .iter()
+                .find_map(|bind| match bind {
+                    Bind::Texts(values) => Some(values.len()),
+                    _ => None,
+                })
+                .unwrap_or_default()
+        };
+        assert!(
+            pairs(&every) > pairs(&narrowed),
+            "{} against {}",
+            pairs(&every),
+            pairs(&narrowed)
+        );
+        assert!(pairs(&narrowed) > 0);
     }
 
     #[tokio::test]

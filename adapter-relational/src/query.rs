@@ -194,6 +194,7 @@ async fn selection(
     compiler: &mut Compiler<'_>,
 ) -> Result<Vec<String>, Error> {
     let mut conditions = vec!["r.is_current".to_owned(), "not r.is_deleted".to_owned()];
+    compiler.about(&query.types);
     if !query.types.is_empty() {
         let names = query
             .types
