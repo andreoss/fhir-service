@@ -594,6 +594,24 @@ const DOCUMENT_REFERENCE: &[StaticDef] = &[
     ),
 ];
 
+const CONDITION: &[StaticDef] = &[
+    refers("patient", &["subject"], &["Patient"]),
+    sorted(
+        "onset-date",
+        ValueType::Date,
+        &["onsetDateTime", "onsetPeriod"],
+    ),
+];
+
+const PROCEDURE: &[StaticDef] = &[refers("patient", &["subject"], &["Patient"])];
+
+const MEDICATION_REQUEST: &[StaticDef] = &[
+    refers("patient", &["subject"], &["Patient"]),
+    refers("medication", &["medicationReference"], &["Medication"]),
+];
+
+const DIAGNOSTIC_REPORT: &[StaticDef] = &[refers("patient", &["subject"], &["Patient"])];
+
 const VALUE_SET: &[StaticDef] = &[
     def("identifier", ValueType::Token, &["identifier"]),
     sorted("name", ValueType::String, &["name"]),
@@ -602,20 +620,29 @@ const VALUE_SET: &[StaticDef] = &[
     def("version", ValueType::Token, &["version"]),
 ];
 
+const PER_TYPE: &[(&str, &[StaticDef])] = &[
+    ("Patient", PATIENT),
+    ("Observation", OBSERVATION),
+    ("Encounter", ENCOUNTER),
+    ("List", LIST),
+    ("Organization", ORGANIZATION),
+    ("Practitioner", PRACTITIONER),
+    ("RelatedPerson", RELATED_PERSON),
+    ("RiskAssessment", RISK_ASSESSMENT),
+    ("ValueSet", VALUE_SET),
+    ("DocumentReference", DOCUMENT_REFERENCE),
+    ("Condition", CONDITION),
+    ("Procedure", PROCEDURE),
+    ("MedicationRequest", MEDICATION_REQUEST),
+    ("DiagnosticReport", DIAGNOSTIC_REPORT),
+];
+
 fn per_type(resource_type: ResourceType) -> &'static [StaticDef] {
-    match resource_type.as_str() {
-        "Patient" => PATIENT,
-        "Observation" => OBSERVATION,
-        "Encounter" => ENCOUNTER,
-        "List" => LIST,
-        "Organization" => ORGANIZATION,
-        "Practitioner" => PRACTITIONER,
-        "RelatedPerson" => RELATED_PERSON,
-        "RiskAssessment" => RISK_ASSESSMENT,
-        "ValueSet" => VALUE_SET,
-        "DocumentReference" => DOCUMENT_REFERENCE,
-        _ => &[],
-    }
+    PER_TYPE
+        .iter()
+        .find(|(name, _)| *name == resource_type.as_str())
+        .map(|(_, defs)| *defs)
+        .unwrap_or(&[])
 }
 
 type Definitions = Vec<Held>;
@@ -643,18 +670,6 @@ impl Held {
 fn definitions() -> &'static Definitions {
     static DEFINITIONS: OnceLock<Definitions> = OnceLock::new();
     DEFINITIONS.get_or_init(|| {
-        const TYPES: [&str; 10] = [
-            "Patient",
-            "Observation",
-            "Encounter",
-            "List",
-            "Organization",
-            "Practitioner",
-            "RelatedPerson",
-            "RiskAssessment",
-            "ValueSet",
-            "DocumentReference",
-        ];
         let mut all: Definitions = COMMON
             .iter()
             .map(|def| Held {
@@ -664,11 +679,10 @@ fn definitions() -> &'static Definitions {
                 until: def.until,
             })
             .collect();
-        for name in TYPES {
-            let resource_type: ResourceType = name.parse().expect("built-in type is known");
-            for def in per_type(resource_type) {
+        for (name, defs) in PER_TYPE {
+            for def in *defs {
                 all.push(Held {
-                    kind: Some(name.to_owned()),
+                    kind: Some((*name).to_owned()),
                     def: Arc::new(ParamDef::from(def)),
                     since: def.since,
                     until: def.until,
