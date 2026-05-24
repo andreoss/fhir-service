@@ -35,6 +35,7 @@ group!(
     converted_quantities,
     fhir_store_contract::search::converted_quantities
 );
+group!(long_values, fhir_store_contract::long_values);
 group!(shared_ids, fhir_store_contract::shared_ids);
 group!(erased_versions, fhir_store_contract::erased_versions);
 

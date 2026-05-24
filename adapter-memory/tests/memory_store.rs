@@ -1048,6 +1048,7 @@ async fn a_repeated_filter_is_simplified_away() {
 
 #[tokio::test]
 async fn the_shared_contract_holds_over_this_adapter() {
+    fhir_store_contract::long_values(&store()).await;
     fhir_store_contract::lifecycle(&store()).await;
     fhir_store_contract::versioning(&store()).await;
     fhir_store_contract::removal(&store()).await;

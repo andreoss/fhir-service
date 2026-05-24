@@ -367,6 +367,56 @@ pub async fn scoped_search(store: &dyn ResourceStore) {
         .is_empty());
 }
 
+pub async fn long_values(store: &dyn ResourceStore) {
+    let long = "m".repeat(300_000);
+    let held = crate::fixture::envelope(
+        "Patient",
+        "long-value",
+        &format!(r#""name":[{{"text":"{long}","family":"Stone"}}]"#),
+    );
+    store.create(held).await.expect("a long value is stored");
+
+    let read = store
+        .read(&fhir_core::ResourceKey::new(
+            "Patient".parse().expect("a known type"),
+            "long-value".parse().expect("an id"),
+        ))
+        .await
+        .expect("the record reads back");
+    let body: serde_json::Value = serde_json::from_slice(read.raw()).expect("the record is json");
+    assert_eq!(
+        body["name"][0]["text"].as_str().map(str::len),
+        Some(long.len()),
+        "the record keeps what it was given"
+    );
+
+    let by = |filter| fhir_store::SearchQuery {
+        filters: vec![filter],
+        ..fhir_store::SearchQuery::of_type("Patient".parse().expect("a known type"))
+    };
+    let head: String = long.chars().take(40).collect();
+    let found = store
+        .search(&by(crate::search::filter("Patient", "name", &head)))
+        .await
+        .expect("a search over a long value");
+    assert_eq!(found.entries.len(), 1, "a prefix of a long value is found");
+
+    let exact = store
+        .search(&by(crate::search::qualified(
+            "Patient",
+            "name",
+            fhir_core::search::Modifier::Exact,
+            &long,
+        )))
+        .await
+        .expect("an exact search over a long value");
+    assert_eq!(
+        exact.entries.len(),
+        1,
+        "the whole value is still matched exactly"
+    );
+}
+
 pub async fn shared_ids(store: &dyn ResourceStore) {
     let shared = "shared-across-types";
     store.create(patient(shared, "Stone", true)).await.unwrap();

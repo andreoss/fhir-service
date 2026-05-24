@@ -13,6 +13,7 @@ macro_rules! group {
     };
 }
 
+group!(long_values, fhir_store_contract::long_values);
 group!(lifecycle, fhir_store_contract::lifecycle);
 group!(versioning, fhir_store_contract::versioning);
 group!(removal, fhir_store_contract::removal);

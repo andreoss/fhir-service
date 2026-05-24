@@ -14,6 +14,47 @@ pub const NARRATIVE: &str = "narrative";
 pub const PRESENCE: &str = "presence";
 pub const OF_TYPE: &str = "of_type";
 
+pub const FOLDED_LIMIT: usize = 512;
+
+pub fn folded_head(text: &str) -> String {
+    let lowered = text.to_lowercase();
+    if lowered.len() <= FOLDED_LIMIT {
+        return lowered;
+    }
+    let mut cut = FOLDED_LIMIT;
+    while cut > 0 && !lowered.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    lowered[..cut].to_owned()
+}
+
+fn pieces(text: &str) -> Vec<String> {
+    if text.len() <= FOLDED_LIMIT {
+        return vec![text.to_owned()];
+    }
+    let mut held = Vec::new();
+    let mut current = String::new();
+    for word in text.split_whitespace() {
+        if !current.is_empty() && current.len() + 1 + word.len() > FOLDED_LIMIT {
+            held.push(std::mem::take(&mut current));
+        }
+        if !current.is_empty() {
+            current.push(' ');
+        }
+        match word.len() > FOLDED_LIMIT {
+            true => held.push(word.to_owned()),
+            false => current.push_str(word),
+        }
+    }
+    if !current.is_empty() {
+        held.push(current);
+    }
+    match held.is_empty() {
+        true => vec![text.to_owned()],
+        false => held,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TokenRow {
     pub param: String,
@@ -331,7 +372,7 @@ impl Sink<'_> {
                         param: param.clone(),
                         slot: slot.to_owned(),
                         ordinal,
-                        folded: value.to_lowercase(),
+                        folded: folded_head(&value),
                         value,
                     });
                 }
@@ -419,13 +460,15 @@ impl Sink<'_> {
             let mut found = Vec::new();
             gather(element, &mut found);
             for value in found {
-                self.rows.texts.push(TextRow {
-                    param: param.clone(),
-                    slot: slot.to_owned(),
-                    ordinal,
-                    folded: value.to_lowercase(),
-                    value,
-                });
+                for piece in pieces(&value) {
+                    self.rows.texts.push(TextRow {
+                        param: param.clone(),
+                        slot: slot.to_owned(),
+                        ordinal,
+                        folded: folded_head(&piece),
+                        value: piece,
+                    });
+                }
             }
         }
         if let Some(found) = element.get("identifier") {
@@ -451,7 +494,7 @@ impl Sink<'_> {
                 param: param.clone(),
                 slot: OF_TYPE.to_owned(),
                 ordinal,
-                folded: value.to_lowercase(),
+                folded: folded_head(&value),
                 value,
             });
             for (system, code) in kinds {
@@ -491,13 +534,15 @@ pub fn rows_of(envelope: &ResourceEnvelope, body: &Value, defs: &[Arc<ParamDef>]
                     if cleaned.is_empty() {
                         continue;
                     }
-                    sink.rows.texts.push(TextRow {
-                        param: sink.param.clone(),
-                        slot: NARRATIVE.to_owned(),
-                        ordinal: 0,
-                        folded: cleaned.to_lowercase(),
-                        value: cleaned,
-                    });
+                    for (at, piece) in pieces(&cleaned).into_iter().enumerate() {
+                        sink.rows.texts.push(TextRow {
+                            param: sink.param.clone(),
+                            slot: NARRATIVE.to_owned(),
+                            ordinal: at as i32,
+                            folded: folded_head(&piece),
+                            value: piece,
+                        });
+                    }
                 }
             }
             continue;
@@ -634,6 +679,60 @@ mod tests {
     }
 
     const OBSERVATION: &str = r#"{"resourceType":"Observation","id":"o1","meta":{"versionId":"1","lastUpdated":"2026-09-06T04:00:00Z"},"status":"final","code":{"text":"Mass","coding":[{"system":"urn:s","code":"c1","display":"Coded mass"}]},"valueQuantity":{"value":4.5,"system":"urn:u","code":"mg"},"subject":{"reference":"Patient/p1"}}"#;
+
+    #[test]
+    fn a_long_element_keeps_its_value_and_indexes_a_bounded_head() {
+        let long = "m".repeat(40_000);
+        let body = format!(
+            r#"{{"resourceType":"Patient","id":"p2","meta":{{"versionId":"1","lastUpdated":"2026-09-06T04:00:00Z"}},"name":[{{"text":"{long}"}}]}}"#
+        );
+        let (envelope, held) = parsed(&body);
+        let rows = rows_of(&envelope, &held, &defs("Patient", &["name"]));
+        assert!(!rows.texts.is_empty());
+        for row in &rows.texts {
+            assert!(
+                row.folded.len() <= FOLDED_LIMIT,
+                "{} bytes indexed in slot {}",
+                row.folded.len(),
+                row.slot
+            );
+        }
+        let whole = rows
+            .texts
+            .iter()
+            .find(|row| row.slot == MAIN)
+            .expect("the element itself");
+        assert_eq!(whole.value, long, "the value an exact search reads is kept");
+        assert!(long.starts_with(&whole.folded));
+    }
+
+    #[test]
+    fn a_bound_falls_on_a_character_boundary() {
+        let held = folded_head(&"\u{1f600}".repeat(1_000));
+        assert!(held.len() <= FOLDED_LIMIT);
+        assert!(held.chars().count() > 0);
+        assert!(held.chars().all(|found| found == '\u{1f600}'));
+    }
+
+    #[test]
+    fn a_long_narrative_is_carried_in_pieces_no_word_is_split_by() {
+        let word = "diverticulitis";
+        let filler = "alpha ".repeat(4_000);
+        let body = format!(
+            r#"{{"resourceType":"Observation","id":"o3","meta":{{"versionId":"1","lastUpdated":"2026-09-06T04:00:00Z"}},"status":"final","code":{{"text":"{filler} {word}"}},"subject":{{"reference":"Patient/p1"}}}}"#
+        );
+        let (envelope, held) = parsed(&body);
+        let rows = rows_of(&envelope, &held, &defs("Observation", &["code"]));
+        let pieces: Vec<&TextRow> = rows.texts.iter().filter(|row| row.slot == PLAIN).collect();
+        assert!(pieces.len() > 1, "a long element is carried in pieces");
+        for piece in &pieces {
+            assert!(piece.folded.len() <= FOLDED_LIMIT);
+        }
+        assert!(
+            pieces.iter().any(|piece| piece.folded.contains(word)),
+            "the last word is still indexed"
+        );
+    }
 
     #[test]
     fn a_coded_element_yields_every_coding_and_the_element_itself() {
