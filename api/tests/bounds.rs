@@ -261,3 +261,59 @@ async fn an_unbounded_instance_is_what_this_build_always_was() {
         "capped at a hundred, and there are twenty-five"
     );
 }
+
+fn padded(bytes: usize) -> Value {
+    json!({
+        "resourceType": "Basic",
+        "id": "padded",
+        "code": {"text": "x".repeat(bytes)},
+    })
+}
+
+#[tokio::test]
+async fn a_body_nothing_bounds_is_taken_however_large_it_is() {
+    let router = service(Paging::default(), Limits::unbounded());
+    let (status, body) = ask(
+        &router,
+        "PUT",
+        "/Basic/padded",
+        Some(padded(3 * 1024 * 1024)),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "{}",
+        body.chars().take(300).collect::<String>()
+    );
+}
+
+#[tokio::test]
+async fn a_body_past_the_bound_is_refused_in_an_outcome() {
+    let router = service(
+        Paging::default(),
+        Limits::new(Some(1_000_000), None).expect("a bound"),
+    );
+    let (status, body) = ask(
+        &router,
+        "PUT",
+        "/Basic/padded",
+        Some(padded(3 * 1024 * 1024)),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::PAYLOAD_TOO_LARGE,
+        "{}",
+        body.chars().take(300).collect::<String>()
+    );
+    let held: Value = serde_json::from_str(&body).expect("an outcome in json");
+    assert_eq!(held["resourceType"], "OperationOutcome");
+    assert_eq!(held["issue"][0]["code"], "too-costly");
+    assert!(
+        held["issue"][0]["diagnostics"]
+            .as_str()
+            .is_some_and(|said| said.contains("1000000")),
+        "{body}"
+    );
+}

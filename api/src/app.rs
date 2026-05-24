@@ -619,7 +619,12 @@ pub(crate) fn over(state: &AppState, store: Arc<dyn ResourceStore>) -> Router<()
 }
 
 fn layered(router: Router<()>, state: &AppState) -> Router<()> {
+    let taken = match state.limits.body() {
+        Some(bound) => axum::extract::DefaultBodyLimit::max(bound.saturating_add(1)),
+        None => axum::extract::DefaultBodyLimit::disable(),
+    };
     router
+        .layer(taken)
         .layer(axum::middleware::from_fn(crate::cors::shared))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
