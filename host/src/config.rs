@@ -16,6 +16,7 @@ pub const DEFAULT_DATABASE_URL: &str = "postgres://fhir:fhir@127.0.0.1:5432/fhir
 pub const DEFAULT_DOCUMENT_URL: &str = "mongodb://127.0.0.1:27017/?directConnection=true";
 
 pub const ENV_BIND: &str = "FHIR_BIND";
+pub const ENV_ADDRESS_FILE: &str = "FHIR_ADDRESS_FILE";
 pub const ENV_BACKEND: &str = "FHIR_BACKEND";
 pub const ENV_VERSION: &str = "FHIR_VERSION";
 pub const ENV_DATABASE_URL: &str = "FHIR_DATABASE_URL";
@@ -162,6 +163,7 @@ pub struct Config {
     pub version: FhirVersion,
     pub database_url: String,
     pub document_url: String,
+    pub address_file: Option<PathBuf>,
     pub data_dir: Option<PathBuf>,
     pub terminology_dir: Option<PathBuf>,
     pub connections: u32,
@@ -328,6 +330,8 @@ impl Config {
         let document_url = get(env, ENV_DOCUMENT_URL)
             .map(str::to_owned)
             .unwrap_or_else(|| DEFAULT_DOCUMENT_URL.to_owned());
+
+        let address_file = get(env, ENV_ADDRESS_FILE).map(PathBuf::from);
 
         let data_dir = get(env, ENV_DATA_DIR).map(PathBuf::from);
 
@@ -644,6 +648,7 @@ impl Config {
 
         Ok(Config {
             bind,
+            address_file,
             backend,
             version,
             database_url,
@@ -884,6 +889,14 @@ mod tests {
     }
 
     #[test]
+    fn an_address_file_is_taken_where_one_is_named() {
+        let mut env = env_empty();
+        env.insert(ENV_ADDRESS_FILE.to_owned(), "/srv/address".to_owned());
+        let config = Config::parse(&env).expect("an address file must parse");
+        assert_eq!(config.address_file, Some(PathBuf::from("/srv/address")));
+    }
+
+    #[test]
     fn defaults_are_valid() {
         let config = Config::parse(&env_empty()).expect("defaults must parse");
         assert_eq!(config.backend, Backend::Memory);
@@ -891,6 +904,7 @@ mod tests {
         assert_eq!(config.bind, "127.0.0.1:8080".parse::<SocketAddr>().unwrap());
         assert_eq!(config.database_url, DEFAULT_DATABASE_URL);
         assert_eq!(config.data_dir, None);
+        assert_eq!(config.address_file, None);
     }
 
     #[test]

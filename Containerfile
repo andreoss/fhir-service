@@ -33,11 +33,11 @@ COPY --from=build /src/target/release/measure /usr/local/bin/measure
 COPY --from=build /src/target/release/scaffold /usr/local/bin/scaffold
 COPY --from=build /src/target/release/instances /usr/local/bin/instances
 COPY --from=build /src/target/release/probe /usr/local/bin/probe
+ENV FHIR_ADDRESS_FILE=/srv/address
+RUN install -d -o served -g served /srv
 USER served
 EXPOSE ${PORT}
 
-
-
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD ["/usr/local/bin/probe", "127.0.0.1:8080", "/health"]
+    CMD /usr/local/bin/probe "$(cat "${FHIR_ADDRESS_FILE}" 2>/dev/null || echo "${FHIR_BIND}")" /health
 ENTRYPOINT ["/usr/local/bin/fhir-host"]

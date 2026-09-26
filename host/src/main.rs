@@ -86,7 +86,11 @@ async fn run() -> Result<(), Error> {
             fhir_api::Bound::holding(config.bind, endpoints.router()).await?
         }
     };
-    println!("listening on {}", bound.local_addr()?);
+    let address = bound.local_addr()?;
+    println!("listening on {address}");
+    if let Some(path) = config.address_file.as_ref() {
+        announce(path, address)?;
+    }
     let served = bound.serve_until(asked_to_stop()).await;
     if let Some(worker) = worker {
         match worker.stopping().await {
@@ -95,6 +99,23 @@ async fn run() -> Result<(), Error> {
         }
     }
     served
+}
+
+fn announce(path: &std::path::Path, address: std::net::SocketAddr) -> Result<(), Error> {
+    if let Some(within) = path.parent() {
+        std::fs::create_dir_all(within).map_err(|cause| {
+            Error::Internal(format!(
+                "the address file {} could not be made: {cause}",
+                path.display()
+            ))
+        })?;
+    }
+    std::fs::write(path, format!("{address}")).map_err(|cause| {
+        Error::Internal(format!(
+            "the address file {} could not be written: {cause}",
+            path.display()
+        ))
+    })
 }
 
 async fn assembled(
